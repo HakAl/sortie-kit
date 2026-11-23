@@ -1,0 +1,55 @@
+{
+  "version": 2,
+  "receipt_id": "example-review",
+  "shift_id": "shift-example",
+  "task_id": "task-example",
+  "request_id": "request-example",
+  "role": "builder",
+  "phase": "review",
+  "round": 0,
+  "brief": {
+    "path": "briefs/task.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "data": {
+    "target": {
+      "kind": "commit",
+      "commit": "0000000000000000000000000000000000000000"
+    },
+    "implementer_family": "example-builder-family",
+    "invocations": [
+      {
+        "tool": "agy-review",
+        "version": "0.5.4",
+        "entrypoint": "/opt/skills/agy-review/scripts/agy_review.py",
+        "argv": [
+          "python3",
+          "/opt/skills/agy-review/scripts/agy_review.py",
+          "--commit",
+          "0000000000000000000000000000000000000000",
+          "--model",
+          "example-review-model"
+        ],
+        "model": "example-review-model",
+        "model_family": "example-review-family",
+        "mode": "cross-family",
+        "fallback_reason": null,
+        "target": {
+          "kind": "commit",
+          "commit": "0000000000000000000000000000000000000000"
+        },
+        "purpose": "verdict",
+        "status": "complete",
+        "exit_status": 0,
+        "raw_output": {
+          "path": "logs/review.json",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    ],
+    "verdict": "ACCEPT",
+    "findings": [],
+    "reproductions": [],
+    "reproduction_note": "No claimed fixes in this example."
+  }
+}

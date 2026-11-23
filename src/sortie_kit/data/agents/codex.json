@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "name": "codex",
+  "executable": "codex",
+  "interactive_argv": [
+    "--model",
+    "{model}",
+    "--cd",
+    "{cwd}",
+    "{prompt}"
+  ],
+  "headless_argv": [
+    "exec",
+    "--sandbox",
+    "workspace-write",
+    "--add-dir",
+    ".git",
+    "--model",
+    "{model}",
+    "--cd",
+    "{cwd}",
+    "{prompt}"
+  ],
+  "headless_network_argv": [
+    "exec",
+    "--sandbox",
+    "workspace-write",
+    "--add-dir",
+    ".git",
+    "-c",
+    "sandbox_workspace_write.network_access=true",
+    "--model",
+    "{model}",
+    "--cd",
+    "{cwd}",
+    "{prompt}"
+  ],
+  "models": {},
+  "default_model": null,
+  "unlisted_family": "gpt",
+  "review_argv": [
+    "exec",
+    "--sandbox",
+    "read-only",
+    "--model",
+    "{model}",
+    "--cd",
+    "{cwd}",
+    "{prompt}"
+  ],
+  "review_model": "gpt-6.1-sol"
+}

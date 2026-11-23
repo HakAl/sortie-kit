@@ -1,0 +1,11 @@
+# What the source distribution holds. tests/sdist-files.txt is the list of it,
+# and tests/check_sdist.py compares a built archive with that list.
+# tests/check_wheel.py compares a built wheel with src/sortie_kit.
+include MANIFEST.in pyproject.toml README.md AGENTS.md SECURITY.md LICENSE
+include docs/agents.md docs/grants.md docs/lifecycle.md docs/receipts.md docs/reports.md docs/review.md
+include docs/source-provenance.json
+graft src
+graft tests
+prune src/sortie_kit.egg-info
+prune docs/receipts
+global-exclude __pycache__/* *.py[cod] .DS_Store

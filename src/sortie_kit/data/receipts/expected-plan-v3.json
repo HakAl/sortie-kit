@@ -1,0 +1,24 @@
+{
+  "version": 3,
+  "shift_id": "shift-example",
+  "task_id": "task-example",
+  "request_id": "request-example",
+  "role": "builder",
+  "phase": "plan",
+  "round": 0,
+  "brief": {
+    "path": "briefs/task.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "target": {
+    "kind": "plan",
+    "artifact": {
+      "path": "briefs/plan.md",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "required_findings": [],
+  "implementer_family": null,
+  "stop_scope": null,
+  "review": null
+}

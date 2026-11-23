@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "agy",
+  "executable": "agy",
+  "interactive_argv": null,
+  "headless_argv": null,
+  "models": {
+    "gemini-4-carbon-high": "gemini",
+    "gemini-4-hydrogen-high": "gemini"
+  },
+  "default_model": null,
+  "review_argv": [
+    "--print",
+    "{prompt}",
+    "--mode",
+    "plan",
+    "--sandbox",
+    "--model",
+    "{model}"
+  ],
+  "review_model": "gemini-4-hydrogen-high"
+}

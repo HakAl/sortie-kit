@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sortie-kit"
+dynamic = ["version"]
+description = "Bounded agent shifts in your terminal, with file receipts"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/HakAl/sortie-kit"
+Repository = "https://github.com/HakAl/sortie-kit"
+Issues = "https://github.com/HakAl/sortie-kit/issues"
+
+[project.scripts]
+sortie = "sortie_kit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sortie_kit.__version__"}
+
+[tool.setuptools.package-data]
+sortie_kit = ["data/templates/*", "data/agents/*", "data/profiles/*", "data/receipts/*"]

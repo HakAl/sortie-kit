@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "shift_id": "shift-example",
+  "task_id": "task-example",
+  "request_id": "request-example",
+  "role": "reviewer",
+  "phase": "review",
+  "round": 0,
+  "brief": {
+    "path": "briefs/task.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "target": {
+    "kind": "commit",
+    "commit": "0000000000000000000000000000000000000000"
+  },
+  "required_findings": [],
+  "implementer_family": "example-builder-family",
+  "stop_scope": null,
+  "review": {
+    "agent": "example-agent",
+    "model": "example-review-model",
+    "family": "example-review-family",
+    "same_family": false,
+    "choice": "picked-other-family"
+  }
+}

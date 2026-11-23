@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "claude",
+  "executable": "claude",
+  "interactive_argv": [
+    "--model",
+    "{model}",
+    "{prompt}"
+  ],
+  "headless_argv": [
+    "--print",
+    "--model",
+    "{model}",
+    "{prompt}"
+  ],
+  "models": {
+    "claude-fable-5-2": "claude",
+    "claude-opus-5-5": "claude",
+    "claude-sonnet-5-5": "claude",
+    "claude-haiku-5-5": "claude"
+  },
+  "default_model": null,
+  "unlisted_family": "claude",
+  "review_argv": [
+    "--print",
+    "--permission-mode",
+    "plan",
+    "--model",
+    "{model}",
+    "{prompt}"
+  ],
+  "review_model": "claude-sonnet-5-5"
+}

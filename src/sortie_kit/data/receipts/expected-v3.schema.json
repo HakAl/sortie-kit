@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sortie-kit expected v3",
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "\\S"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "commit"
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "kind",
+            "commit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plan"
+            },
+            "artifact": {
+              "$ref": "#/$defs/artifact"
+            }
+          },
+          "required": [
+            "kind",
+            "artifact"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "maxLength": 64
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@-]*$"
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "same_family": {
+          "type": "boolean"
+        },
+        "choice": {
+          "type": "string",
+          "enum": [
+            "picked-other-family",
+            "picked-same-family",
+            "given"
+          ]
+        }
+      },
+      "required": [
+        "agent",
+        "model",
+        "family",
+        "same_family",
+        "choice"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 3
+    },
+    "shift_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "maxLength": 128
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "maxLength": 128
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "maxLength": 128
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "driver",
+        "builder",
+        "reviewer"
+      ]
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "plan",
+        "build",
+        "review",
+        "acknowledgment",
+        "stop"
+      ]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "brief": {
+      "$ref": "#/$defs/artifact"
+    },
+    "target": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/target"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "required_findings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        "maxLength": 128
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "implementer_family": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stop_scope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "seat",
+            "toolkit"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "review": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/review"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "version",
+    "shift_id",
+    "task_id",
+    "request_id",
+    "role",
+    "phase",
+    "round",
+    "brief",
+    "target",
+    "required_findings",
+    "implementer_family",
+    "review",
+    "stop_scope"
+  ],
+  "additionalProperties": false
+}

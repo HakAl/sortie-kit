@@ -1,0 +1,18 @@
+{
+  "version": 3,
+  "shift_id": "shift-example",
+  "task_id": "task-example",
+  "request_id": "request-example",
+  "role": "builder",
+  "phase": "acknowledgment",
+  "round": 0,
+  "brief": {
+    "path": "briefs/task.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "target": null,
+  "required_findings": [],
+  "implementer_family": null,
+  "stop_scope": null,
+  "review": null
+}

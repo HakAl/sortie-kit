@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "receipt_id": "example-acknowledgment",
+  "shift_id": "shift-example",
+  "task_id": "task-example",
+  "request_id": "request-example",
+  "role": "builder",
+  "phase": "acknowledgment",
+  "round": 0,
+  "brief": {
+    "path": "briefs/task.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "data": {
+    "status": "acknowledged",
+    "evidence": [
+      {
+        "path": "logs/ack.txt",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "reason": "Builder reports reading the bound brief."
+  }
+}

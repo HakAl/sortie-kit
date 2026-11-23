@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "receipt_id": "example-stop",
+  "shift_id": "shift-example",
+  "task_id": "task-example",
+  "request_id": "request-example",
+  "role": "builder",
+  "phase": "stop",
+  "round": 0,
+  "brief": {
+    "path": "briefs/task.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "data": {
+    "status": "unknown",
+    "scope": "seat",
+    "evidence": [
+      {
+        "path": "logs/stop.txt",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "reason": "No affirmative cessation evidence yet."
+  }
+}

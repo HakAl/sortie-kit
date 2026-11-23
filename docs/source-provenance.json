@@ -1,0 +1,58 @@
+{
+  "about": "What in this tree was adapted from earlier code, and under what licence. The earlier code is the owner's own and is private; it is described here by what it did, not by where it lives. Everything not named under adapted or working_agreement was written for sortie-kit and is covered by LICENSE.",
+  "adapted": [
+    {
+      "files": [
+        "src/sortie_kit/tick_supervise.py"
+      ],
+      "from": "the run supervisor of the owner's private shift-driver code",
+      "what": "The owned-child pattern: one foreground child in its own process group, bounded restart backoff, a finite lifetime, and a stop that signals the group and reaps the child. The convention of finite lifetimes comes from the same code; src/sortie_kit/bounds.py, which holds the bounds, was written for sortie-kit.",
+      "license": "MIT, see LICENSE"
+    },
+    {
+      "files": [
+        "src/sortie_kit/grants.py"
+      ],
+      "from": "the grant check and admission step of the same shift-driver code",
+      "what": "The design only: a grant bound to one shift, admitted once and withdrawn at the end. The verifier is new: signed JSON checked with OpenSSH over the exact bytes.",
+      "license": "MIT, see LICENSE"
+    },
+    {
+      "files": [
+        "src/sortie_kit/report.py",
+        "src/sortie_kit/report_metrics.py",
+        "src/sortie_kit/data/templates/closing-report.md"
+      ],
+      "from": "the owner's private audit scripts for shifts and the closing report template of the shift-driver code",
+      "what": "Conventions of the report: unknown values kept visible, metric and time formats, numeric deltas against an earlier shift, and the matters the earlier template covered (the grant, tasks, reviews, checks, stops and the next owner), which report.py now writes. closing-report.md is only the opening lines of a report. Narrowed to evidence kept on the local machine.",
+      "license": "MIT, see LICENSE"
+    },
+    {
+      "files": [
+        "src/sortie_kit/lifecycle.py",
+        "src/sortie_kit/data/templates/driver.md",
+        "src/sortie_kit/data/templates/state.md",
+        "src/sortie_kit/data/templates/completion.md"
+      ],
+      "from": "the task lifecycle and operating notes of the same shift-driver code",
+      "what": "Task milestones and the driver's discipline, adapted to seats that exchange files, and the conventions of the state and completion templates. The code that carries them was written for sortie-kit.",
+      "license": "MIT, see LICENSE"
+    }
+  ],
+  "working_agreement": [
+    {
+      "files": [
+        "AGENTS.md",
+        "src/sortie_kit/data/templates/tiger.md"
+      ],
+      "what": "The tiger working agreement, unchanged: the owner's own public project. Both files are the same bytes.",
+      "license": "MIT, see LICENSE: the same licence and the same holder as the rest"
+    }
+  ],
+  "no_longer_in_the_source": "Earlier versions also carried adapted code for a terminal pane transport and a journal store, and per-seat permission examples written for sortie-kit. All of it was removed before the first public version.",
+  "license_status": "The owner confirmed that the private shift-driver code is theirs and authorized this divergent public instance. Sortie-kit is MIT, one licence in the one file LICENSE, which also covers the tiger working agreement: the owner's own public project under the same licence and the same holder. The private experiment remains separate.",
+  "license_files": [
+    "LICENSE"
+  ],
+  "updated": "2026-11-23"
+}

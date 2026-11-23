@@ -1,0 +1,87 @@
+# Runs the tests and the packaging checks on every pull request and on every
+# push to the default branch.
+#
+# No job here reads a secret or the repository token, and the token it is
+# given can only read the repository. A pull request from a fork therefore
+# runs with nothing to take. Keep it so: never change the trigger to
+# pull_request_target.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to the same branch or pull request cancels the run before it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}, Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    # The macOS jobs are the ones a branch rule should require: macOS is the
+    # only system sortie-kit supports. The rule itself is a setting of the
+    # repository and is its owner's to make. The Ubuntu jobs report and do not
+    # gate: Linux is not supported yet, and a failure there is filed as an
+    # issue and does not fail the run.
+    continue-on-error: ${{ startsWith(matrix.os, 'ubuntu') }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: The interpreter is the one this job names
+        env:
+          WANT: ${{ matrix.python }}
+        run: |
+          python3 --version
+          python3 -c 'import os, sys; want = os.environ["WANT"]; have = "%d.%d" % sys.version_info[:2]; sys.exit(0 if have == want else "python3 is " + have + ", not " + want)'
+
+      - name: Every test in tests/
+        run: python3 tests/run_suites.py
+
+      - name: Build the source distribution, and the wheel from it
+        run: |
+          python3 -m venv "$RUNNER_TEMP/build-env"
+          "$RUNNER_TEMP/build-env/bin/python" -m pip install --quiet build==1.6.1
+          "$RUNNER_TEMP/build-env/bin/python" -m build --outdir "$RUNNER_TEMP/dist" .
+          ls -l "$RUNNER_TEMP/dist"
+
+      - name: The source distribution holds the listed files and nothing else
+        run: python3 tests/check_sdist.py "$RUNNER_TEMP"/dist/*.tar.gz
+
+      - name: The wheel holds the package files of this tree, the generated files and nothing else
+        run: python3 tests/check_wheel.py "$RUNNER_TEMP"/dist/*.whl
+
+      - name: Install the wheel into a clean environment and check it
+        run: |
+          python3 -m venv "$RUNNER_TEMP/wheel-env"
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install --quiet --no-deps "$RUNNER_TEMP"/dist/*.whl
+          env -u PYTHONPATH "$RUNNER_TEMP/wheel-env/bin/python" -B tests/check_install.py
+
+      - name: Install the source distribution into a clean environment and check it from its own files
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sdist-env"
+          "$RUNNER_TEMP/sdist-env/bin/python" -m pip install --quiet --no-deps "$RUNNER_TEMP"/dist/*.tar.gz
+          mkdir "$RUNNER_TEMP/sdist-tree"
+          tar -xzf "$RUNNER_TEMP"/dist/*.tar.gz -C "$RUNNER_TEMP/sdist-tree" --strip-components 1
+          cd "$RUNNER_TEMP/sdist-tree"
+          env -u PYTHONPATH "$RUNNER_TEMP/sdist-env/bin/python" -B tests/check_install.py
+
+      - name: The README's commands, as written, from a fresh install
+        run: python3 tests/readme_run.py

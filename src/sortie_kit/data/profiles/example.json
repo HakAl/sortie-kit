@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "roles": ["driver", "builder"],
+  "artifacts": ".sortie/shifts",
+  "wind_down_seconds": 1200,
+  "idle_seconds": 600,
+  "idle_cap_seconds": 2400
+}

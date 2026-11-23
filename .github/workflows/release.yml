@@ -1,0 +1,215 @@
+# Makes a GitHub release, marked as a pre-release, from a tag v<version>.
+#
+# A release is made only of a commit that has passed CI: the gate job refuses
+# a tag whose commit has no successful run of ci.yml for a push to main. So
+# the order is: push to main, wait for CI, then push the tag.
+#
+# The build job has a token that can only read the repository. It runs the
+# tests, builds the source distribution and the wheel from the tag, checks
+# them, and hands them on as an artifact. The publish job is the only one
+# that may write: it checks out nothing and runs nothing from the repository,
+# checks the files against their sums and attaches them to the release.
+# Nothing is uploaded to a package index.
+#
+# What this file cannot do and the repository's settings can: keep v* tags
+# from being moved or deleted, and say who may push one. The last check of the
+# tag and the making of the release are two calls, so a tag that can be moved
+# can be moved between them; a rule on v* tags is what closes that.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: The tagged commit passed CI on main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Reads the list of workflow runs and nothing else.
+    permissions:
+      actions: read
+    steps:
+      - name: A successful run of ci.yml exists for a push of this commit to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" -f branch=main -f event=push -f status=success)
+          passed=$(printf '%s' "$runs" | jq --arg sha "$GITHUB_SHA" \
+            '[.workflow_runs[] | select(.head_sha == $sha and .status == "completed" and .conclusion == "success" and .event == "push" and .head_branch == "main")] | length')
+          echo "successful runs of ci.yml for a push of $GITHUB_SHA to main: $passed"
+          case "$passed" in
+            ""|*[!0-9]*) echo "the count of runs is not a number: $passed" >&2; exit 1 ;;
+          esac
+          if [ "$passed" -ge 1 ]; then
+            echo "commit $GITHUB_SHA passed CI on main"
+          else
+            echo "commit $GITHUB_SHA has not passed CI on main: no release is made of it" >&2
+            exit 1
+          fi
+
+  build:
+    name: Build and check
+    needs: gate
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: The tag is v and the version in src/sortie_kit/__init__.py
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(PYTHONPATH=src python3 -B -c 'import sortie_kit; print(sortie_kit.__version__)')
+          case "$version" in
+            ""|*[!0-9a-z.]*|.*|*.|*..*) echo "the version in the source is not a plain lowercase version: $version" >&2; exit 1 ;;
+          esac
+          if [ "$TAG" != "v$version" ]; then
+            echo "the tag is $TAG and the source says version $version: a release of it is tagged v$version" >&2
+            exit 1
+          fi
+          echo "tag $TAG matches version $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Every test in tests/
+        run: python3 tests/run_suites.py
+
+      - name: Build the source distribution, and the wheel from it
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/build-env"
+          "$RUNNER_TEMP/build-env/bin/python" -m pip install --quiet build==1.6.1
+          "$RUNNER_TEMP/build-env/bin/python" -m build --outdir "$RUNNER_TEMP/dist" .
+          ls -l "$RUNNER_TEMP/dist"
+          test -f "$RUNNER_TEMP/dist/sortie_kit-$VERSION.tar.gz"
+          test -f "$RUNNER_TEMP/dist/sortie_kit-$VERSION-py3-none-any.whl"
+          test "$(ls -A "$RUNNER_TEMP/dist" | wc -l)" -eq 2
+
+      - name: The source distribution holds the listed files and nothing else
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: python3 tests/check_sdist.py "$RUNNER_TEMP/dist/sortie_kit-$VERSION.tar.gz"
+
+      - name: The wheel holds the package files of this tree, the generated files and nothing else
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: python3 tests/check_wheel.py "$RUNNER_TEMP/dist/sortie_kit-$VERSION-py3-none-any.whl"
+
+      - name: Install the wheel into a clean environment and check it
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/wheel-env"
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install --quiet --no-deps "$RUNNER_TEMP/dist/sortie_kit-$VERSION-py3-none-any.whl"
+          env -u PYTHONPATH "$RUNNER_TEMP/wheel-env/bin/python" -B tests/check_install.py
+
+      - name: Install the source distribution into a clean environment and check it from its own files
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sdist-env"
+          "$RUNNER_TEMP/sdist-env/bin/python" -m pip install --quiet --no-deps "$RUNNER_TEMP/dist/sortie_kit-$VERSION.tar.gz"
+          mkdir "$RUNNER_TEMP/sdist-tree"
+          tar -xzf "$RUNNER_TEMP/dist/sortie_kit-$VERSION.tar.gz" -C "$RUNNER_TEMP/sdist-tree" --strip-components 1
+          cd "$RUNNER_TEMP/sdist-tree"
+          env -u PYTHONPATH "$RUNNER_TEMP/sdist-env/bin/python" -B tests/check_install.py
+
+      - name: The README's commands, as written, from a fresh install
+        run: python3 tests/readme_run.py
+
+      - name: The files, their sha256 and the release text
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          note="docs/release-$VERSION.md"
+          if [ ! -f "$note" ]; then
+            echo "there is no release note at $note, and a release is not made without one" >&2
+            exit 1
+          fi
+          out="$RUNNER_TEMP/release"
+          mkdir "$out"
+          cp "$RUNNER_TEMP/dist/sortie_kit-$VERSION.tar.gz" "$RUNNER_TEMP/dist/sortie_kit-$VERSION-py3-none-any.whl" "$out/"
+          (cd "$out" && shasum -a 256 "sortie_kit-$VERSION-py3-none-any.whl" "sortie_kit-$VERSION.tar.gz" > SHA256SUMS && cat SHA256SUMS)
+          {
+            cat "$note"
+            printf '\n## Files\n\nsha256 of the two files attached to this release:\n\n```\n'
+            cat "$out/SHA256SUMS"
+            printf '```\n'
+          } > "$out/notes.md"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attach to a pre-release
+    needs: [gate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The one job with a token that may write. GitHub has no narrower grant
+    # than contents: write for making a release, so what keeps it to that is
+    # what this job runs: no checkout, no code from the repository, and one
+    # gh command.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+
+      - name: The files are the two the build job summed, and nothing else came with them
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          cd release
+          printf '%s\n' "sortie_kit-$version-py3-none-any.whl" "sortie_kit-$version.tar.gz" > ../expected-names
+          awk '{print $2}' SHA256SUMS > ../summed-names
+          cmp ../expected-names ../summed-names
+          sha256sum -c --strict SHA256SUMS
+          test -f notes.md
+          test "$(ls -A | wc -l)" -eq 4
+
+      - name: The tag still points at the commit that was built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          found=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          if [ "${found%% *}" = "tag" ]; then
+            found=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/${found#* }" --jq '.object.type + " " + .object.sha')
+          fi
+          if [ "$found" != "commit $GITHUB_SHA" ]; then
+            echo "the tag $TAG now points at $found and this run built $GITHUB_SHA: no release is made" >&2
+            exit 1
+          fi
+
+      - name: Make the release, marked as a pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "sortie-kit $version" --notes-file release/notes.md \
+            "release/sortie_kit-$version-py3-none-any.whl" "release/sortie_kit-$version.tar.gz" release/SHA256SUMS
