@@ -89,6 +89,11 @@ Linux ran on a hosted runner with stand-ins in every seat:
   without asking, what the work needs.
 - What each reviewer's read-only or plan mode actually stops has not been
   checked by sortie-kit, and the summary you sign says so.
+- A reviewer is told that a finding which shows a breach of something the
+  brief says must hold, or of something it rules out, is at least major,
+  whatever its size, so that the task goes back for repair. That is in the
+  reviewer's instructions; the host does not check the severity a reviewer
+  gives, and no real shift has shown this rule at work.
 - The stops at the end of a shift are best effort. No exact moment and no
   order between them is promised, and a stop that could not be confirmed is
   reported as such.

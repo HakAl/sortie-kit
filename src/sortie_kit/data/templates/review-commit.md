@@ -51,6 +51,13 @@ it. Taste is not a finding. Do not report the same cause twice.
 Severity: `blocker` means the task's outcome is not met or is unsafe to
 keep; `major` means material harm or rework if kept as is; `minor` is local
 and does not stand in the way.
+A finding that the commit breaks something the brief says must hold, or
+does something the brief rules out, is at least `major`, whatever its size.
+That means a breach you can point to, with the brief's line and the place in
+the change that goes against it. A case that is not tested, or a test that
+proves less than it claims, is not on its own such a breach and keeps the
+severity it would have had. A doubt you could not settle is still not a
+finding.
 
 Verdict: `ACCEPT` when no blocker or major finding stands. `CHANGES` when
 one does, or when you judge the minor ones must be fixed first. You may

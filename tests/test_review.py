@@ -239,6 +239,30 @@ class InstructionTests(unittest.TestCase):
             self.assertIn("at most 64 characters", text)
         self.assertNotIn("the patch", review.instructions("plan", PLAN, NONCE))
 
+    def test_a_breach_of_what_the_brief_requires_is_at_least_major(self):
+        """Seen on real shifts: a reviewer found a breach of what the brief said must hold, rated
+        it minor and accepted. The severity is not left to the reviewer there. What is not such a breach
+        is named, so that the rule does not make every weak check major, and a doubt stays no finding."""
+        weak = {"plan": "A case the plan's checks do not cover, or a check that proves less than it claims,",
+                "commit": "A case that is not tested, or a test that proves less than it claims,"}
+        for kind, target, where in (("plan", PLAN, "plan"), ("commit", COMMIT, "change")):
+            text = " ".join(review.instructions(kind, target, NONCE).split())
+            severity = text.split("Severity: ", 1)[1].split(" Verdict: ", 1)[0]
+            subject = "the plan" if kind == "plan" else "the commit"
+            for part in ("A finding that " + subject + " breaks something the brief says must hold, or does something the "
+                         "brief rules out, is at least `major`, whatever its size.",
+                         "That means a breach you can point to, with the brief's line and the place in the " + where
+                         + " that goes against it.",
+                         weak[kind] + " is not on its own such a breach and keeps the severity it would have had.",
+                         "A doubt you could not settle is still not a finding."):
+                self.assertIn(part, severity, (kind, part))
+            for kept in ("`blocker` means the task's outcome is not met or is unsafe to keep; `major` means material harm "
+                         "or rework if kept as is; `minor` is local and does not stand in the way.",):
+                self.assertIn(kept, severity, kind)
+            # The verdict rule is as it was, so such a finding leads to CHANGES.
+            self.assertIn("Verdict: `ACCEPT` when no blocker or major finding stands. `CHANGES` when one does, or when "
+                          "you judge the minor ones must be fixed first. You may accept and still list minor findings.", text)
+
     def test_a_repair_round_lists_the_earlier_findings_to_answer(self):
         prior = [dict(id="F1", severity="major"), dict(id="F2", severity="minor")]
         text = review.instructions("commit", COMMIT, NONCE, prior)

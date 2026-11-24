@@ -21,6 +21,11 @@ print the two texts (`data/templates/review-plan.md` and
   `plan.md` when the task had one; in a repair round `answers.json`;
 - the questions to ask, that a finding needs a concrete discrepancy checked
   against its source, and what the three severities and two verdicts mean;
+- that a finding which shows the plan or the commit breaking something the
+  brief says must hold, or doing something the brief rules out, is at least
+  `major`, whatever its size, while an untested case or a weak test is not
+  on its own such a breach and keeps the severity it would have had, and a
+  doubt that could not be settled is still no finding;
 - what to return, with this run's two marker lines named inside sentences
   and an example object that the host would take in that round. No marker
   stands on a line of its own in the instructions, so a CLI that prints its
