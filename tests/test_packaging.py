@@ -24,7 +24,8 @@ LISTED = (ROOT / "tests" / "sdist-files.txt").read_text().splitlines()
 WHOLE = ("src", "tests")
 SINGLE = {"MANIFEST.in", "pyproject.toml", "README.md", "AGENTS.md", "SECURITY.md", "LICENSE",
           "docs/agents.md", "docs/grants.md", "docs/lifecycle.md", "docs/receipts.md", "docs/reports.md",
-          "docs/review.md", "docs/source-provenance.json"}
+          "docs/review.md", "docs/source-provenance.json", "docs/development.md", "docs/evidence.md",
+          "docs/example.md", "docs/machine.md", "docs/running.md", "docs/walkthrough.md", "docs/who-reviews.md"}
 
 
 def generated(path):

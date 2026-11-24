@@ -10,7 +10,8 @@ shown is listed below so that you can decide what to trust it with.
 
 ## What you need
 
-- macOS. Nothing has been run on Linux, on a real shift or in the tests.
+- macOS. No shift has been run on Linux. The tests have run there on a
+  hosted runner, with a stand-in in every seat.
 - Python 3.11 or newer, Git, and OpenSSH's `ssh-keygen`.
 - At least one agent CLI you already use and have signed in to. `claude`
   and `codex` can take any seat. The built-in `agy` profile can only review.
@@ -22,7 +23,7 @@ shift takes it from there.
 
 Every real shift so far was run on macOS by the project's own developers,
 with keys made for testing, and all but one on small practice repositories.
-The README says more about each. In short:
+`docs/evidence.md` says more about each. In short:
 
 - Each of the three built-in review forms has done the reviews of a shift,
   and every review came back in the contract's form.
@@ -37,7 +38,7 @@ The README says more about each. In short:
 - The hold against idle sleep was held for a whole shift on one Mac, on
   which other programs held assertions of their own the whole time.
 
-Two shifts were run after the README's list was written, on this version:
+Two shifts were run after that list was written, on this version:
 
 - The built-in `codex` builder finished its tasks with no network option
   passed, which is how this version starts it. Your own Codex configuration
@@ -47,8 +48,8 @@ Two shifts were run after the README's list was written, on this version:
 
 ## What no real shift has shown
 
-The host's part in each of these is exercised by fixture tests on macOS and
-by nothing else:
+The host's part in each of these is exercised by fixture tests, on macOS and
+in the Ubuntu jobs of the hosted checks, and by nothing else:
 
 - A review that fails, its second run, and a task blocked after two
   failures.
@@ -62,7 +63,8 @@ by nothing else:
   dropped.
 
 And these no test can show, since no test starts a real agent CLI, uses a
-developer's own key, sleeps a machine or runs on Linux:
+developer's own key or sleeps a machine, and the tests that have run on
+Linux ran on a hosted runner with stand-ins in every seat:
 
 - `codex` as the driver.
 - A shift signed with a key you use for anything else. Make a key for this.
@@ -75,7 +77,8 @@ developer's own key, sleeps a machine or runs on Linux:
 - A seat runs under your own configuration of its agent CLI. sortie-kit
   decides which program starts and with which arguments, and you sign
   exactly that. It does not limit what the program may then do. Read "What
-  a shift can do to your machine" in the README before the first shift.
+  a shift can do to your machine", `docs/machine.md`, before the first
+  shift.
 - The built-in `codex` builder can write anywhere in the repository,
   `.git` included, so it can change that repository's Git hooks and
   configuration, which later run as you. It can read whatever your user can
@@ -118,11 +121,14 @@ the source distribution and of the wheel, an install of each into a clean
 environment with `tests/check_install.py`, every member of the source
 distribution compared with `tests/sdist-files.txt` by `tests/check_sdist.py`,
 every member of the wheel compared with the package directory by
-`tests/check_wheel.py`, and the README's commands through
+`tests/check_wheel.py`, and the documented commands through
 `tests/readme_run.py`, on macOS and on Ubuntu with Python 3.11 to 3.14.
 `release.yml` builds and checks the two files from a tag and attaches them
-to a pre-release. When this note was written neither had run on a hosted
-runner: the results under Verification are from the developers' machine.
+to a pre-release. `ci.yml` has run on hosted runners: on commit `225e91a`
+it passed in all eight jobs, macOS 15 and Ubuntu 24.04, each with Python
+3.11, 3.12, 3.13 and 3.14, every step of each. `release.yml` has not run,
+since no tag has been pushed. The results under Verification are from the
+developers' machine.
 
 What they do not cover:
 
@@ -143,11 +149,11 @@ Run on the exported tree, on macOS:
 
 - Unit tests: `python3 tests/run_suites.py` in a fresh clone of this tree,
   Python 3.14: 622 tests, all passing. The same sources before the export:
-  622 tests on each of Python 3.11, 3.13 and 3.14. Python 3.12 has not been
-  run.
+  622 tests on each of Python 3.11, 3.13 and 3.14. Python 3.12 was not run
+  on that machine; the hosted run on commit `225e91a` passed with it.
 - Fresh-clone checks: a clone of this tree was installed with
   `python -m pip install .` into a new environment, `sortie --version`
-  answered 0.1.0a2, and `tests/readme_run.py`, which follows the README's
+  answered 0.1.0a2, and `tests/readme_run.py`, which follows the documented
   commands with stand-in agents and a key made for the test, passed.
 - Live validation: none was performed on this exact tree. The two shifts
   named above as run on this version used a build of the same sources.

@@ -38,6 +38,6 @@ earlier alphas are not patched.
 
 A seat runs under your own configuration of its agent CLI. What that CLI
 allows, and what a model does within it, is not something sortie-kit limits;
-the README's section on what a shift can do to your machine says what the
+[what a shift can do to your machine](docs/machine.md) says what the
 built-in profiles ask for. A report that a built-in profile asks for more
-than that section says is welcome.
+than that page says is welcome.

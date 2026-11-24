@@ -3,6 +3,8 @@
 # tests/check_wheel.py compares a built wheel with src/sortie_kit.
 include MANIFEST.in pyproject.toml README.md AGENTS.md SECURITY.md LICENSE
 include docs/agents.md docs/grants.md docs/lifecycle.md docs/receipts.md docs/reports.md docs/review.md
+include docs/development.md docs/evidence.md docs/example.md docs/machine.md docs/running.md
+include docs/walkthrough.md docs/who-reviews.md
 include docs/source-provenance.json
 graft src
 graft tests

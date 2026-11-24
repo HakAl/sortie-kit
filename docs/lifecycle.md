@@ -55,7 +55,7 @@ shift.
   ask that question and has no `wake` entry. Only the host's own report at
   the end has it.
 - Linux is not supported yet, and nothing below has been run on a Linux
-  machine. What the code does there: when `systemd-inhibit` is installed, the host runs
+  machine outside the tests. What the code does there: when `systemd-inhibit` is installed, the host runs
   `systemd-inhibit --what=idle --who=sortie-kit --why="sortie-kit: a shift
   is running" --mode=block /bin/sh -c 'printf 1; exec cat'`
   with the write end of a pipe as its input, and stops it when the shift
@@ -73,8 +73,9 @@ shift.
   that ends by itself is a refusal with its exit status. Both are seen at the
   next pass of the host's loop and again when the closeout's entry is made.
   Without `systemd-inhibit` there is no hold, and the summary and the report
-  say so. This path has tests with the program stood in for; it was not run
-  on a Linux machine.
+  say so. This path has tests with the program stood in for, which have also passed
+  on a hosted Ubuntu runner; with the program itself it was not run on a
+  Linux machine.
 - Anywhere else there is no hold, said the same way.
 
 It stops idle sleep only. A closed laptop lid, Sleep chosen by hand and a

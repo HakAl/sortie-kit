@@ -1,4 +1,8 @@
-"""Run the README's commands, as written, from an install into a fresh venv.
+"""Run the documented commands, as written, from an install into a fresh venv.
+
+The commands are those of README.md and of the pages under docs/ that the README's
+longer sections moved to. Each is looked for in the one page that documents it, named
+where it is run below, so a command that leaves its page or stops working fails this run.
 
 Usage: python3 tests/readme_run.py [EXPORTED_TREE]
 Without a tree, the commit this checkout is at is exported with `git archive` and
@@ -39,13 +43,16 @@ else:
     archive = subprocess.run(["git", "-C", str(root), "archive", "HEAD"], check=True, capture_output=True, timeout=60,
                              env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
     subprocess.run(["tar", "-x", "-C", str(tree)], input=archive.stdout, check=True, timeout=60)
-readme = (tree / "README.md").read_text()
+README, WALK, WHO, EXAMPLE, RUNNING, DEVELOPMENT = ("README.md", "docs/walkthrough.md", "docs/who-reviews.md",
+                                                      "docs/example.md", "docs/running.md", "docs/development.md")
+pages = {name: (tree / name).read_text() for name in (README, WALK, WHO, EXAMPLE, RUNNING, DEVELOPMENT)}
+readme = pages[README]
 done = []
 
 
-def said(text):
-    """The command must be in the README as it is run here, apart from the stated substitutions."""
-    assert text in readme, "not in the README: " + text
+def said(text, page=README):
+    """The command must be in that page as it is run here, apart from the stated substitutions."""
+    assert text in pages[page], "not in " + page + ": " + text
     return text
 
 
@@ -119,7 +126,8 @@ fixture = agent_fixture(work, repo, home=home)
 fixture["program"].write_text(AGENT.format(python=sys.executable, audit=str(audit)))
 flags = "--agent driver=fixture:fixture-model --agent builder=fixture:fixture-model"
 PICKED = "picked: the first installed agent of another family than the builder"
-said(PICKED)
+said(PICKED, WALK)
+said(PICKED, WHO)
 
 # No agent that can review: the start refuses before anything is prepared or signed.
 profile = home / ".config/sortie-kit/agents/fixture.json"
@@ -150,21 +158,22 @@ assert "/.sortie/" in (repo / ".git/info/exclude").read_text() and not (repo / "
 
 # The flag form: asked nothing but the passphrase.
 said("sortie start --repo PATH --direction FILE --for 4h \\\n"
-     "  --agent driver=claude:DRIVER_MODEL --agent builder=codex:BUILDER_MODEL\n```")
+     "  --agent driver=claude:DRIVER_MODEL --agent builder=codex:BUILDER_MODEL\n```", RUNNING)
 text = tty("sortie start --repo project --direction direction.md --for 4h \\\n  " + flags, work, secret, prompts=1,
            note="fixture:fixture-model in place of claude:DRIVER_MODEL and codex:BUILDER_MODEL")
 assert "Driver agent" not in text and "Report: " in text, text[-3000:]
 
-# The last lines say the tasks and the shutdown apart, as the README's example of them does.
+# The last lines say the tasks and the shutdown apart, as the walk-through's example of them does.
 for part in ("Shift ended: ", "\nTasks: ", "\nShutdown: confirmed.\n", "\nDriver process: ", "\nReport: "):
     assert part in text, (part, text[-3000:])
 for line in ("  Shutdown: confirmed.", "  Tasks: 1 accepted locally of 1 briefed (version at aed7b35); the driver says the direction held no more."):
-    said(line)
+    said(line, WALK)
 
-# The complete example, line for line as the README has it, with three stated differences:
-# SORTIE_KIT is the exported tree; the key lines were already run above (the README says to
+# The complete example, line for line as its page has it, with three stated differences:
+# SORTIE_KIT is the exported tree; the key lines were already run above (the page says to
 # leave ssh-keygen out when the key exists; the trust file is removed so trust init runs); the fixture agent stands in for claude and codex.
-block = readme.split("## A complete example", 1)[1].split("```sh\n", 1)[1].split("```", 1)[0]
+assert pages[EXAMPLE].startswith("# A complete example\n") and pages[EXAMPLE].count("```sh\n") == 1
+block = pages[EXAMPLE].split("```sh\n", 1)[1].split("```", 1)[0]
 commands = [c.replace("\\\n", "") for c in block.replace("\\\n", "\\\n\0").replace("\n\0", "\0").split("\n") if c.strip()]
 commands = [c.replace("\0", "\n") for c in commands]
 assert commands[0] == 'SORTIE_KIT="$HOME/dev/sortie-kit"' and commands[-1].startswith("venv/bin/sortie start "), commands
@@ -176,7 +185,7 @@ try_dir = home / "dev/sortie-try"
 (home / ".config/sortie-kit/trust.json").unlink()  # so that the example's own trust init writes it
 for command in commands[1:-1]:
     if command.startswith(("mkdir -p \"$HOME/.config", "chmod 700", "ssh-keygen")):
-        said(command)
+        said(command, README)  # the same three lines as step 2 of the README, already run above
         continue
     sh(command, try_dir if try_dir.is_dir() and not command.startswith("mkdir -p \"$HOME/dev") else work,
        note="complete example" + ("; cd is this run's working directory" if command.startswith("cd ") else ""))
@@ -193,13 +202,14 @@ text = tty(start, try_dir, secret, prompts=1,
            note="complete example; fixture:fixture-model in place of the claude and codex seats")
 assert "Driver agent" not in text and "Shutdown: confirmed." in text and "Report: " in text, text[-3000:]
 
-# sortie stop, as named in "What you will see", on the shift that just ended.
+# sortie stop, as named in "What you will see" in both pages, on the shift that just ended.
 said("sortie stop --shift SHIFT")
+said("sortie stop --shift SHIFT", WALK)
 assert "Withdrawal recorded" in sh("sortie stop --shift " + str(first.parent), work,
                                    note="on a shift that had already ended").stdout
 
 # Preparation only.
-said("sortie start --repo PATH --direction FILE --for 4h --prepare-only")
+said("sortie start --repo PATH --direction FILE --for 4h --prepare-only", RUNNING)
 before = set((repo / ".sortie/shifts").iterdir())
 assert "Prepared (unsigned, no agent started)" in sh(
     "sortie start --repo project --direction direction.md --for 4h --prepare-only", work).stdout
@@ -207,13 +217,13 @@ prepared, = set((repo / ".sortie/shifts").iterdir()) - before
 assert (prepared / "grant.draft.json").is_file() and not (prepared / "grant.json").exists()
 
 # The development command, from the checkout, with the venv's interpreter left out of it.
-# The README's one command runs every test; here its narrowed form runs one module.
-said("python3 tests/run_suites.py\n")
+# The page's one command runs every test; here its narrowed form runs one module.
+said("python3 tests/run_suites.py\n", DEVELOPMENT)
 bare = dict(env, PATH=os.pathsep.join([str(tools), "/usr/bin", "/bin"]))
 assert "sortie_kit" not in subprocess.run([str(tools / "python3"), "-c", "import importlib.util as u; "
                                            "print(u.find_spec('sortie_kit') and 'sortie_kit')"], env=bare, cwd=work,
                                           capture_output=True, text=True, timeout=60).stdout, "sortie_kit is installed here"
-sh(said("python3 tests/run_suites.py test_report"), tree, env=bare,
+sh(said("python3 tests/run_suites.py test_report", DEVELOPMENT), tree, env=bare,
    note="run in the exported tree, by an interpreter that has no sortie_kit installed")
 
 print(json.dumps(dict(work=str(work), commands=done), indent=1))
