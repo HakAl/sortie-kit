@@ -118,31 +118,30 @@ def init(key, out, identity, *, which=shutil.which, tool=None, public=None, pare
     try:
         temporary = ".trust-" + uuid.uuid4().hex + ".tmp"
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
-        mine = None
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                mine = os.fstat(stream.fileno())
+        # The file stays open until its temporary name is gone: while it is open no other
+        # file can be given its number, so the name is taken away only when it is this file's.
+        with os.fdopen(fd, "wb") as stream:
+            try:
                 os.fchmod(stream.fileno(), 0o600)
                 stream.write(encoded(value))
                 stream.flush()
                 os.fsync(stream.fileno())
-            if confirm is not None:
-                confirm()
-            try:
-                os.link(temporary, out.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
-            except FileExistsError as exc:
-                raise Refused(str(out) + " already exists; it is left as it is. Remove it yourself to write "
-                              "a new one") from exc
-        finally:
-            # The temporary name is taken away when it is still this file's. What goes wrong
-            # here is not raised: it would stand in for a refusal on its way out, or say of a
-            # trust file that has its name that it was not written.
-            try:
-                info = os.lstat(temporary, dir_fd=parent)
-                if mine is not None and (info.st_dev, info.st_ino) == (mine.st_dev, mine.st_ino):
-                    os.unlink(temporary, dir_fd=parent)
-            except OSError:
-                pass
+                if confirm is not None:
+                    confirm()
+                try:
+                    os.link(temporary, out.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                except FileExistsError as exc:
+                    raise Refused(str(out) + " already exists; it is left as it is. Remove it yourself to write "
+                                  "a new one") from exc
+            finally:
+                # What goes wrong here is not raised: it would stand in for a refusal on its
+                # way out, or say of a trust file that has its name that it was not written.
+                try:
+                    there, mine = os.lstat(temporary, dir_fd=parent), os.fstat(stream.fileno())
+                    if (there.st_dev, there.st_ino) == (mine.st_dev, mine.st_ino):
+                        os.unlink(temporary, dir_fd=parent)
+                except OSError:
+                    pass
     finally:
         if own:
             os.close(parent)

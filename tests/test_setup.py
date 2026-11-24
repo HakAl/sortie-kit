@@ -577,6 +577,57 @@ class SetupTests(LocalTest):
             self.run_setup()
         self.assertEqual(sorted(p.name for p in self.config.iterdir()), ["signing-key"])
 
+    def test_each_file_is_held_open_from_its_reading_to_the_last_look_at_its_name(self):
+        """A file system may give the number of a removed file to the next one made, as Linux
+        does at once, so a number alone does not tell a file from the one put in its place.
+        It cannot do so while the first is held open: every look at a name is at a file, or
+        a directory, that this command still holds, and nothing is held when it is done."""
+        real = setup.named
+
+        def descriptors():
+            """Each descriptor this process has open, with the file it is of; not the terminals
+            of these tests, which the test closes later."""
+            found = {}
+            for entry in os.listdir("/dev/fd"):
+                try:
+                    info = os.fstat(int(entry))
+                except (OSError, ValueError):
+                    continue  # the one the listing itself had open
+                if int(entry) > 2 and not stat.S_ISCHR(info.st_mode):
+                    found[int(entry)] = (info.st_dev, info.st_ino)
+            return found
+        for state in ("nothing there", "the key pair there", "all three there"):
+            with self.subTest(state=state):
+                if (self.home / ".config").exists():
+                    import shutil
+                    shutil.rmtree(self.home / ".config")
+                if state != "nothing there":
+                    self.make(trust=state == "all three there")
+                looked = []
+
+                def named(parent, name, *rest):
+                    try:
+                        there = os.lstat(name, dir_fd=parent)
+                        looked.append((name, (there.st_dev, there.st_ino) in descriptors().values()))
+                    except OSError:
+                        pass
+                    return real(parent, name, *rest)
+                before = sorted(descriptors())
+                with patch("sortie_kit.setup.named", named):
+                    self.run_setup()
+                self.assertEqual([name for name, held in looked if not held], [])
+                self.assertLessEqual({"signing-key", "signing-key.pub"}, {name for name, _ in looked})
+                if state == "all three there":
+                    self.assertIn("trust.json", {name for name, _ in looked})
+                self.assertEqual(sorted(descriptors()), before)  # and none is left open
+        # Nor after a refusal that comes when all three have been read.
+        self.trust.write_bytes(grants.encoded({"version": 1, "identity": "me", "ssh_keygen": str(self.tool.resolve()),
+                                               "public_key": "ssh-ed25519 " + base64.b64encode(PUBLIC[:-1] + b"\xff").decode()}))
+        before = sorted(descriptors())
+        with self.assertRaisesRegex(Refused, "names another key"):
+            self.run_setup()
+        self.assertEqual(sorted(descriptors()), before)
+
     def test_a_trust_file_that_has_its_name_is_not_reported_as_not_written(self):
         """What goes wrong while the temporary name is taken away does not hide what happened before it."""
         real = os.unlink
@@ -749,10 +800,10 @@ class SetupTests(LocalTest):
         import secrets
         import shutil
         import sys
-        from test_grants import terminal_run
         tool = shutil.which("ssh-keygen", path=os.defpath)
         if not tool:
             self.skipTest("no ssh-keygen on the default PATH")
+        from test_grants import terminal_run  # after the skip: that module looks for ssh-keygen when it is loaded
         source = str(Path(setup.__file__).resolve().parents[1])
         env = {"HOME": str(self.home), "PATH": os.defpath, "PYTHONPATH": source, "PYTHONDONTWRITEBYTECODE": "1",
                "LC_ALL": "C"}

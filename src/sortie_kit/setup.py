@@ -47,10 +47,13 @@ def ident(info):
     return info.st_dev, info.st_ino
 
 
-def named(parent, name, which):
-    """Whether that name in the directory held open is, through no link, the file or directory `which`."""
+def named(parent, name, held):
+    """Whether that name in the directory held open is, through no link, the file or
+    directory that the descriptor `held` has open. A number alone would not say so: a file
+    system may give the number of a removed file to the next one made, as Linux does at
+    once. It cannot while the first is held open, so what is compared is held open."""
     try:
-        return ident(os.lstat(name, dir_fd=parent)) == which
+        return ident(os.lstat(name, dir_fd=parent)) == ident(os.fstat(held))
     except OSError:
         return False
 
@@ -94,7 +97,7 @@ def drop(parent, name, stage):
     """Take away the run's own directory when it is empty and still at its name. Only an
     empty directory can go this way, so nothing of anyone's is lost by it."""
     try:
-        if not os.listdir(stage) and named(parent, name, ident(os.fstat(stage))):
+        if not os.listdir(stage) and named(parent, name, stage):
             os.rmdir(name, dir_fd=parent)
     except OSError:
         pass
@@ -109,31 +112,41 @@ def there(parent, name):
         return False
 
 
-def read_at(parent, name, limit, where):
-    """The bytes and the status of a regular file in the directory held open, through no link."""
+def read_at(parent, name, limit, where, keep):
+    """The bytes and the status of a regular file in the directory held open, through no
+    link, and the descriptor it was read through. That stays open, in `keep`, for the
+    caller to close when the name has been looked at for the last time."""
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     except OSError as exc:
         raise Refused(str(where) + " must be a regular file, not a link, that you can read (" + str(exc) + ")") from exc
-    with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        raw = stream.read(limit + 1)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > limit or len(raw) > limit:
-            raise Refused(str(where) + " must be a regular file of ordinary size")
-        return raw, info
+    keep.append(fd)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+        raise Refused(str(where) + " must be a regular file of ordinary size")
+    raw = b""
+    while len(raw) <= limit:
+        more = os.read(fd, limit + 1 - len(raw))
+        if not more:
+            break
+        raw += more
+    if len(raw) > limit:
+        raise Refused(str(where) + " must be a regular file of ordinary size")
+    return raw, info, fd
 
 
-def pair(parent, where):
+def pair(parent, where, keep):
     """Read the key pair in the directory held open, each file once, and hold the key to
     what `sortie start` requires before it signs: yours alone, and by the check a start
     makes (`signing.encrypted_key`, which reads OpenSSH's unencrypted envelope and
     nothing inside it) encrypted with a passphrase and the key of that public key.
-    Returns the public key as the trust file holds it, and which two files were read."""
+    Returns the public key as the trust file holds it, and the two files that were read,
+    each by the descriptor it is held open with."""
     where = Path(where)
     key, public_path = where / KEY, where / PUBLIC
-    public_raw, public_info = read_at(parent, PUBLIC, trust_init.PUBLIC_LIMIT, public_path)
+    public_raw, _, public_fd = read_at(parent, PUBLIC, trust_init.PUBLIC_LIMIT, public_path, keep)
     public = trust_init.parsed(public_raw, public_path)
-    raw, info = read_at(parent, KEY, KEY_LIMIT, key)
+    raw, info, key_fd = read_at(parent, KEY, KEY_LIMIT, key, keep)
     if info.st_uid != os.getuid():
         raise Refused("the key at " + str(key) + " belongs to another account, and sortie start does not sign with "
                       "such a key. It was left as it is")
@@ -154,14 +167,14 @@ def pair(parent, where):
                           "not sign with it. Both were left as they are") from exc
         raise Refused("the key at " + str(key) + " is not a passphrase-encrypted OpenSSH key (" + str(exc)
                       + "), so sortie start would not sign with it. It was left as it is") from exc
-    return public, {KEY: ident(info), PUBLIC: ident(public_info)}
+    return public, {KEY: key_fd, PUBLIC: public_fd}
 
 
-def ready(parent, trust, public):
+def ready(parent, trust, public, keep):
     """Hold a trust file that is already there to what `sortie start` requires of it, by
     the check a start makes (`grants.Trust`), and to naming this key. It is not changed.
-    Returns which file it is."""
-    raw, info = read_at(parent, TRUST, trust_init.PUBLIC_LIMIT, trust)  # a regular file, through no link
+    Returns the descriptor it is held open with."""
+    raw, info, held = read_at(parent, TRUST, trust_init.PUBLIC_LIMIT, trust, keep)  # a regular file, through no link
     left = " It was left as it is and nothing was changed"
     if info.st_uid != os.getuid():
         raise Refused("the trust file at " + str(trust) + " belongs to another account, and sortie start does not use "
@@ -182,11 +195,11 @@ def ready(parent, trust, public):
                       "would not sign." + left + ". Move the trust file away yourself and run sortie setup again, or "
                       "give sortie start the key it names with --key")
     # The start's check opens the path. What it read is held to being what was read here,
-    # in the directory held open.
+    # in the directory held open, and that file is still open, so the number is its own.
     if checked.pin != (*ident(info), hashlib.sha256(raw).hexdigest()):
         raise Replaced("the trust file at " + str(trust) + " was removed or replaced while this command ran: what is "
                        "there now is not what was checked. Nothing was changed by this command. Run sortie setup again")
-    return ident(info)
+    return held
 
 
 def keygen(tool, key, home, tty, spawn):
@@ -252,7 +265,7 @@ def keygen(tool, key, home, tty, spawn):
                 signal.signal(sig, handler)
 
 
-def new_pair(tool, pin, config, parent, tty, spawn):
+def new_pair(tool, pin, config, parent, tty, spawn, keep):
     """Have ssh-keygen make a key pair in a directory of this run's own inside the one
     held open, check it, and give both files their names by links that replace nothing.
     Returns the public key and which two files they are. What a failed or interrupted
@@ -299,7 +312,7 @@ def new_pair(tool, pin, config, parent, tty, spawn):
                           "written. What it made is in " + str(place) + " and was left there: remove that directory "
                           "yourself when you like, then run sortie setup again")
         try:
-            public, ids = pair(stage, place)
+            public, ids = pair(stage, place, keep)
         except NoPassphrase as exc:
             # Made a moment ago by this command, in its own directory, and of no use to a start.
             for n in (KEY, PUBLIC):
@@ -379,6 +392,7 @@ def work(home, which, tty, spawn):
     # Held open from here to the end: what is read, made and written is in this directory,
     # whatever the path leads to meanwhile.
     parent = trust_init.held(config, "sortie-kit directory")
+    keep = []  # each file that is read stays open until its name has been looked at for the last time
     try:
         # What was opened may not be what was made a moment ago, so its mode is judged
         # like that of a directory that was there, and never set.
@@ -405,11 +419,11 @@ def work(home, which, tty, spawn):
                           "a new key would not be the one that file names. Move the trust file away yourself, or give "
                           "sortie start the key it names with --key")
         if have_key:
-            public, ids = pair(parent, config)
+            public, ids = pair(parent, config, keep)
             if have_trust:
                 if not same(config, parent):  # before the start's check, which opens the path
                     raise replaced(config, "Nothing was changed.")
-                trust_id = ready(parent, trust, public)
+                trust_id = ready(parent, trust, public, keep)
                 if not same(config, parent):
                     raise replaced(config, "Nothing was changed.")
                 if not (all(named(parent, n, ids[n]) for n in ids) and named(parent, TRUST, trust_id)):
@@ -422,7 +436,7 @@ def work(home, which, tty, spawn):
             lines.append("The key pair at " + str(key) + " was already there and was kept.")
             kept = "The key pair at " + str(key) + " was kept and nothing else was changed"
         else:
-            public, ids = new_pair(tool, pin, config, parent, tty, spawn)
+            public, ids = new_pair(tool, pin, config, parent, tty, spawn, keep)
             lines.append("Made the key pair " + str(key) + " and " + str(config / PUBLIC) + " with " + tool + ".")
             kept = "The new key pair is at " + str(key) + " and was left there"
         new = ("The new key pair was given its names in the directory that was checked, wherever that is now. "
@@ -457,6 +471,10 @@ def work(home, which, tty, spawn):
                           "the key that was checked. Nothing was removed. Run sortie setup again to have what is "
                           "there now checked")
     finally:
-        os.close(parent)
+        for fd in (*keep, parent):  # each by itself: one that fails neither keeps the rest open nor hides a refusal
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     return lines + ["Trust file written: " + str(trust) + " (identity developer). It names that key and " + tool + ".",
                     "sortie start finds both there; no --trust or --key flag is needed."]

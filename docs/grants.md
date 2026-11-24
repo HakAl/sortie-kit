@@ -75,7 +75,10 @@ It takes no options and does this, in order:
 - Before it says you are ready, and before the trust file gets its name, it
   checks that the path still leads to the directory it checked and that the
   two names are still the two files it read. With all three already there,
-  the trust file is held to the same.
+  the trust file is held to the same. Each file it read stays open until
+  then. A file system may give the number of a removed file to the next one
+  made, as Linux does at once, and it cannot while the first is open, so a
+  file put in the place of one that was read does not pass for it.
 
 A refusal that would give a `chmod` or `ssh-keygen -p` command gives it only
 when the path prints as it is. A path with characters that are shown as
