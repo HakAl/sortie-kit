@@ -5,7 +5,7 @@ happened on one. [Development](development.md#where-they-have-been-run) says
 where the tests have been run.
 
 Every real shift so far was run on macOS by the project's own developers,
-with keys made for testing, and all but one on small practice repositories.
+with keys made for testing, and all but two on small practice repositories.
 They have shown:
 
 - Each of the three built-in review forms doing the reviews of a shift:
@@ -21,6 +21,13 @@ They have shown:
   minutes of a 90 minute window, with nine reviews, on a profile of the
   developer's own that put `agy` in all three seats. The built-in `agy`
   profile is still review only.
+- One shift with the developer's review skills switched off in the agent's
+  settings for the repository, with `claude` in all three seats, on a copy
+  of a real project: four tasks accepted, with eight reviews run by the
+  host, a same-family review named by flag. The skills' files were still
+  installed: switched off, not removed. The reviewer starts in a directory
+  of its own beneath the repository, and nothing the shift kept shows which
+  settings it loaded there.
 - Wind-down: once it began the host refused a new builder
   turn in a plain sentence, and the shift closed with a report that said
   what was not done.
@@ -60,9 +67,6 @@ with stand-ins in every seat:
 - `codex` as the driver.
 - A shift signed with a key the person uses for anything else. Every key so
   far was made for the test.
-- A machine on which no separate review tool was ever installed. The
-  reviewer needs none, but the machines used all had one from earlier
-  versions.
 - A machine that is put to sleep in the middle of a shift.
 - The hold against idle sleep on a machine that nothing else keeps awake.
 - Anything at all on Linux. The tests of the Linux path for the hold use a
