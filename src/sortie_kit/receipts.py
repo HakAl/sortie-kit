@@ -24,6 +24,65 @@ COMMON = ("version", "shift_id", "task_id", "request_id", "role", "phase", "roun
 DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
+# The host's own copies of the files consumed receipts name, each named by its SHA256.
+# A seat chooses the names of its files and may use one again, as a later builder turn
+# did with a test log: what a receipt points to must not depend on that. The name starts
+# with a dot, like the ledger's, so the look at receipts/ around a turn leaves it out.
+KEPT = "receipts/.kept"
+
+
+class TooLarge(Refused):
+    """A regular file whose size alone is over the limit for its kind. It was not read,
+    and it is known not to be a file that was read within that limit."""
+
+
+def kept_path(sha256):
+    return KEPT + "/" + sha256
+
+
+def references(node):
+    """Every {path, sha256} a receipt names, in the order it names them."""
+    if isinstance(node, dict):
+        if set(node) == {"path", "sha256"}:
+            yield node
+        else:
+            for value in node.values():
+                yield from references(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from references(value)
+
+
+def keep(view, value):
+    """Copy what this receipt names into KEPT, from the bytes this session checked
+    against the receipt's sums. Written once; a name already there must hold its sum."""
+    with view.parent(KEPT) as (parent, name):
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+    for sha in dict.fromkeys(ref["sha256"] for ref in references(value)):
+        if sha not in view.held:
+            raise Refused("a file the receipt names was not checked: no copy can be kept")
+        # Looked for first: the same bytes are named by many receipts, the brief by every
+        # one of a task. A copy already there is the host's own and is checked, not written
+        # again, and is not counted against what may be read of a seat's evidence.
+        try:
+            copy = view.read(kept_path(sha), ARTIFACT_LIMIT, charge=False)
+        except FileNotFoundError:
+            try:
+                view.atomic(kept_path(sha), view.held[sha], limit=ARTIFACT_LIMIT)
+                continue
+            except FileExistsError:  # made between the look and the write
+                copy = view.read(kept_path(sha), ARTIFACT_LIMIT, charge=False)
+        with view.parent(kept_path(sha)) as (parent, name):
+            links = os.stat(name, dir_fd=parent, follow_symlinks=False).st_nlink
+        # One name only: a copy that is also a file under another name can be written there.
+        if digest(copy) != sha or links != 1:
+            raise Refused("the kept copy " + kept_path(sha) + (" has another name" if digest(copy) == sha
+                                                               else " does not hold the bytes it is named by"))
+
+
 def encoded(value):
     return (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
 
@@ -51,6 +110,7 @@ class Evidence:
         self.fd = os.open(self.shift, DIRECTORY)
         self.total = 0
         self.commits = set()
+        self.held = None  # a dict, while a receipt is being consumed: the bytes of each artifact checked, by sum
 
     def guard(self):
         if why := self.budget.guard():
@@ -70,14 +130,16 @@ class Evidence:
         finally:
             os.close(fd)
 
-    def read(self, path, limit=DOCUMENT_LIMIT):
+    def read(self, path, limit=DOCUMENT_LIMIT, *, charge=True):
         self.guard()
         with self.parent(path) as (parent, name):
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         try:
             before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            if not stat.S_ISREG(before.st_mode):
                 raise Refused("evidence must be a bounded regular file: " + path)
+            if before.st_size > limit:
+                raise TooLarge("evidence must be a bounded regular file: " + path)
             chunks, size = [], 0
             while True:
                 self.guard()
@@ -86,7 +148,8 @@ class Evidence:
                     break
                 chunks.append(chunk)
                 size += len(chunk)
-                self.total += len(chunk)
+                if charge:
+                    self.total += len(chunk)
                 if size > limit or self.total > TOTAL_LIMIT:
                     raise Refused("evidence read limit exceeded")
             after = os.fstat(fd)
@@ -101,6 +164,8 @@ class Evidence:
         raw = self.read(ref["path"], ARTIFACT_LIMIT)
         if digest(raw) != ref["sha256"]:
             raise Refused("artifact hash mismatch: " + ref["path"])
+        if self.held is not None:
+            self.held[ref["sha256"]] = raw
         return raw
 
     def git(self, *args):
@@ -143,8 +208,8 @@ class Evidence:
         finally:
             os.close(fd)
 
-    def atomic(self, path, raw, *, replace=False):
-        if len(raw) > DOCUMENT_LIMIT:
+    def atomic(self, path, raw, *, replace=False, limit=DOCUMENT_LIMIT):
+        if len(raw) > limit:
             raise Refused("receipt document exceeds limit")
         with self.parent(path) as (parent, name):
             temp = ".receipt-" + uuid.uuid4().hex
@@ -409,6 +474,7 @@ def validate_receipt(shift, receipt_path, expected_path, *, record=False, second
             expected = decode(pinned)
             raw = view.read(receipt_path)
             value = decode(raw)
+            view.held = {} if record else None
             result = payload(view, value, expected)
             if receipt_path != "receipts/" + value["receipt_id"] + ".json":
                 raise Refused("receipt must use its complete receipt-ID filename")
@@ -420,6 +486,10 @@ def validate_receipt(shift, receipt_path, expected_path, *, record=False, second
             if record:
                 if len(state["entries"]) == 4096:
                     raise Refused("receipt ledger is full")
+                # Before the ledger entry: no receipt is consumed without its copies. A review
+                # receipt of the host's has them too: the host names its output files itself,
+                # but under logs/, where a builder writes.
+                keep(view, value)
                 satisfies = result["status"] == "diagnostic"
                 state["entries"].append({"receipt_id": value["receipt_id"], "slot": slot,
                                          "sha256": digest(raw), "satisfies_phase": satisfies})

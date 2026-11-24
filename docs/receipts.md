@@ -25,8 +25,9 @@ receipt. The driver also passes the digest of the context it built to the
 validator, which refuses any other file contents before checking or recording,
 so a published `briefs/expected-*` file replaced by another writer cannot change
 the signed review policy. The standalone CLI and unpinned Python callers trust
-the file they name. Protect the consumed ledger, and expected files used without
-a pin, from builder writes in the builder's own agent configuration. This is
+the file they name. Protect the consumed ledger, the host's copies under
+`receipts/.kept/`, and expected files used without a pin, from builder writes
+in the builder's own agent configuration. This is
 a caller obligation: the toolkit ships no permission rules, and there is no
 OS boundary against a malicious unrestricted same-user process.
 
@@ -43,6 +44,22 @@ used up all the same. The host records its review receipt for every outcome,
 so the ledger holds one entry for each review that ended, accepted or not. A repair requires
 a new receipt ID and the next caller-authorized round/context. No task scheduling
 or round advancement is implemented here.
+
+Recording a receipt also keeps the host's own copy of every
+file the receipt names (the brief, a plan, the output of each check, any
+evidence), as `receipts/.kept/SHA256`, from the bytes that were just checked
+against the receipt's sums and before the ledger entry is written. A receipt
+whose copies cannot be written is not recorded. A seat chooses the names of its
+files and may use one again: on a real shift a later builder turn wrote its test
+log over the one an earlier, accepted task's build receipt had hashed. The copy
+is named by its content, is written once and is never replaced, so what a
+recorded receipt points to no longer depends on the name staying untouched. A
+copy already there is checked against its sum and must have no other name; it
+is not written again. The host's own review receipts get copies too: the host
+names their output files itself, one for each attempt, but under `logs/`,
+where a builder writes. The receipt files themselves are not copied. The
+copies are not behind an OS boundary either; a process that removes
+`receipts/.kept/` removes them.
 
 | Exit | JSON status | Meaning |
 | --- | --- | --- |
@@ -217,7 +234,8 @@ Cross-field bindings, file checks, provenance, phase satisfaction and duplicate
 consumption are semantic checks beyond the schemas.
 
 Context/receipt/ledger limit is 1 MiB each; artifact limit is 16 MiB; total bytes
-read per operation are capped at 64 MiB. Arrays and strings are bounded in the
+read per operation are capped at 64 MiB, not counting the host's own copies
+under `receipts/.kept/` that recording checks again. Arrays and strings are bounded in the
 schemas, the ledger holds at most 4096 entries, Git calls have at most five seconds,
 and lock waits/read loops honor the operation deadline. Regular-file reads use
 no-follow descriptors and refuse detected changes during a read. Kernel filesystem

@@ -23,6 +23,10 @@ TEXT_SHOWN = 600  # characters of any one retained text in report.md; report.jso
 # pass the 1 MiB an output may be: write() then makes the report again at DETAIL_SMALL
 # before it falls back to the short form.
 DETAIL_LIMIT = 600_000
+NAMED = 64  # paths named for one receipt as changed, or as read from the host's copy
+PATH = 512  # the longest path a receipt may give, kept whole so a check's output is found by it
+MISSING = 'missing retained evidence'
+LARGE = 'larger than any file a receipt may name, so not the bytes the receipt gives; not read'
 DETAIL_SMALL = 80_000
 # The report's own bound on details, as the reason it gives. It does not say that a kept
 # file is missing or damaged, and the status line does not say so for it. Every file is
@@ -46,6 +50,9 @@ class Reader:
         self.end = time.monotonic() + max(0, view.budget.remaining() - min(1, view.budget.remaining() / 2))
         self.inputs, self.issues, self.cache = {}, [], {}
         self.details = 0
+        # Of the receipt being read: the paths it names that do not hold the bytes it
+        # gives, and those whose bytes were read from the host's own copy.
+        self.changed, self.kept = [], []
 
     def again(self, limit):
         """A reader for one more pass with a smaller bound on details. It has what this
@@ -75,7 +82,10 @@ class Reader:
         if time.monotonic() >= self.end:
             raise Refused('extraction budget exhausted; publication time reserved')
 
-    def read(self, path, *, optional=False, limit=receipts.DOCUMENT_LIMIT):
+    def read(self, path, *, optional=False, limit=receipts.DOCUMENT_LIMIT, problems=None):
+        """`problems`: a list that takes the reason a read failed, for a caller that
+        has another place to look before it is a problem of the evidence."""
+        said = self.issue if problems is None else lambda path, reason: problems.append(reason)
         try:
             self.guard()
             if path not in self.cache:
@@ -87,9 +97,11 @@ class Reader:
             return self.cache[path]
         except FileNotFoundError:
             if not optional:
-                self.issue(path, 'missing retained evidence')
+                said(path, MISSING)
+        except receipts.TooLarge as exc:
+            said(path, exc if problems is None else LARGE)
         except (OSError, ValueError, TypeError, RecursionError) as exc:
-            self.issue(path, exc)
+            said(path, exc)
         return None
 
     def document(self, path, optional=False):
@@ -110,13 +122,38 @@ class Reader:
         if not isinstance(ref, dict) or set(ref) != {'path', 'sha256'}:
             self.issue('artifact', 'invalid artifact reference')
             return False
-        raw = self.read(ref['path'], limit=receipts.ARTIFACT_LIMIT)
-        if raw is None:
+        path, sha, problems = ref['path'], ref['sha256'], []
+        raw = self.read(path, limit=receipts.ARTIFACT_LIMIT, problems=problems)
+        if raw is not None and receipts.digest(raw) == sha:
+            return True
+        if raw is None and problems not in ([MISSING], [LARGE]):
+            # The path could not be read (a limit of this report, a name that is not a
+            # plain relative one, a file that is no regular file): nothing was seen of
+            # its bytes, so it is neither called changed nor looked for among the copies.
+            # A regular file over the size any artifact may have is not of these: it was
+            # not read either, and its size says it is not the file the receipt names.
+            for reason in problems:
+                self.issue(path, reason)
             return False
-        if receipts.digest(raw) != ref['sha256']:
-            self.issue(ref['path'], 'artifact hash mismatch')
-            return False
-        return True
+        # The name is gone or no longer holds those bytes. A seat may use a name again;
+        # the host kept its own copy when it consumed the receipt, named by the sum.
+        name = str(path)[:PATH]
+        if isinstance(sha, str) and re.fullmatch('[0-9a-f]{64}', sha):
+            lost = []
+            copy = self.read(receipts.kept_path(sha), limit=receipts.ARTIFACT_LIMIT, problems=lost)
+            if copy is not None and receipts.digest(copy) == sha:
+                if len(self.kept) < NAMED and not any(k['path'] == name for k in self.kept):
+                    self.kept.append(dict(path=name, kept=receipts.kept_path(sha)))
+                return True
+            # A copy that is there and cannot back the receipt is a problem of its own.
+            for reason in (['kept copy does not hold the bytes it is named by'] if copy is not None
+                           else [r for r in lost if r != MISSING]):
+                self.issue(receipts.kept_path(sha), reason)
+        for reason in problems or ['artifact hash mismatch']:
+            self.issue(path, reason)
+        if len(self.changed) < NAMED and name not in self.changed:
+            self.changed.append(name)
+        return False
 
     def references(self, node):
         good = True
@@ -168,6 +205,7 @@ def review_kept(data):
 
 def receipt_summary(reader, ref, task, shift_id, ledger):
     out = dict(reference=ref, integrity='unavailable', consumed=False, phase=None, data=None)
+    out['changed'], out['kept'] = reader.changed, reader.kept = [], []
     if not isinstance(ref, dict) or not isinstance(ref.get('path'), str) or not isinstance(ref.get('sha256'), str):
         reader.issue('driver-state.json', 'invalid receipt reference')
         return out
@@ -215,6 +253,11 @@ def task_summary(reader, task, shift_id, ledger, host_reviews=False):
     if accepted is not None and not isinstance(accepted, dict):
         raise Refused('invalid recorded acceptance')
     all_sound = True
+    if accepted:
+        # Whether the review receipt the acceptance names is, kept and consumed, the ACCEPT
+        # of the candidate. An acceptance may be unbacked with this true: a build receipt
+        # of the round may be what no longer holds.
+        result['review_matched'] = False
     for ref in task['receipts']:
         item = receipt_summary(reader, ref, task, shift_id, ledger)
         result['receipts'].append(item)
@@ -252,11 +295,13 @@ def task_summary(reader, task, shift_id, ledger, host_reviews=False):
                                  for i in data['invocations']))
             if match:
                 result['acceptance'] = 'local acceptance recorded; retained review matches candidate'
+                result['review_matched'] = True
         if ref == cessation and sound and item['phase'] == 'stop' and data.get('scope') == 'seat' and data.get('status') == 'stopped':
             result['cessation'] = 'builder seat stop reported in retained receipt; not independently observed'
     if accepted and (not all_sound or not result['acceptance'].startswith('local acceptance recorded')):
         result['acceptance'] = UNBACKED
-        reader.issue(task['id'], 'accepted candidate lacks intact consumed matching review evidence')
+        reader.issue(task['id'], 'recorded acceptance is not backed by intact consumed build and review evidence '
+                                 'of its round')
     result['turns'] = reader.retain(task.get('turns', []), task['id'])
     if isinstance(task.get('reviews'), list) and (task['reviews'] or any(r.get('role') == 'reviewer' for r in result['receipts'])):
         # The reviews the host ran for this task, as it recorded each when it ended.
@@ -825,6 +870,8 @@ def receipt_words(item, kept=()):
     ref, data = item.get('reference') if isinstance(item.get('reference'), dict) else {}, item.get('data')
     line = PHASE_WORDS.get(ref.get('stage'), plain(ref.get('stage'))) + ', round ' + plain(ref.get('round'))
     stage = ref.get('stage')
+    changed = [c for c in item.get('changed') or [] if isinstance(c, str)]
+    marked = set()
     if not isinstance(data, dict):
         # Nothing was read from it, so nothing is said about what it reported.
         return line + (': details unavailable. **Problem: the retained file is missing, changed, damaged or too '
@@ -851,6 +898,11 @@ def receipt_words(item, kept=()):
         for check in checks[:16]:
             line += '\n    - ' + plain(check.get('command'), 200) + ': exit ' + plain(check.get('exit_status')) \
                     + ', expected ' + plain(check.get('expected_exit'))
+            output = get(check, 'output', 'path')
+            if isinstance(output, str) and output in changed:
+                # Each check whose kept output is gone is marked, not the last one for all.
+                marked.add(output)
+                line += ' **Problem: ' + plain(output) + ' is missing or no longer the bytes the receipt gives.**'
     elif stage == 'plan':
         line += ': ' + plain(get(data, 'plan', 'path')) + '. ' + plain(data.get('summary'), 300)
     elif stage in ('ack', 'stop'):
@@ -860,8 +912,20 @@ def receipt_words(item, kept=()):
         # The builder's own answers; the next review is what checks them.
         line += "\n    - answers to the review's findings: " + ', '.join(
             plain(a.get('id')) + ' ' + plain(a.get('disposition')) for a in answers[:16])
+    for copy in [k for k in item.get('kept') or [] if isinstance(k, dict)]:
+        # `consumed` is an entry that satisfied the phase. Without one, when the copy was
+        # made and for which receipt is not said: a returned receipt has copies of its own.
+        line += ('\n    - ' + plain(copy.get('path'), PATH) + ' was written over or removed after the host took this '
+                 "receipt; the host's copy from then is " + plain(copy.get('kept')) + ' and holds the bytes the receipt '
+                 'gives.' if item.get('consumed') else
+                 '\n    - ' + plain(copy.get('path'), PATH) + ' does not hold the bytes the receipt gives; the host holds '
+                 'those bytes as ' + plain(copy.get('kept')) + '.')
     notes = []
-    if item.get('integrity') != 'matched':
+    rest = [c for c in changed if c not in marked]
+    if rest:
+        notes.append(', '.join(plain(c) for c in rest) + (' are' if len(rest) > 1 else ' is')
+                     + ' missing or no longer the bytes the receipt gives')
+    elif item.get('integrity') != 'matched' and not changed:
         notes.append('the retained file is missing, changed or damaged')
     # `consumed` means a ledger entry that satisfied the phase. A receipt the driver
     # returned (a CHANGES review, say) has no such entry and is not missing one.
@@ -879,7 +943,9 @@ def receipt_words(item, kept=()):
     elif returned:
         line += ('\n    - The driver returned this receipt (' + plain(ref.get('status'))
                  + '): it did not satisfy its phase and did not advance the task.')
-    return line + (' **Problem: ' + '; '.join(notes) + '.**' if notes else '')
+    # On the receipt's own line: after its last sub-line it reads as being about that one.
+    first, cut, below = line.partition('\n')
+    return first + (' **Problem: ' + '; '.join(notes) + '.**' if notes else '') + cut + below
 
 
 def turn_words(turn):
@@ -925,6 +991,43 @@ def stop_words(task, headless):
             + ('' if started - seen == 1 else 's') + ' stopped is not known.')
 
 
+def unbacked_words(task):
+    """Which receipts of the task's last round do not back its acceptance, each named
+    with what is wrong with it, and whether the review the acceptance names holds: a
+    review receipt is called whole only when it is also the ACCEPT of the candidate.
+    '' when the kept receipts show nothing wrong and the acceptance is unbacked for
+    another reason."""
+    wrong, whole = [], []
+    for item in task.get('receipts') or []:
+        ref = item.get('reference') if isinstance(item, dict) and isinstance(item.get('reference'), dict) else None
+        if ref is None or ref.get('round') != task.get('round') or ref.get('stage') not in ('build', 'review'):
+            continue
+        if ref.get('status') not in (None, 'satisfied'):
+            continue  # a receipt the driver returned backs nothing and is not what an acceptance rests on
+        name = 'the ' + ref['stage'] + ' receipt ' + plain(ref.get('path'))
+        changed = [c for c in item.get('changed') or [] if isinstance(c, str)]
+        if changed:
+            count = ('at least ' if len(changed) >= NAMED else '') + str(len(changed))  # the list stops at NAMED
+            wrong.append(name + ' names ' + (count + ' files that are' if len(changed) > 1 else 'a file that is')
+                         + ' missing or no longer the bytes it gives (' + ', '.join(plain(c) for c in changed) + ')')
+        elif item.get('integrity') != 'matched':
+            wrong.append(name + ' is missing, changed, could not be read or was too large to repeat')
+        elif not item.get('consumed'):
+            wrong.append(name + ' has no matching entry in the consumed ledger')
+        elif ref['stage'] == 'review':
+            whole.append(name)
+    if not wrong:
+        return ''
+    line = '; '.join(wrong) + '.'
+    # A review receipt already named as failing is not said a second time.
+    named = any(w.startswith('the review receipt ') for w in wrong)
+    if task.get('review_matched') is False and not named:
+        line += ' The review receipt the acceptance names is not a kept, consumed ACCEPT of that candidate either.'
+    elif whole and task.get('review_matched'):
+        line += ' ' + whole[-1][:1].upper() + whole[-1][1:] + ' is intact and in the consumed ledger.'
+    return line[:1].lower() + line[1:]
+
+
 def task_words(task, headless=False, policy=None):
     """`policy` is the kept grant's review policy: with a reviewer seat in it the
     reviews are the host's and are worded as that."""
@@ -940,18 +1043,20 @@ def task_words(task, headless=False, policy=None):
                      'consumed ledger. Nothing here shows it was pushed or merged.')
     elif recorded and host_reviews:
         lines.append('- Result: the task is recorded as accepted at ' + target_words(task.get('candidate'))
-                     + ', but the review receipt kept in the shift does not back it: a build or review receipt is '
-                     "missing, changed, not in the consumed ledger, or is not the host's ACCEPT of that candidate. "
-                     'Treat it as not accepted until someone has looked.')
+                     + ', but the kept evidence does not back it: '
+                     + (unbacked_words(task) or 'a build or review receipt is missing, changed, not in the consumed '
+                        "ledger, or is not the host's ACCEPT of that candidate.")
+                     + ' Treat it as not accepted until someone has looked.')
     elif accepted:
         lines.append('- Result: the driver recorded acceptance of ' + target_words(task.get('candidate'))
                      + ', and the consumed review kept in the shift is an ACCEPT for exactly that candidate. '
                      'This is local acceptance; nothing here shows it was pushed or merged.')
     elif recorded:
         lines.append('- Result: the driver recorded acceptance of ' + target_words(task.get('candidate'))
-                     + ', but the review kept in the shift does not back it: a build or review receipt is missing, '
-                     'changed, not in the consumed ledger, or is not an ACCEPT of that candidate. Treat it as not '
-                     'accepted until someone has looked.')
+                     + ', but the kept evidence does not back it: '
+                     + (unbacked_words(task) or 'a build or review receipt is missing, changed, not in the consumed '
+                        'ledger, or is not an ACCEPT of that candidate.')
+                     + ' Treat it as not accepted until someone has looked.')
     else:
         lines.append('- Result: not accepted (' + plain(task.get('acceptance')) + '). It stopped at: '
                      + STAGE_WORDS.get(stage, plain(stage)) + '.')

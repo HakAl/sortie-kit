@@ -299,8 +299,9 @@ class ReportTests(LocalTest):
         (self.shift/'receipts/review.json').unlink()
         text=self.text()
         self.assertIn('### task (defect): acceptance recorded, not backed by the kept evidence',text)
-        self.assertIn('- Result: the driver recorded acceptance of commit '+'a'*40+', but the review kept in the shift '
-                      'does not back it',text)
+        self.assertIn('- Result: the driver recorded acceptance of commit '+'a'*40+', but the kept evidence does not back '
+                      'it: the review receipt receipts/review.json is missing, changed, could not be read or was too large '
+                      'to repeat.',text)
         self.assertIn('review of the candidate, round 0: details unavailable',text)
         self.assertNotIn('no findings',text)
         self.assertIn('- Tasks: 0 accepted locally of 1 briefed; 1 more recorded as accepted without backing evidence; whether '
@@ -730,6 +731,166 @@ class ReportTests(LocalTest):
             (self.shift/path).write_bytes(before)
         self.entries.clear();self.store();doc=self.generate()
         self.assertIn('uncorroborated',doc['tasks'][0]['acceptance'])
+
+    def two_checks(self):
+        """The build receipt of the fixture with a second check, as a real one has."""
+        value = decode((self.shift / 'receipts/build.json').read_bytes())
+        check = copy.deepcopy(value['data']['checks'][0])
+        check.update(command='node test/second.mjs', output=self.artifact('logs/second.txt', 'second pass'))
+        value['data']['checks'].append(check)
+        raw = receipts.encoded(value); (self.shift / 'receipts/build.json').write_bytes(raw)
+        self.task['receipts'][0]['sha256'] = self.entries[0]['sha256'] = receipts.digest(raw)
+        self.store()
+        return [c['output'] for c in value['data']['checks']]
+
+    def test_check_output_written_over_later_is_read_from_the_hosts_copy(self):
+        outputs = self.two_checks()
+        (self.shift / 'receipts/.kept').mkdir(mode=0o700)
+        for ref in outputs:  # what the host keeps when it consumes the receipt
+            (self.shift / receipts.kept_path(ref['sha256'])).write_bytes((self.shift / ref['path']).read_bytes())
+        for ref in outputs:  # a later task's builder turn reuses the names
+            (self.shift / ref['path']).write_text("another task's output")
+        doc = self.generate(); task = doc['tasks'][0]; text = (self.shift / 'report.md').read_text()
+        self.assertEqual((doc['status'], doc['issues']), ('evidence summarized', []))
+        self.assertEqual(task['acceptance'], report.ACCEPTED)
+        build = task['receipts'][0]
+        self.assertEqual((build['integrity'], build['changed']), ('matched', []))
+        self.assertEqual(build['kept'], [dict(path=r['path'], kept=receipts.kept_path(r['sha256'])) for r in outputs])
+        for ref in outputs:
+            self.assertIn(ref['path'] + ' was written over or removed after the host took this receipt; the host\'s '
+                          'copy from then is ' + receipts.kept_path(ref['sha256']), text)
+            self.assertIn(receipts.kept_path(ref['sha256']), {i['path'] for i in doc['inputs']})
+        # A copy that does not have the sum it is named by backs nothing.
+        (self.shift / receipts.kept_path(outputs[0]['sha256'])).write_bytes(b'not those bytes')
+        doc = self.generate(); build = doc['tasks'][0]['receipts'][0]
+        self.assertEqual((build['integrity'], build['changed'], [k['path'] for k in build['kept']]),
+                         ('damaged', [outputs[0]['path']], [outputs[1]['path']]))
+        self.assertEqual(doc['tasks'][0]['acceptance'], report.UNBACKED)
+
+    def test_an_unbacked_acceptance_names_the_receipt_and_marks_every_file_that_changed(self):
+        outputs = self.two_checks()
+        for ref in outputs:  # a shift from before the host kept copies
+            (self.shift / ref['path']).write_text("another task's output")
+        doc = self.generate(); task = doc['tasks'][0]; text = (self.shift / 'report.md').read_text()
+        self.assertEqual(task['acceptance'], report.UNBACKED)
+        self.assertEqual(task['receipts'][0]['changed'], [r['path'] for r in outputs])
+        self.assertEqual(task['receipts'][1]['changed'], [])
+        result = next(line for line in text.splitlines() if line.startswith('- Result: '))
+        self.assertIn('the build receipt receipts/build.json names 2 files that are missing or no longer the bytes '
+                      'it gives (logs/tests.txt, logs/second.txt)', result)
+        self.assertNotIn('the review receipt kept in the shift does not back it', text)
+        self.assertNotIn('the review kept in the shift does not back it', text)
+        self.assertIn('The review receipt receipts/review.json is intact', result)
+        marked = [line for line in text.splitlines() if 'Problem: logs/' in line]
+        self.assertEqual(len(marked), 2, marked)
+        self.assertIn('python -m unittest', marked[0]); self.assertIn('node test/second.mjs', marked[1])
+        for line, ref in zip(marked, outputs):
+            self.assertIn('**Problem: ' + ref['path'] + ' is missing or no longer the bytes the receipt gives.**', line)
+        # The same words where the reviews are the host's.
+        hosted = report.task_words(task, True, dict(review_choice='given'))
+        self.assertIn('the build receipt receipts/build.json names 2 files', hosted[2])
+        self.assertNotIn('the review receipt kept in the shift does not back it', hosted[2])
+
+    def test_an_unbacked_acceptance_does_not_call_a_review_whole_that_is_not_the_accept_of_the_candidate(self):
+        outputs = self.two_checks()
+        for ref in outputs:
+            (self.shift / ref['path']).write_text("another task's output")
+        doc = self.generate(); task = doc['tasks'][0]
+        self.assertIs(task['review_matched'], True)  # the review is the ACCEPT of the candidate; the build's files changed
+        self.assertIn(dict(path=task['id'], reason='recorded acceptance is not backed by intact consumed build and '
+                           'review evidence of its round'), doc['issues'])
+        # Now the candidate is another commit than the one the kept review read.
+        self.task['candidate'] = dict(kind='commit', commit='b' * 40)
+        self.task['accepted']['candidate'] = self.task['candidate']; self.store()
+        doc = self.generate(); task = doc['tasks'][0]; text = (self.shift / 'report.md').read_text()
+        self.assertEqual(task['acceptance'], report.UNBACKED)
+        self.assertIs(task['review_matched'], False)
+        result = next(line for line in text.splitlines() if line.startswith('- Result: '))
+        self.assertIn('the build receipt receipts/build.json names 2 files', result)
+        self.assertNotIn('is intact and in the consumed ledger', result)
+        self.assertIn('The review receipt the acceptance names is not a kept, consumed ACCEPT of that candidate '
+                      'either.', result)
+
+    def keep_copies(self, outputs):
+        (self.shift / 'receipts/.kept').mkdir(mode=0o700)
+        for ref in outputs:
+            (self.shift / receipts.kept_path(ref['sha256'])).write_bytes((self.shift / ref['path']).read_bytes())
+
+    def test_a_path_that_could_not_be_read_is_not_said_to_be_written_over_and_a_bad_copy_is_listed(self):
+        outputs = self.two_checks(); self.keep_copies(outputs)
+        first, second = outputs
+        # The second path cannot be read at all: nothing was seen of its bytes.
+        (self.shift / second['path']).unlink(); (self.shift / second['path']).mkdir()
+        doc = self.generate(); build = doc['tasks'][0]['receipts'][0]; text = (self.shift / 'report.md').read_text()
+        self.assertEqual((build['integrity'], build['kept'], build['changed']), ('damaged', [], []))
+        self.assertIn(second['path'], {i['path'] for i in doc['issues']})
+        self.assertNotIn('was written over or removed', text)
+        self.assertNotIn(second['path'] + ' is missing or no longer the bytes', text)
+        self.assertEqual(doc['tasks'][0]['acceptance'], report.UNBACKED)
+        (self.shift / second['path']).rmdir(); (self.shift / second['path']).write_text('second pass')
+        # The first path was written over and the host's copy of it does not hold its sum: both are listed.
+        (self.shift / first['path']).write_text("another task's output")
+        (self.shift / receipts.kept_path(first['sha256'])).write_bytes(b'not those bytes')
+        doc = self.generate(); places = {i['path'] for i in doc['issues']}
+        self.assertIn(first['path'], places); self.assertIn(receipts.kept_path(first['sha256']), places)
+        self.assertEqual(doc['tasks'][0]['receipts'][0]['changed'], [first['path']])
+
+    def test_a_file_too_large_to_be_the_one_the_receipt_names_is_read_from_the_hosts_copy(self):
+        outputs = self.two_checks(); self.keep_copies(outputs)
+        first, second = outputs
+        with patch.object(receipts, 'ARTIFACT_LIMIT', 4096):
+            # A regular file larger than any a receipt may name: its size alone says it is other bytes.
+            (self.shift / first['path']).write_bytes(b'x' * 4097)
+            doc = self.generate(); build = doc['tasks'][0]['receipts'][0]
+            self.assertEqual((doc['issues'], build['integrity'], [k['path'] for k in build['kept']], build['changed']),
+                             ([], 'matched', [first['path']], []))
+            self.assertEqual(doc['tasks'][0]['acceptance'], report.ACCEPTED)
+            self.assertNotIn(first['path'], {i['path'] for i in doc['inputs']})  # and it was not read
+            # With no copy it is listed as changed, with the reason.
+            (self.shift / receipts.kept_path(first['sha256'])).unlink()
+            doc = self.generate(); build = doc['tasks'][0]['receipts'][0]
+            self.assertEqual((build['integrity'], build['changed']), ('damaged', [first['path']]))
+            self.assertIn(first['path'], {i['path'] for i in doc['issues']})
+
+    def test_a_check_whose_output_has_a_long_path_is_marked_too(self):
+        value = decode((self.shift / 'receipts/build.json').read_bytes())
+        long = 'logs/' + 'd' * 200 + '/' + 'e' * 200 + '.txt'
+        self.assertGreater(len(long), 300)
+        value['data']['checks'][0]['output'] = self.artifact(long, 'reported pass')
+        raw = receipts.encoded(value); (self.shift / 'receipts/build.json').write_bytes(raw)
+        self.task['receipts'][0]['sha256'] = self.entries[0]['sha256'] = receipts.digest(raw); self.store()
+        (self.shift / long).write_text("another task's output")
+        doc = self.generate(); text = (self.shift / 'report.md').read_text()
+        self.assertEqual(doc['tasks'][0]['receipts'][0]['changed'], [long])
+        marked = [line for line in text.splitlines() if 'Problem: logs/' in line]
+        self.assertEqual(len(marked), 1, marked); self.assertIn('python -m unittest', marked[0])
+
+    def test_a_kept_copy_under_a_returned_review_does_not_hide_the_round_that_followed(self):
+        run = dict(status='complete', exit_status=0, tool='review-tool', model='m')
+        ref = lambda round, status: dict(stage='review', round=round, status=status, path='receipts/r%d.json' % round)
+        first = dict(reference=ref(0, 'blocked'), integrity='matched', consumed=False, changed=[],
+                     kept=[dict(path='briefs/task.md', kept=receipts.kept_path('a' * 64))],
+                     data=dict(verdict='CHANGES', target=dict(kind='commit', commit='a' * 40), invocations=[run],
+                               findings=[dict(id='F1', disposition='open', reason='fix it')]))
+        later = dict(reference=ref(1, 'satisfied'), integrity='matched', consumed=True, changed=[], kept=[], data={})
+        self.assertIsNotNone(report.asked_for_changes(first))
+        words = report.receipt_words(first, [first, later])
+        self.assertIn('Round 1 followed', words)
+        # A receipt with no entry that satisfied its phase: when the copy was made is not known here.
+        self.assertNotIn('after the host took this receipt', words)
+        self.assertNotIn('another receipt', words)
+        self.assertIn('briefs/task.md does not hold the bytes the receipt gives; the host holds those bytes as '
+                      + receipts.kept_path('a' * 64) + '.', words)
+        taken = dict(later, kept=first['kept'])
+        self.assertIn('after the host took this receipt', report.receipt_words(taken, [first, taken]))
+
+    def test_a_review_receipt_that_is_itself_gone_is_named_once(self):
+        (self.shift / 'receipts/review.json').unlink()
+        text = self.text()
+        result = next(line for line in text.splitlines() if line.startswith('- Result: '))
+        self.assertIn('the review receipt receipts/review.json is missing, changed, could not be read or was too '
+                      'large to repeat.', result)
+        self.assertNotIn('either', result)
 
     def test_stale_review_has_both_candidate_and_exact_reviewed_target(self):
         self.task['candidate']=dict(kind='commit',commit='b'*40)

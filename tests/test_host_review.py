@@ -872,6 +872,27 @@ class HostReviewReportTests(test_lifecycle.LifecycleFixture):
                 doc = report.finalize(self.shift, 3)
                 self.assertEqual(doc["tasks"][0]["acceptance"], report.UNBACKED, doc["issues"])
 
+    def test_check_output_written_over_after_the_build_was_consumed_still_backs_the_acceptance(self):
+        # As a later builder turn did on a real shift: it gave its test log the name an
+        # earlier, accepted task's build receipt had hashed.
+        from sortie_kit import receipts, report
+        self.reach_review()
+        state = self.end_review()
+        self.action("close")
+        build = next(r for r in state["tasks"]["task"]["receipts"] if r["stage"] == "build")
+        outputs = [c["output"] for c in decode((self.shift / build["path"]).read_bytes())["data"]["checks"]]
+        self.assertTrue(outputs)
+        for ref in outputs:
+            self.assertEqual(receipts.digest((self.shift / receipts.kept_path(ref["sha256"])).read_bytes()), ref["sha256"])
+            (self.shift / ref["path"]).write_text("the output of another task's run\n")
+        text, doc = self.report()
+        self.assertEqual((doc["tasks"][0]["acceptance"], doc["issues"], doc["status"]),
+                         (report.ACCEPTED, [], "evidence summarized"))
+        self.assertIn("- Tasks: 1 accepted locally of 1 briefed", text)
+        for ref in outputs:
+            self.assertIn(ref["path"] + " was written over or removed after the host took this receipt; the host's "
+                          "copy from then is " + receipts.kept_path(ref["sha256"]), text)
+
     def test_a_review_receipt_that_changed_after_the_host_wrote_it_backs_no_acceptance(self):
         from sortie_kit import report
         self.reach_review()
@@ -882,7 +903,8 @@ class HostReviewReportTests(test_lifecycle.LifecycleFixture):
         text, doc = self.report()
         self.assertEqual(doc["tasks"][0]["acceptance"], report.UNBACKED)
         self.assertIn("acceptance recorded, not backed by the kept evidence", text)
-        self.assertIn("the review receipt kept in the shift does not back it", text)
+        self.assertIn("but the kept evidence does not back it: the review receipt "
+                      + state["last_review"]["receipt"]["path"] + " is missing, changed, could not be read or was too large to repeat.", text)
 
 
 class OpenFindingsTests(test_lifecycle.LifecycleFixture):

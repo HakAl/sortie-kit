@@ -97,6 +97,10 @@ what your own configuration allows: the failing case on the baseline, the
 passing case on the candidate. Run each in a
 checkout of the named commit under the shift's `scratch/`, and retain the exact
 argv, exit status and output of every run under the shift, failures included.
+Give each output file a name of this request's own, such as
+`logs/REQUEST_ID-tests.txt`: a name an earlier request used holds that
+request's evidence, and writing over it leaves its receipt pointing at your
+output.
 Choose only local checks, never commands for remote actions. The host runs no
 commands for you in this shift: `TOOLKIT queue-check` is answered `blocked` and
 nothing executes, so do not wait on it. If a check needs a permission you do

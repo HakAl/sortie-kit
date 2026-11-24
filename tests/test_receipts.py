@@ -405,6 +405,107 @@ class ReceiptTests(LocalTest):
         self.assertTrue(self.validate(value, expected, record=True)["recorded"])
         self.assertEqual(len(decode((self.shift / "receipts/.consumed.json").read_bytes())["entries"]), 2)
 
+    def kept(self, ref):
+        return self.shift / receipts.kept_path(ref["sha256"])
+
+    def test_consuming_a_receipt_keeps_the_hosts_own_copy_of_every_file_it_names(self):
+        value, expected = self.case("build")
+        first = value["data"]["checks"][0]["output"]
+        self.validate(value, expected)  # a check that records nothing keeps nothing
+        self.assertFalse((self.shift / "receipts/.kept").exists())
+        self.assertTrue(self.validate(value, expected, record=True)["recorded"])
+        for ref in (first, value["brief"]):
+            self.assertEqual(receipts.digest(self.kept(ref).read_bytes()), ref["sha256"])
+        self.assertEqual(self.kept(first).read_bytes(), b"fixture evidence\n")
+        # A later task's build writes its check output over the same name, as a builder may.
+        later, context = self.case("build")
+        for obj in (later, context):
+            obj.update(task_id="second", request_id="second-build")
+        later["receipt_id"] = "build-second"
+        second = later["data"]["checks"][0]["output"] = self.artifact("logs/tests.txt", "the second task's output\n")
+        self.assertEqual(second["path"], first["path"])
+        self.assertTrue(self.validate(later, context, record=True)["recorded"])
+        self.assertEqual(self.kept(first).read_bytes(), b"fixture evidence\n")
+        self.assertEqual(self.kept(second).read_bytes(), b"the second task's output\n")
+        # The look at receipts/ around a builder turn does not count the host's copies.
+        from sortie_kit import lifecycle
+        with receipts.session(self.shift, 5) as view:
+            self.assertEqual(sorted(lifecycle.receipt_marks(view)), ["build-second.json", value["receipt_id"] + ".json"])
+        info = (self.shift / "receipts/.kept").stat()
+        self.assertEqual(info.st_mode & 0o777, 0o700)
+
+    def test_a_receipt_whose_copies_cannot_be_kept_is_not_consumed(self):
+        value, expected = self.case("build")
+        real = receipts.Evidence.atomic
+        def atomic(view, path, raw, **kw):
+            if path.startswith("receipts/.kept/"):
+                raise OSError("no room")
+            return real(view, path, raw, **kw)
+        with patch.object(receipts.Evidence, "atomic", atomic):
+            with self.assertRaises(Refused):
+                self.validate(value, expected, record=True)
+        self.assertFalse((self.shift / "receipts/.consumed.json").exists())
+        self.assertTrue(self.validate(value, expected, record=True)["recorded"])  # and can be taken once it can
+
+    def test_a_copy_that_is_already_there_is_checked_and_never_replaced(self):
+        value, expected = self.case("build")
+        ref = value["data"]["checks"][0]["output"]
+        (self.shift / "receipts/.kept").mkdir(mode=0o700)
+        self.kept(ref).write_bytes(b"not those bytes")
+        with self.assertRaisesRegex(Refused, "kept copy"):
+            self.validate(value, expected, record=True)
+        self.assertEqual(self.kept(ref).read_bytes(), b"not those bytes")
+        self.assertFalse((self.shift / "receipts/.consumed.json").exists())
+
+    def test_a_copy_that_is_already_there_is_not_written_again_nor_counted_as_evidence_read(self):
+        big = "x" * 200_000 + "\n"
+        value, expected = self.case("build")
+        value["data"]["checks"][0]["output"] = self.artifact("logs/tests.txt", big)
+        self.assertTrue(self.validate(value, expected, record=True)["recorded"])
+        # A second task's receipt names the same bytes: the same brief and the same output.
+        later, context = self.case("build")
+        for obj in (later, context):
+            obj.update(task_id="second", request_id="second-build")
+        later["receipt_id"] = "build-second"
+        ref = later["data"]["checks"][0]["output"] = self.artifact("logs/tests.txt", big)
+        totals, written = [], []
+        read, atomic = receipts.Evidence.read, receipts.Evidence.atomic
+        def reading(view, *args, **kw):
+            try:
+                return read(view, *args, **kw)
+            finally:
+                totals.append(view.total)
+        def writing(view, path, raw, **kw):
+            written.append(path)
+            return atomic(view, path, raw, **kw)
+        with patch.object(receipts.Evidence, "read", reading):
+            self.validate(later, context)  # records nothing: what the check alone reads
+        once = max(totals)
+        self.assertGreater(once, len(big))
+        # Room for the check and the ledger, and not for the kept copy a second time.
+        with patch.object(receipts, "TOTAL_LIMIT", once + 65536), patch.object(receipts.Evidence, "atomic", writing):
+            self.assertTrue(self.validate(later, context, record=True)["recorded"])
+        self.assertEqual([p for p in written if p.startswith("receipts/.kept/")], [])
+        self.assertEqual(self.kept(ref).read_bytes(), big.encode())
+
+    def test_a_review_receipt_of_the_hosts_gets_copies_too(self):
+        # The host names a review's output files itself, but under logs/, where a builder writes.
+        value, expected = self.case("review")
+        self.assertTrue(self.validate(value, expected, record=True)["recorded"])
+        named = list(receipts.references(value))
+        self.assertGreater(len(named), 1)
+        for ref in named:
+            self.assertEqual(receipts.digest(self.kept(ref).read_bytes()), ref["sha256"])
+
+    def test_a_copy_that_has_another_name_is_refused(self):
+        value, expected = self.case("build")
+        ref = value["data"]["checks"][0]["output"]
+        (self.shift / "receipts/.kept").mkdir(mode=0o700)
+        os.link(self.shift / ref["path"], self.kept(ref))  # the right bytes, and still writable through logs/
+        with self.assertRaisesRegex(Refused, "kept copy"):
+            self.validate(value, expected, record=True)
+        self.assertFalse((self.shift / "receipts/.consumed.json").exists())
+
     def test_unrecorded_checks_never_satisfy_then_record_and_replay(self):
         for phase in receipts.PHASES:
             with self.subTest(phase=phase):

@@ -193,8 +193,34 @@ identity-bound receipts, consumed-ledger entries and a matching completed
 ACCEPT review of the recorded candidate. Current-round build/review evidence
 must remain intact. This is a local evidence check, not code-quality review or
 independent proof of execution. Historical rejected reviews remain visible.
-Changed/missing files and stale reviews leave uncertainty and blockers. A
-reported seat stop is attributed to its retained receipt; toolkit finalization
+Changed/missing files and stale reviews leave uncertainty and blockers.
+
+A file a receipt names is read at its path first. When it is gone from there,
+or holds other bytes, the host's own copy from when it recorded the receipt
+(`receipts/.kept/SHA256`, see [receipts](receipts.md)) is read, and if that
+holds the bytes the receipt gives, the receipt is intact: its entry in
+`report.json` lists the path under `kept`, and `report.md` says under a
+receipt the builder wrote that the path was written over or removed and where
+the copy is (under a review receipt of the host's it does not; `report.json`
+has the list). The copy is looked for only when the path is gone or holds
+other bytes: a path that could not be read at all, for a limit of the report
+or because it is no regular file, is listed as a problem and is neither
+called changed nor read from a copy. A regular file larger than any file a
+receipt may name (16 MiB) is not read either, but its size says it is other
+bytes, so the copy is looked for. A copy that is there and does not hold
+its sum is listed as a problem under its own name. With
+no such copy, as in a shift from before the host kept them, the path is listed
+under `changed` and as a problem, each check whose output it was is marked on
+its own line, and the Result of a task whose acceptance this leaves unbacked
+names the receipt that fails. `kept` and `changed` are lists in every receipt
+entry, empty when there is nothing to list. A task with a recorded acceptance
+has `review_matched`: whether the review receipt the acceptance names is,
+kept and consumed, the ACCEPT of the candidate. The Result calls a review
+receipt intact only when this is true, and says so when it is not. A path read
+from the host's copy is read twice, at its path and at the copy, and both count
+against the limits on what the report reads.
+
+A reported seat stop is attributed to its retained receipt; toolkit finalization
 alone does not prove any developer-owned seat stopped, nor that the finalizer
 itself has exited.
 
