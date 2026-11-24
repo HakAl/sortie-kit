@@ -12,9 +12,9 @@ back. A 20 minute shift has run out during such a round with the task not
 accepted. Set `SORTIE_KIT` to your
 checkout of this repository first. The model IDs are the ones this pairing
 was run with; use the IDs your own `claude` and `codex` accept. If you
-already have the signing key and the trust file, leave out the `ssh-keygen`
-and `sortie trust init` lines: neither overwrites what is there, and `trust
-init` says so and stops.
+already have the signing key and the trust file, `sortie setup` changes
+nothing and says so. It is the one line here that needs you at the terminal
+before the start does: `ssh-keygen` asks for the new key's passphrase.
 The two `git config` lines give the disposable repository an example-only
 identity for its commits; they touch no other repository and not your own
 Git configuration.
@@ -34,10 +34,7 @@ printf 'print("hello")\n' > repo/hello.py
 git -C repo add hello.py
 git -C repo commit -m "Start"
 
-mkdir -p "$HOME/.config/sortie-kit"
-chmod 700 "$HOME/.config/sortie-kit"
-ssh-keygen -t ed25519 -C sortie-kit -f "$HOME/.config/sortie-kit/signing-key"
-venv/bin/sortie trust init
+venv/bin/sortie setup
 
 printf '%s\n' 'Add a --version option to hello.py that prints hello 0.1.0 and exits 0.' \
   'Add a standard-library unittest for it. Make one local commit.' > direction.md

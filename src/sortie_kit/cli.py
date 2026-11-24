@@ -66,12 +66,16 @@ def seat_choices(args):
         ("--trust FILE (sortie trust init writes one; none at " + safe(trust_init.default_trust()) + ")", args.trust),
         ("--key FILE (your encrypted signing key; none at " + safe(trust_init.default_key()) + ")", args.key))
         if value is None]
+    # Nothing at the usual place and no flag for either: the one command that makes both.
+    hint = ("run sortie setup once in your own terminal to make the key and the trust file"
+            if len(lacking) == 2 and not any(os.path.lexists(usual) for usual in
+                                             (trust_init.default_trust(), trust_init.default_key())) else "")
     repo = args.repo.resolve()
     try:
         result = guided.complete(given, repo)
     except guided.Missing as missing:
         if lacking:
-            raise guided.Missing(lacking + missing.names) from None
+            raise guided.Missing(lacking + missing.names, hint) from None
         try:
             fd = signing.terminal()
         except (OSError, ValueError) as exc:
@@ -87,7 +91,7 @@ def seat_choices(args):
         finally:
             os.close(fd)
     if lacking:
-        raise guided.Missing(lacking)
+        raise guided.Missing(lacking, hint)
     return result
 
 
@@ -146,6 +150,8 @@ def main(argv=None):
     waiting.add_argument("--shift", type=Path, required=True)
     waiting.add_argument("--for", dest="seconds", type=finite, default=540.0,
                          help="longest wait; at most 540s and never past the signed deadline")
+    subs.add_parser("setup", help="once, in your own terminal: make the signing key (ssh-keygen asks for its "
+                                  "passphrase) and the trust file that sortie start looks for")
     trusting = subs.add_parser("trust", help="set up the trust file that names your signing key")
     trusting_subs = trusting.add_subparsers(dest="trust_command", required=True)
     trust_new = trusting_subs.add_parser("init", help="write the trust file from your public key; signs nothing")
@@ -225,6 +231,18 @@ def main(argv=None):
         except (OSError, ValueError) as exc:
             print(json.dumps({"status": "refused", "detail": str(exc)}))
             return 3
+    if args.command == "setup":
+        from . import setup
+        try:
+            lines = setup.run()
+        except (OSError, ValueError) as exc:
+            print("sortie: refused: " + safe(exc), file=sys.stderr)
+            return 3
+        except KeyboardInterrupt:
+            print("sortie: interrupted", file=sys.stderr)
+            return 130
+        print("\n".join(safe(line) for line in lines))
+        return 0
     if args.command == "trust":
         from . import trust_init
         try:

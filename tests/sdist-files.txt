@@ -65,6 +65,7 @@ src/sortie_kit/report.py
 src/sortie_kit/report_metrics.py
 src/sortie_kit/review.py
 src/sortie_kit/review_dir.py
+src/sortie_kit/setup.py
 src/sortie_kit/shift_wait.py
 src/sortie_kit/signing.py
 src/sortie_kit/tick_supervise.py
@@ -99,6 +100,7 @@ tests/test_review_dir.py
 tests/test_review_regressions.py
 tests/test_reviewer_seat.py
 tests/test_run4.py
+tests/test_setup.py
 tests/test_shift_wait.py
 tests/test_start_live.py
 tests/test_supervisor_signals.py

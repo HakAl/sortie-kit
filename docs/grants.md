@@ -11,8 +11,97 @@ no pane. Existing signed grants are never rewritten.
 ## Developer setup, in your own terminal
 
 Install sortie-kit and OpenSSH outside the target checkout, in locations your
-seats cannot modify. Create an ordinary encrypted SSH key and protected trust
-configuration outside every agent-writable workspace. For example:
+seats cannot modify. A shift needs an ordinary encrypted SSH key and a
+protected trust configuration outside every agent-writable workspace. One
+command makes both:
+
+```sh
+sortie setup
+```
+
+It takes no options and does this, in order:
+
+- It refuses unless its input and output are your terminal, by the check
+  `sortie start` makes before it signs. It is for a person, not for an agent.
+- It finds `ssh-keygen` on your `PATH` once. That program makes the key, and
+  the trust file names that same program. The command notes which file that
+  is and what its bytes are, and looks again when `ssh-keygen` has ended and
+  once more before the trust file gets its name. If the file at that path
+  has changed meanwhile, is gone or can no longer be run, as a package
+  update can do, it refuses and writes no trust file. Seen at the first
+  look, a key just made stays in that run's own directory and gets no name.
+  Seen at the second, the new key pair has its names already and stays;
+  running the command again writes the trust file with the program that is
+  there then.
+- It makes `~/.config/sortie-kit`, open to you alone (mode 700), when it is
+  not there. The mode of a directory is judged and never set, one made a
+  moment ago included. One that others can write to is refused, since
+  whoever can write there can put another key or trust file in place of
+  yours; the refusal gives the `chmod` to run. One that others can only read
+  is used, and the command says so: the key and the trust file are files of
+  your own alone, and those are what `sortie start` checks. A directory
+  reached through a link is refused.
+- It holds that directory open from the check to the end. What the command
+  itself reads, links and writes is in the directory it checked, whatever
+  the path leads to meanwhile. If the path stops leading to that directory
+  while the command runs, a link put anywhere in the path included, it
+  refuses, gives no name in what took its place, and says what it had made
+  by then. `ssh-keygen` is another program and is given a path: if the path
+  led elsewhere while it ran, it may have written there, and the refusal
+  names the path to look at.
+- It starts `ssh-keygen -t ed25519 -C sortie-kit -f FILE` with your terminal
+  as its input and output and with echo turned off, as at signing.
+  `ssh-keygen` asks for the passphrase and reads it itself. sortie-kit never
+  reads, passes, stores or makes a passphrase: there is no option for one,
+  no pipe, no helper program and no inherited environment. `FILE` is in a
+  new directory of that run's own, `~/.config/sortie-kit/.setup-...`, which
+  is the path `ssh-keygen` prints.
+- It looks at the outside of the new key, as `sortie start` does before it
+  signs, without decrypting anything. A key made with an empty passphrase is
+  one that `sortie start` refuses to sign with. Such a key is removed, since
+  the command made it a moment ago and it is of no use, and the command says
+  so: run it again and type a passphrase at both prompts.
+- It gives the key and its public key their names, `signing-key` and
+  `signing-key.pub`, by links, which fail when something is already at a
+  name. It looks at both names first and gives neither when one is taken.
+  It never takes a name back: if the second name is taken between the two
+  links, the first stays, the command says so, and the whole pair is still
+  in that run's own directory. When both have their names it removes the
+  second names in its own directory and then that directory, which is empty.
+- It writes `~/.config/sortie-kit/trust.json`, as `sortie trust init` does,
+  from the public key it has just read. If the trust file cannot be written
+  after a new key was made, the refusal says where the key is; running the
+  command again writes the trust file for it.
+- Before it says you are ready, and before the trust file gets its name, it
+  checks that the path still leads to the directory it checked and that the
+  two names are still the two files it read. With all three already there,
+  the trust file is held to the same.
+
+A refusal that would give a `chmod` or `ssh-keygen -p` command gives it only
+when the path prints as it is. A path with characters that are shown as
+escapes is not offered as a ready command, as with `sortie trust init`.
+
+Nothing that was already there is replaced, changed or removed:
+
+- With the key pair and the trust file there, it changes nothing and says so.
+- With the key pair there and no trust file, it keeps the key and writes the
+  trust file.
+- In both of those it first holds the key to what `sortie start` requires: a
+  regular file of your own alone, encrypted with a passphrase, the key of the
+  public key beside it. A key that fails is left as it is, and the command
+  refuses and says what to do; for a key with no passphrase that is
+  `ssh-keygen -p -f`. A trust file that is already there is held to what
+  `sortie start` requires of it as well, and to naming that key; one that
+  fails is left as it is and the command refuses.
+- With only one half of the key pair, or a trust file and no key pair, it
+  refuses and changes nothing.
+- If `ssh-keygen` fails or you interrupt it, no key and no trust file are
+  made. A file it left stays in that run's `.setup-...` directory and is
+  named, for you to remove; a later run is not held up by it.
+
+### By hand
+
+The same with your own commands, or for a key somewhere else:
 
 ```sh
 mkdir -p "$HOME/.config/sortie-kit"

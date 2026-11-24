@@ -718,7 +718,15 @@ class LauncherTests(LocalTest):
                     patch("sortie_kit.signing.terminal", side_effect=AssertionError("no terminal")):
                 self.assertEqual(cli.main(args + extra), 2)
                 self.assertIn(message, err.getvalue())
+        # Neither a key nor a trust file at the usual place: the refusal names the one command.
+        self.assertIn("run sortie setup once in your own terminal", err.getvalue())
         self.assertFalse((self.target / ".sortie").exists())
+        # A person with a key of their own somewhere else is not sent to it.
+        with contextlib.redirect_stderr(io.StringIO()) as err, \
+                patch("sortie_kit.signing.terminal", side_effect=AssertionError("no terminal")):
+            self.assertEqual(cli.main(args + both + ["--key", str(self.root / "k")]), 2)
+        self.assertIn("missing: --trust FILE", err.getvalue())
+        self.assertNotIn("sortie setup once", err.getvalue())
 
     def test_cli_says_so_when_the_shift_ended_without_a_report(self):
         import hashlib

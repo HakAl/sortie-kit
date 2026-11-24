@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,9 +44,10 @@ else:
     archive = subprocess.run(["git", "-C", str(root), "archive", "HEAD"], check=True, capture_output=True, timeout=60,
                              env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
     subprocess.run(["tar", "-x", "-C", str(tree)], input=archive.stdout, check=True, timeout=60)
+GRANTS = "docs/grants.md"
 README, WALK, WHO, EXAMPLE, RUNNING, DEVELOPMENT = ("README.md", "docs/walkthrough.md", "docs/who-reviews.md",
                                                       "docs/example.md", "docs/running.md", "docs/development.md")
-pages = {name: (tree / name).read_text() for name in (README, WALK, WHO, EXAMPLE, RUNNING, DEVELOPMENT)}
+pages = {name: (tree / name).read_text() for name in (README, WALK, WHO, EXAMPLE, RUNNING, DEVELOPMENT, GRANTS)}
 readme = pages[README]
 done = []
 
@@ -104,18 +106,27 @@ subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=12
 sh(said("python -m pip install ."), tree, note="fresh venv; run in the exported tree")
 assert Path(sh("command -v sortie", work).stdout.strip()) == venv / "bin/sortie"
 
-# Step 2: the key, with ssh-keygen's own prompts answered in a disposable terminal.
+# Step 2: the key and the trust file by the one command, with ssh-keygen's own prompts
+# answered in a disposable terminal. Without a terminal the command refuses and makes nothing.
 secret = secrets.token_urlsafe(24).encode()  # never a user credential
-sh(said('mkdir -p "$HOME/.config/sortie-kit"'), work)
-sh(said('chmod 700 "$HOME/.config/sortie-kit"'), work)
-tty(said('ssh-keygen -t ed25519 -C sortie-kit -f "$HOME/.config/sortie-kit/signing-key"'), work, secret, prompts=2,
-    note="synthetic passphrase typed at ssh-keygen's two prompts")
-
-# Step 3: the trust file.
-shown = sh(said("sortie trust init"), work).stdout
+refused = sh(said("sortie setup"), work, expected=3, note="no terminal: refused").stderr
+assert "sortie setup is run by a person in their own terminal" in refused, refused
+assert not (home / ".config").exists()
+shown = tty(said("sortie setup"), work, secret, prompts=2, note="synthetic passphrase typed at ssh-keygen's two prompts")
 assert "no --trust or --key flag is needed" in shown, shown
+config = home / ".config/sortie-kit"
+assert stat.S_IMODE(config.stat().st_mode) == 0o700, oct(config.stat().st_mode)
+assert sorted(p.name for p in config.iterdir()) == ["signing-key", "signing-key.pub", "trust.json"]
+assert all(stat.S_IMODE((config / n).stat().st_mode) == 0o600 for n in ("signing-key", "trust.json"))
+kept = {p.name: p.read_bytes() for p in config.iterdir()}
+shown = tty("sortie setup", work, secret, prompts=0, note="a second run changes nothing")
+assert "Nothing was changed" in shown and kept == {p.name: p.read_bytes() for p in config.iterdir()}, shown
+# The by-hand way is on the grants page, as the README says; its lines are not run here.
+for line in ('mkdir -p "$HOME/.config/sortie-kit"', 'chmod 700 "$HOME/.config/sortie-kit"',
+             'ssh-keygen -t ed25519 -C sortie-kit -f "$HOME/.config/sortie-kit/signing-key"', "sortie trust init"):
+    said(line, GRANTS)
 
-# Step 4: a repository and the direction file from the README.
+# Step 3: a repository and the direction file from the README.
 repo.mkdir()
 sh("git init -q .", repo, note="not a README command: the throwaway repository")
 example = readme.split("named `direction.md`:\n\n   ```\n", 1)[1].split("   ```", 1)[0]
@@ -138,7 +149,7 @@ refused = tty("sortie start --repo project --direction direction.md --for 4h " +
 assert "review" in refused and not (repo / ".sortie").exists(), refused
 profile.write_text(json.dumps(whole))
 
-# Step 5: the start as the README gives it, every question answered in the terminal.
+# Step 4: the start as the README gives it, every question answered in the terminal.
 said("sortie start --repo PATH --direction direction.md")
 text = tty("sortie start --repo project --direction direction.md", work, secret, prompts=1, answers=[
     (b"Driver agent:", b"fixture"), (b"Driver model:", b"1"), (b"Builder agent:", b"fixture"),
@@ -170,8 +181,8 @@ for line in ("  Shutdown: confirmed.", "  Tasks: 1 accepted locally of 1 briefed
     said(line, WALK)
 
 # The complete example, line for line as its page has it, with three stated differences:
-# SORTIE_KIT is the exported tree; the key lines were already run above (the page says to
-# leave ssh-keygen out when the key exists; the trust file is removed so trust init runs); the fixture agent stands in for claude and codex.
+# SORTIE_KIT is the exported tree; its sortie setup is run in a disposable terminal, with the key
+# made above kept and the trust file removed so that the command writes it again; the fixture agent stands in for claude and codex.
 assert pages[EXAMPLE].startswith("# A complete example\n") and pages[EXAMPLE].count("```sh\n") == 1
 block = pages[EXAMPLE].split("```sh\n", 1)[1].split("```", 1)[0]
 commands = [c.replace("\\\n", "") for c in block.replace("\\\n", "\\\n\0").replace("\n\0", "\0").split("\n") if c.strip()]
@@ -182,10 +193,12 @@ assert commands[0] == 'SORTIE_KIT="$HOME/dev/sortie-kit"' and commands[-1].start
 assert not any(name.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_")) or name == "EMAIL" for name in env), sorted(env)
 env.update(SORTIE_KIT=str(tree), GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="user.useConfigOnly", GIT_CONFIG_VALUE_0="true")
 try_dir = home / "dev/sortie-try"
-(home / ".config/sortie-kit/trust.json").unlink()  # so that the example's own trust init writes it
+(home / ".config/sortie-kit/trust.json").unlink()  # so that the example's own sortie setup writes it
+assert commands.count("venv/bin/sortie setup") == 1 and not any("ssh-keygen" in c or "trust init" in c for c in commands)
 for command in commands[1:-1]:
-    if command.startswith(("mkdir -p \"$HOME/.config", "chmod 700", "ssh-keygen")):
-        said(command, README)  # the same three lines as step 2 of the README, already run above
+    if command == "venv/bin/sortie setup":
+        shown = tty(command, try_dir, secret, prompts=0, note="complete example; the key is kept, the trust file written")
+        assert "was already there and was kept" in shown and "Trust file written" in shown, shown
         continue
     sh(command, try_dir if try_dir.is_dir() and not command.startswith("mkdir -p \"$HOME/dev") else work,
        note="complete example" + ("; cd is this run's working directory" if command.startswith("cd ") else ""))

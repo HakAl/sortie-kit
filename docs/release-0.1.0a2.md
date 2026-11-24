@@ -17,7 +17,9 @@ shown is listed below so that you can decide what to trust it with.
   `codex` and `agy` are built in, and each can take any seat.
 
 Install from a checkout with `python -m pip install .`. The README's first
-shift takes it from there.
+shift takes it from there. One command, `sortie setup`, run once in your own
+terminal, makes the signing key (`ssh-keygen` asks for its passphrase) and
+the trust file.
 
 ## What real shifts have shown
 

@@ -39,9 +39,9 @@ goes only with a start that runs the shift, not with `--prepare-only` or
 
 ## The key and the trust file
 
-`sortie start` uses the key and trust file from steps 2 and 3 of
+`sortie start` uses the key and trust file from step 2 of
 [your first shift](../README.md#your-first-shift) when they are
-where those steps put them, and says which files it took. `--trust FILE` and
+where that step puts them, and says which files it took. `--trust FILE` and
 `--key FILE` name others. Neither is ever asked for: when one is missing the
 start ends before any question and says so.
 

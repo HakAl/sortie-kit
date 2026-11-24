@@ -41,22 +41,20 @@ next. [Status](#status) says how far it has been tried.
    python -m pip install .
    ```
 
-2. Create a signing key with a passphrase. This is done once. Type the
-   passphrase only at `ssh-keygen`'s own prompt, never into an agent.
+2. Make a signing key with a passphrase, and the trust file that names it.
+   This is done once, in your own terminal:
 
    ```sh
-   mkdir -p "$HOME/.config/sortie-kit"
-   chmod 700 "$HOME/.config/sortie-kit"
-   ssh-keygen -t ed25519 -C sortie-kit -f "$HOME/.config/sortie-kit/signing-key"
+   sortie setup
    ```
 
-3. Write the trust file that names that key. Also once.
+   It starts `ssh-keygen`, which asks for a passphrase for the new key. Type
+   the passphrase only at `ssh-keygen`'s own prompt, never into an agent. The
+   command replaces nothing that is already there;
+   [shift grants](docs/grants.md#developer-setup-in-your-own-terminal) says
+   what it does and how to do the same by hand.
 
-   ```sh
-   sortie trust init
-   ```
-
-4. Write a direction file: plain text that says what you want done in this
+3. Write a direction file: plain text that says what you want done in this
    shift. It can live anywhere; the shift takes a copy. For example, in a file
    named `direction.md`:
 
@@ -65,7 +63,7 @@ next. [Status](#status) says how far it has been tried.
    pyproject.toml and exits 0. Add a test for it.
    ```
 
-5. Start the shift from your own terminal, not from inside an agent:
+4. Start the shift from your own terminal, not from inside an agent:
 
    ```sh
    sortie start --repo PATH --direction direction.md
