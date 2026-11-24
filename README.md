@@ -127,7 +127,7 @@ can do only what your Claude settings allow without asking. Read
 ## Status
 
 An alpha. Every real shift so far was run on macOS by the project's own
-developers, with keys made for testing, and all but two on small practice
+developers, with keys made for testing, and most on small practice
 repositories. No real shift has been run on Linux, with `codex` as the
 driver, or with a key the person uses for anything else; see
 [what real shifts have shown](docs/evidence.md), and what none has.

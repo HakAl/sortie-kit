@@ -22,7 +22,7 @@ shift takes it from there.
 ## What real shifts have shown
 
 Every real shift so far was run on macOS by the project's own developers,
-with keys made for testing, and all but two on small practice repositories.
+with keys made for testing, and most on small practice repositories.
 `docs/evidence.md` says more about each. In short:
 
 - Each of the three built-in review forms has done the reviews of a shift,

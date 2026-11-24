@@ -5,7 +5,7 @@ happened on one. [Development](development.md#where-they-have-been-run) says
 where the tests have been run.
 
 Every real shift so far was run on macOS by the project's own developers,
-with keys made for testing, and all but two on small practice repositories.
+with keys made for testing, and most on small practice repositories.
 They have shown:
 
 - Each of the three built-in review forms doing the reviews of a shift:
