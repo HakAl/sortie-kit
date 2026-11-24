@@ -29,6 +29,8 @@ with keys made for testing, and most on small practice repositories.
   and every review came back in the contract's form.
 - `claude` has driven, with `codex` and with `claude` as the builder. Two
   tasks accepted in one shift, several times.
+- `codex` has driven one shift, on a copy of a real project, with `claude`
+  as the builder and the reviewer named by flag. Four tasks accepted.
 - One long shift on a copy of a real project accepted four tasks. It ran on
   a profile of the developer's own that put `agy` in all three seats, not on
   the built-in profiles.
@@ -66,7 +68,7 @@ And these no test can show, since no test starts a real agent CLI, uses a
 developer's own key or sleeps a machine, and the tests that have run on
 Linux ran on a hosted runner with stand-ins in every seat:
 
-- `codex` as the driver.
+- `codex` as both the driver and the builder of one shift.
 - A shift signed with a key you use for anything else. Make a key for this.
 - A machine put to sleep in the middle of a shift, and the hold against
   idle sleep on a machine that nothing else keeps awake.

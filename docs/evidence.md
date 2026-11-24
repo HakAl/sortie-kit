@@ -17,6 +17,8 @@ They have shown:
 - `claude` driving, with `codex` as the builder and with `claude` as the
   builder; in one of the latter the reviewer was picked from another family
   without a flag. Two tasks accepted in one shift, several times.
+- `codex` driving, in one shift: on a copy of a real project, with `claude`
+  as the builder and the reviewer named by flag, four tasks accepted.
 - One long shift on a copy of a real project: four tasks accepted in 67
   minutes of a 90 minute window, with nine reviews, on a profile of the
   developer's own that put `agy` in all three seats. The built-in `agy`
@@ -64,7 +66,7 @@ show it, since no test starts a real agent CLI, signs with a real key or
 sleeps a machine, and the tests that have run on Linux ran on a hosted runner
 with stand-ins in every seat:
 
-- `codex` as the driver.
+- `codex` as both the driver and the builder of one shift.
 - A shift signed with a key the person uses for anything else. Every key so
   far was made for the test.
 - A machine that is put to sleep in the middle of a shift.
