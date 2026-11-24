@@ -25,6 +25,16 @@ They have shown:
   profile has had the same driver and builder forms since. The logs that
   shift kept of its builder and its reviewer hold the final message of each
   run and nothing else.
+- The built-in `agy` profile driving and building, in one shift: on a
+  practice repository, with a key made for the test and the reviewer picked
+  from another family (`claude`), two tasks accepted. The logs it kept of
+  its builder hold the final message of each turn and nothing else.
+- An agent CLI that replaced its own program after the grant was signed,
+  once: `agy` updated itself seconds after the driver started. The host
+  refused the builder's first turn with `builder agent executable changed
+  after admission`, the driver closed the shift, and the report gave that
+  reason with nothing built. The same command, started and signed again,
+  ran the shift in the entry above.
 - One shift with the developer's review skills switched off in the agent's
   settings for the repository, with `claude` in all three seats, on a copy
   of a real project: four tasks accepted, with eight reviews run by the
@@ -69,8 +79,6 @@ sleeps a machine, and the tests that have run on Linux ran on a hosted runner
 with stand-ins in every seat:
 
 - `codex` as both the driver and the builder of one shift.
-- The built-in `agy` profile as the driver or as the builder. Its forms for
-  those seats are the ones a profile of the developer's own ran on one shift.
 - A shift signed with a key the person uses for anything else. Every key so
   far was made for the test.
 - A machine that is put to sleep in the middle of a shift.

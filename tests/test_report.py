@@ -569,7 +569,11 @@ class ReportTests(LocalTest):
         # A turn that never started is no process; one not seen to end keeps the unknown.
         self.headless([('exit',True),('not started: no such file',False)]); text=self.text()
         self.assertIn('The host started its one turn for this task and saw that process end (turns seen to end: 1 of 1).',text)
+        # No process was started for that turn, so its line says nothing of one left running.
+        self.assertIn('Turn 2: not started: no such file',text)
+        self.assertNotIn('not confirmed stopped',text)
         self.headless([('exit',True),('lost',False)]); text=self.text()
+        self.assertIn('; **its process was not confirmed stopped**. Log: logs/t2.log',text)
         self.assertIn('- Builder stop: the builder ran headless. Turns seen to end: 1 of 2; whether the other stopped is not known.',text)
         self.headless([('exit',True)],running=True); doc=self.generate(); text=(self.shift/'report.md').read_text()
         self.assertIs(doc['tasks'][0]['turn_running'],True)

@@ -30,7 +30,7 @@ steps before it.
   its own first, such as whether you trust the folder. That prompt is the
   CLI's, not the toolkit's. Read it before pressing Enter: its preselected
   answer can be the one that declines and exits (Claude Code's is "No,
-  exit"), and a driver that exits ends the shift. The driver begins once you
+  exit"; the one seen from `agy` was "Yes, I trust this folder"), and a driver that exits ends the shift. The driver begins once you
   accept. The builder
   runs without a window, one turn at a time, when the driver asks for it. The
   reviewer runs without a window too: the host starts it when the builder

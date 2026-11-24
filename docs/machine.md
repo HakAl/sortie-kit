@@ -46,6 +46,13 @@ The built-in `agy` builder gets no permission, mode or sandbox option either.
 It can do whatever your own agy configuration allows without asking, and
 sortie-kit neither reads nor limits that configuration.
 
+## An agent CLI that updates itself
+
+The grant signs the bytes of each agent's program. Once an agent CLI has
+updated itself after you sign, the host refuses the next start of that seat,
+and the shift can do no more work with it. The report gives the reason; see
+[the executable pin](agents.md#executable-pin). Start a newly signed shift.
+
 ## The driver
 
 The driver is an interactive agent in your terminal under your own settings,

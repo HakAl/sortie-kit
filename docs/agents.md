@@ -131,6 +131,18 @@ first and again last among the start's checks. It is not an atomic start of an
 unchangeable file: keep agent programs where seats and other processes cannot
 replace them.
 
+An agent CLI that updates itself is such a replacement. The grant signs the
+bytes of each agent's program, so once a CLI has updated itself after the
+grant is signed, the host refuses the next start of that seat. For a builder
+it refuses each new turn with `builder agent executable changed after
+admission`: the shift builds nothing further, the driver is told why, and
+the report gives the reason once the shift is closed. This has happened once
+on a real shift, with `agy`, before anything was built, and the driver closed
+the shift. A reviewer that changed fails its reviews, which blocks the task,
+and a program that changed before the shift was admitted stops the start with
+a message and no report; neither has been seen on a real shift. The remedy is
+to start a newly signed shift, which pins the program as it then is.
+
 ## What the built-in seats can reach
 
 A builder has to write: receipts and logs in the shift, the source it changes,
@@ -202,7 +214,7 @@ the reviewer; the host does.
   does when its configuration would have it ask. `--builder-network` is
   refused for an `agy` builder, since the profile has no form with the
   network on. With `agy` a builder's or a reviewer's log holds its final
-  message only: that is what the one real shift with `agy` in these seats
+  message only: that is what the real shifts with `agy` in those seats
   kept.
 - **`claude` as builder** runs `claude --print`. Nobody can answer a
   permission prompt there, so anything your Claude settings do not already
@@ -242,9 +254,11 @@ the reviewer; the host does.
   repository's commit and status and the names, sizes and times of the files
   in the shift's `receipts/` are compared before and after each run, and a
   difference fails that run of the review.
-- All three built-in profiles can take any seat. `agy` as the driver and as
-  the builder has been shown on one real shift, through a profile of the
-  developer's own with the same forms as the built-in profile now has.
+- All three built-in profiles can take any seat. The built-in `agy` profile as the
+  driver and as the builder has been shown on one real shift: two tasks
+  accepted on a practice repository, with a key made for the test. A profile
+  of the developer's own with the same forms ran one longer shift before
+  that.
 - `agy` serves models of more than one maker. The built-in profile lists four
   `gemini-4` models in the family `gemini`, the six `claude` models `agy
   models` showed when the profile was written in the family `claude`, and

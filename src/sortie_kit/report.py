@@ -850,7 +850,8 @@ def turn_words(turn):
         line += ', after ' + seconds_words(turn.get('elapsed_seconds'))
     if turn.get('receipts_changed') is not None:
         line += '; the receipts folder ' + ('changed' if turn['receipts_changed'] else 'did not change')
-    if turn.get('reaped') is False:
+    # A turn that did not start is no process, so there is none to confirm stopped.
+    if turn.get('reaped') is False and not str(turn.get('outcome')).startswith('not started'):
         line += '; **its process was not confirmed stopped**'
     return line + '. Log: ' + plain(turn.get('log'))
 

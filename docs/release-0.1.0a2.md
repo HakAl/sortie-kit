@@ -49,6 +49,16 @@ Two shifts were run after that list was written, on this version:
 - With `--builder-network`, Codex's own log said the network was on, and
   the grant, the signing summary and the report all showed the option.
 
+And two more after the built-in `agy` profile could take any seat:
+
+- The built-in `agy` profile drove and built one shift on a practice
+  repository, with a key made for the test and the reviewer picked from
+  another family (`claude`). Two tasks accepted.
+- The attempt before it ended with nothing built: `agy` updated itself
+  seconds after the driver started, the host refused the builder's first
+  turn because its program was no longer the one signed, and the report gave
+  that reason. See the limit on self-updating CLIs below.
+
 ## What no real shift has shown
 
 The host's part in each of these is exercised by fixture tests, on macOS and
@@ -70,7 +80,6 @@ developer's own key or sleeps a machine, and the tests that have run on
 Linux ran on a hosted runner with stand-ins in every seat:
 
 - `codex` as both the driver and the builder of one shift.
-- The built-in `agy` profile as the driver or as the builder.
 - A shift signed with a key you use for anything else. Make a key for this.
 - A machine put to sleep in the middle of a shift, and the hold against
   idle sleep on a machine that nothing else keeps awake.
@@ -93,6 +102,11 @@ Linux ran on a hosted runner with stand-ins in every seat:
   option. It can do whatever your own agy configuration allows without
   asking, and sortie-kit neither reads nor limits that. With `agy` a
   builder's or a reviewer's log holds its final message only.
+- The grant signs the bytes of each agent's program. Once an agent CLI has
+  updated itself after the grant is signed, the host refuses the next start
+  of that seat, the shift can do no more work with it, and the report gives
+  the reason. This happened once, with `agy` as the builder. The remedy is
+  to start a newly signed shift.
 - A family stated with `--family` may not contradict the profile: no
   statement makes a model on the built-in `claude` profile anything but
   `claude`, or one on `codex` anything but `gpt`. For a model that a profile
