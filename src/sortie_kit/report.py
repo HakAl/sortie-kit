@@ -15,19 +15,60 @@ MAX_FILES = 512
 MAX_RECEIPTS = 256
 DIRECTION_SHOWN = 2000  # characters of the direction repeated in the report
 TEXT_SHOWN = 600  # characters of any one retained text in report.md; report.json keeps the rest
-DETAIL_LIMIT = 80_000
+# Bytes of retained detail one report repeats: the direction, the closeout, the driver's
+# list of what was not started, the data of each receipt, the turns, reviews and fields
+# of each task, and each driver command. A real shift of 69 minutes with four tasks came
+# to 80 KB, so the bound is several hours of that. What is kept is repeated in other
+# places of report.json and takes more room in report.md, so this many bytes can still
+# pass the 1 MiB an output may be: write() then makes the report again at DETAIL_SMALL
+# before it falls back to the short form.
+DETAIL_LIMIT = 600_000
+DETAIL_SMALL = 80_000
+# The report's own bound on details, as the reason it gives. It does not say that a kept
+# file is missing or damaged, and the status line does not say so for it. Every file is
+# read and checked before its details are counted, so nothing goes unread because of it.
+LEFT_OUT = 'details left out of this report at its own size limit; the kept files have them'
+# Here the reading stops, so what comes after the task that did not fit was not checked:
+# this one keeps the wider words of the status line.
+TASKS_LEFT_OUT = 'tasks left out of this report at its own size limit and not read further; driver-state.json has them'
+OWN_LIMITS = (LEFT_OUT,)
+LIMIT_BLOCKER = 'This report left some details out at its own size limit; see "Problems with the evidence"'
+
+
+def only_limits(issues):
+    """True when every problem listed is a bound of the report and none is of the evidence."""
+    return bool(issues) and all(get(i, 'reason') in OWN_LIMITS for i in issues)
 
 
 class Reader:
-    def __init__(self, view):
-        self.view = view
+    def __init__(self, view, limit=None):
+        self.view, self.limit = view, DETAIL_LIMIT if limit is None else limit
         self.end = time.monotonic() + max(0, view.budget.remaining() - min(1, view.budget.remaining() / 2))
         self.inputs, self.issues, self.cache = {}, [], {}
         self.details = 0
 
+    def again(self, limit):
+        """A reader for one more pass with a smaller bound on details. It has what this
+        one read, so that no file is read or counted twice against the bound on all
+        that is read, and the same time to finish in."""
+        other = Reader(self.view, limit)
+        other.end, other.inputs, other.cache = self.end, self.inputs, self.cache
+        return other
+
     def issue(self, path, reason):
+        item = dict(path=str(path)[:300], reason=str(reason)[:500])
+        own = item['reason'] in OWN_LIMITS
+        if own and item in self.issues:
+            return  # said once for each place
         if len(self.issues) < 128:
-            self.issues.append(dict(path=str(path)[:300], reason=str(reason)[:500]))
+            self.issues.append(item)
+        elif not own:
+            # The list is full. A problem of the evidence is never the one dropped for a
+            # bound of the report: it takes the place of the last of those, if there is one.
+            for at in range(len(self.issues) - 1, -1, -1):
+                if self.issues[at]['reason'] in OWN_LIMITS:
+                    self.issues[at] = item
+                    break
 
     def guard(self):
         self.view.guard()
@@ -91,8 +132,8 @@ class Reader:
 
     def retain(self, value, path):
         size = len(receipts.encoded(value))
-        if self.details + size > DETAIL_LIMIT:
-            self.issue(path, 'detail output limit reached; details omitted')
+        if self.details + size > self.limit:
+            self.issue(path, LEFT_OUT)
             return None
         self.details += size
         return value
@@ -226,8 +267,8 @@ def task_summary(reader, task, shift_id, ledger, host_reviews=False):
     return result
 
 
-def extract(view, *, previous=None):
-    reader = Reader(view)
+def extract(view, *, previous=None, reader=None):
+    reader = reader or Reader(view)
     result = dict(schema=SCHEMA, shift_id=view.shift.name, repo=str(view.repo), status='partial',
                   grant=None, actual_window=unknown('no retained host closeout'), tasks=[], actions=[],
                   direction=None, blockers=[], next_owner='developer', not_started=None, metrics={}, delta={}, inputs=[], issues=[],
@@ -311,7 +352,7 @@ def extract(view, *, previous=None):
                 # Data retained by receipt_summary is already charged; charge task fields too.
                 fields = {k: v for k, v in summary.items() if k not in ('receipts', 'turns', 'delivery')}
                 if reader.retain(fields, 'driver-state.json') is None:
-                    raise Refused('task detail output limit reached')
+                    raise Refused(TASKS_LEFT_OUT)
                 result['tasks'].append(summary)
             summarized = True  # every task of the driver's record is in the list
             for identity, command in state['commands'].items():
@@ -368,7 +409,8 @@ def extract(view, *, previous=None):
                                next_owner=t.get('next_owner') or 'developer')
                           for t in result['tasks'] if t['acceptance'] != ACCEPTED]
     if reader.issues:
-        result['blockers'].append(dict(task=None, reason='missing/damaged/incomplete evidence; inspect issues', next_owner='developer'))
+        result['blockers'].append(dict(task=None, next_owner='developer', reason=LIMIT_BLOCKER if only_limits(reader.issues)
+                                       else 'missing/damaged/incomplete evidence; inspect issues'))
     complete = not reader.issues and state is not None
     result['metrics']['tasks'] = metric(len(result['tasks']), ['driver-state.json']) if complete else unknown('incomplete task evidence')
     accepted = sum(t['acceptance'] == 'local acceptance recorded; retained review matches candidate' for t in result['tasks'])
@@ -1245,6 +1287,9 @@ def markdown(doc, sha):
     out.append('- Shutdown: confirmed.' if label == 'confirmed' else '- Shutdown: not recorded. ' + wrong if not unclear
                else '- **Shutdown: ' + label + '.** ' + wrong + (' ' + lead + '`' + command + '`' if command else ''))
     status = ('no problem was found with the evidence that was read' if doc.get('status') == 'evidence summarized'
+              # A bound of the report is said as that: the kept files are as they were.
+              else 'partial. This report reached its own size limit and left some details out; see "Problems with '
+                   'the evidence". Nothing that was read was found missing or damaged' if only_limits(issues)
               else 'partial. Some evidence is missing or damaged; see "Problems with the evidence"') + '.'
     out.append('- Status: ' + (unclear + '; see the line above. ' + status[:1].upper() + status[1:] if unclear else status))
     reason = window.get('reason') or doc.get('reason')
@@ -1388,9 +1433,17 @@ def rendered(doc, sha):
 
 
 def write(view, *, previous=None):
-    doc = extract(view, previous=previous)
+    reader = Reader(view)
+    doc = extract(view, previous=previous, reader=reader)
     raw = receipts.encoded(doc)
     text = rendered(doc, receipts.digest(raw))
+    if max(len(raw), len(text)) > receipts.DOCUMENT_LIMIT and DETAIL_SMALL < DETAIL_LIMIT:
+        # Too large with all the details the bound allows: once more with fewer, which
+        # lists what it left out, before everything is dropped for the short form. The
+        # second pass goes over the bytes the first one read.
+        doc = extract(view, previous=previous, reader=reader.again(DETAIL_SMALL))
+        raw = receipts.encoded(doc)
+        text = rendered(doc, receipts.digest(raw))
     if max(len(raw), len(text)) > receipts.DOCUMENT_LIMIT:
         # Preserve a small, explicit damaged closeout rather than exceed the write bound.
         doc.update(status='partial', grant=unknown('output limit'), actual_window=unknown('output limit'),

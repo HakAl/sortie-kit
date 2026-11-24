@@ -837,7 +837,9 @@ class ReportTests(LocalTest):
 
     def test_byte_and_output_limits_publish_explicit_omissions(self):
         self.task['reason'] = '&' * 100000; self.store()
-        doc = self.generate(); self.assertEqual(doc['status'], 'partial')
+        with patch.object(report, 'DETAIL_LIMIT', 80_000):  # a reason larger than the bound on details
+            doc = self.generate()
+        self.assertEqual(doc['status'], 'partial')
         self.assertLess((self.shift/'report.md').stat().st_size, receipts.DOCUMENT_LIMIT)
         self.state['next_owner'] = '&' * 300000; self.state['not_started'] = [dict(name='second', reason='no time')]
         self.store()
@@ -849,6 +851,116 @@ class ReportTests(LocalTest):
         self.assertIsNone(doc['not_started'])
         self.assertIn('- Tasks: none briefed; whether the direction held more is not known to the host.\n',
                       (self.shift/'report.md').read_text())
+
+    def commands(self, count):
+        """`count` driver commands of the size a real shift recorded (about 400 bytes each)."""
+        for n in range(count):
+            self.state['commands']['cmd-%03d' % n] = dict(digest='0' * 64, response=dict(
+                id='cmd-%03d' % n, status='ok', detail='recorded ' + 'x' * 240, state='plan_review'))
+        self.store()
+
+    def test_a_shift_of_ordinary_length_is_kept_whole(self):
+        # A real shift of 69 minutes (4 tasks, 28 receipts, 41 commands) came to 80 KB of
+        # details. The most commands a driver's record may hold, 512, come to more than
+        # twice that and must not run into the report's own bound.
+        self.commands(512)
+        self.assertGreater(len(receipts.encoded(self.state['commands'])), 200_000)
+        doc = self.generate()
+        self.assertEqual((doc['status'], doc['issues'], len(doc['actions'])), ('evidence summarized', [], 512))
+        self.assertLess((self.shift / 'report.json').stat().st_size, receipts.DOCUMENT_LIMIT)
+
+    def test_details_left_out_at_the_reports_own_limit_are_not_called_missing_or_damaged(self):
+        self.commands(8)
+        whole = self.generate(); self.assertEqual(whole['status'], 'evidence summarized')
+        # A bound that the first commands fit under and the last do not.
+        with patch.object(report, 'DETAIL_LIMIT', self.charged() - 500):
+            doc = self.generate()
+        text = (self.shift / 'report.md').read_text()
+        self.assertEqual(doc['status'], 'partial')  # the report is not whole, and says so
+        self.assertLess(len(doc['actions']), 8)
+        self.assertEqual({i['reason'] for i in doc['issues']}, {report.LEFT_OUT})
+        self.assertIn('left out of this report at its own size limit', report.LEFT_OUT)
+        self.assertIn('- driver-state.json: ' + report.LEFT_OUT, text)
+        status = next(line for line in text.splitlines() if line.startswith('- Status: '))
+        self.assertIn('partial. This report reached its own size limit and left some details out', status)
+        self.assertIn('Nothing that was read was found missing or damaged', status)
+        self.assertNotIn('Some evidence is missing or damaged', text)
+        self.assertNotIn('missing/damaged', text)
+        self.assertIn('- This report left some details out at its own size limit', text)
+        self.assertEqual(doc['blockers'][-1]['task'], None)
+        self.assertNotIn('damaged', doc['blockers'][-1]['reason'])
+        self.assertEqual(len(doc['issues']), 1)  # said once, however many commands did not fit
+        # Where the tasks did not fit the reading stopped, so the wider words stay.
+        cut = dict(doc, issues=[dict(path='report extraction', reason=report.TASKS_LEFT_OUT)])
+        self.assertIn('Some evidence is missing or damaged', report.markdown(cut, '0' * 64).decode())
+        # The short form drops the problems that were found, so it keeps the wider words.
+        short = dict(doc, issues=[dict(path='report', reason='output limit exceeded; retained details omitted')])
+        self.assertIn('Some evidence is missing or damaged', report.markdown(short, '0' * 64).decode())
+
+    def test_a_damaged_file_beside_details_left_out_keeps_the_words_for_damage(self):
+        self.commands(8)
+        bound = self.charged() - 500
+        (self.shift / 'logs/tests.txt').write_text('changed after the receipt')
+        with patch.object(report, 'DETAIL_LIMIT', bound):
+            doc = self.generate()
+        text = (self.shift / 'report.md').read_text()
+        self.assertIn(report.LEFT_OUT, {i['reason'] for i in doc['issues']})
+        self.assertIn('artifact hash mismatch', {i['reason'] for i in doc['issues']})
+        self.assertIn('- Status: partial. Some evidence is missing or damaged; see "Problems with the evidence".', text)
+        self.assertIn('missing/damaged/incomplete evidence', doc['blockers'][-1]['reason'])
+
+    def test_a_problem_of_the_evidence_is_not_dropped_from_a_full_list_of_details_left_out(self):
+        # More places left out than the list of problems holds, and then a problem of the
+        # evidence found after them.
+        reader = report.Reader(SimpleNamespace(budget=Budget(100, clock=self.clock.now)))
+        for n in range(200):
+            reader.issue('receipts/r-%03d.json' % n, report.LEFT_OUT)
+        reader.issue('receipts/r-000.json', report.LEFT_OUT)
+        self.assertEqual(len(reader.issues), 128)
+        reader.issue('logs/tests.txt', 'artifact hash mismatch')
+        self.assertEqual((len(reader.issues), reader.issues[-1]),
+                         (128, dict(path='logs/tests.txt', reason='artifact hash mismatch')))
+        self.assertFalse(report.only_limits(reader.issues))
+        self.assertTrue(report.only_limits(reader.issues[:-1]))
+
+    def test_outputs_too_large_with_all_details_are_made_again_with_fewer_before_the_short_form(self):
+        # Refused commands are each listed in report.md, where an ampersand takes five bytes.
+        for n in range(512):
+            self.state['commands']['cmd-%03d' % n] = dict(digest='0' * 64, response=dict(
+                id='cmd-%03d' % n, status='blocked', detail='&' * 600))
+        self.store()
+        doc = self.generate()
+        text = (self.shift / 'report.md').read_text()
+        self.assertEqual([t['id'] for t in doc['tasks']], ['task'])  # not the short form, which drops the tasks
+        self.assertEqual({i['reason'] for i in doc['issues']}, {report.LEFT_OUT})
+        self.assertTrue(0 < len(doc['actions']) < 512)
+        self.assertIn('This report reached its own size limit', text)
+        for name in ('report.md', 'report.json'):
+            self.assertLess((self.shift / name).stat().st_size, receipts.DOCUMENT_LIMIT)
+        # The second pass reads no file again: with room for the kept files once and not
+        # twice, nothing is refused and the acceptance stands as it did.
+        once = sum(i['bytes'] for i in doc['inputs'])
+        reads = []
+        real = receipts.Evidence.read
+        def read(view, path, *args, **kw):
+            reads.append(path); return real(view, path, *args, **kw)
+        with patch.object(receipts, 'TOTAL_LIMIT', once + once // 2), patch.object(receipts.Evidence, 'read', read):
+            again = self.generate()
+        got = [p for p in reads if p in {i['path'] for i in again['inputs']}]
+        self.assertEqual(len(got), len(set(got)))
+        self.assertEqual({i['reason'] for i in again['issues']}, {report.LEFT_OUT})
+        self.assertEqual(again['tasks'][0]['acceptance'], doc['tasks'][0]['acceptance'])
+        self.assertEqual(again['inputs'], doc['inputs'])
+
+    def charged(self):
+        """What a whole report of the shift as it is counts against its bound."""
+        sizes = []
+        real = report.Reader.retain
+        def count(reader, value, path):
+            kept = real(reader, value, path); sizes.append(reader.details); return kept
+        with patch.object(report.Reader, 'retain', count):
+            self.generate()
+        return sizes[-1]
 
     def test_publication_failure_is_not_success_and_json_digest_detects_mixed_pair(self):
         self.generate();old=(self.shift/'report.md').read_bytes()

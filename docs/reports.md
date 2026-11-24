@@ -201,9 +201,26 @@ itself has exited.
 Missing totals are
 unknown, never zero. Input bounds are 1 MiB per document, 16 MiB per artifact,
 64 MiB total, 512 cached inputs, 128 tasks and 256 receipts.
-Detail retention is capped at 80 KB,
+Detail retention is capped at 600 KB,
 and each output at 1 MiB. Extraction reserves publication time. Limits produce
 explicit partial reports when output can still be published.
+
+The 600 KB are counted over what the report repeats of the kept files: the
+direction, the closeout, the driver's list of what was not started, then for
+each task the data of its receipts, its turns, reviews, any send records and
+its fields, and last each driver command. What does not fit is left out and
+listed once for each place under "Problems with the evidence" as left out at
+the report's own size limit; the file was still read and checked. The status
+is still `partial`, since the report is not whole, but when every problem
+listed is of that kind `report.md` says that the report reached its own size
+limit and that nothing that was read was found missing or damaged. It says
+that some evidence is missing or damaged when a problem of another kind is
+listed, and a problem of another kind is never dropped from a full list to
+keep one of these. When the fields of a task do not fit, the reading stops
+there and the report keeps the wider words. If an output would pass 1 MiB
+with all the details the bound allows, the report is made once more with
+80 KB of them, from the bytes already read and with no file read again,
+before it is cut to the short form.
 
 The two output files are individually atomic. Markdown embeds the SHA256 of
 its corresponding JSON; check it before combining them. An interrupted second
