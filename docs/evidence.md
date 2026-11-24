@@ -22,7 +22,9 @@ They have shown:
 - One long shift on a copy of a real project: four tasks accepted in 67
   minutes of a 90 minute window, with nine reviews, on a profile of the
   developer's own that put `agy` in all three seats. The built-in `agy`
-  profile is still review only.
+  profile has had the same driver and builder forms since. The logs that
+  shift kept of its builder and its reviewer hold the final message of each
+  run and nothing else.
 - One shift with the developer's review skills switched off in the agent's
   settings for the repository, with `claude` in all three seats, on a copy
   of a real project: four tasks accepted, with eight reviews run by the
@@ -67,6 +69,8 @@ sleeps a machine, and the tests that have run on Linux ran on a hosted runner
 with stand-ins in every seat:
 
 - `codex` as both the driver and the builder of one shift.
+- The built-in `agy` profile as the driver or as the builder. Its forms for
+  those seats are the ones a profile of the developer's own ran on one shift.
 - A shift signed with a key the person uses for anything else. Every key so
   far was made for the test.
 - A machine that is put to sleep in the middle of a shift.

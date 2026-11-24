@@ -42,6 +42,10 @@ for what stops working without each.
 A `claude` builder gets no such option and can do only what your Claude
 settings allow without asking.
 
+The built-in `agy` builder gets no permission, mode or sandbox option either.
+It can do whatever your own agy configuration allows without asking, and
+sortie-kit neither reads nor limits that configuration.
+
 ## The driver
 
 The driver is an interactive agent in your terminal under your own settings,

@@ -160,8 +160,11 @@ def available(repo, *, home=None):
 
 def choose_model(profile, model=None, family=None):
     """The model is always named. An unlisted one takes the family the profile gives
-    for such models, or needs its family stated; a stated family decides for an
-    unlisted model and may not contradict the profile for a listed one."""
+    for such models, or needs its family stated. A stated family decides only where
+    the profile says nothing: it may contradict neither the family of a listed model
+    nor the family the profile gives for every model it does not list. Otherwise a
+    word on the command line could make a reviewer of the builder's own family pass
+    as one of another."""
     value = profile["value"]
     model = model or value.get("default_model")
     if model is None:
@@ -178,6 +181,11 @@ def choose_model(profile, model=None, family=None):
     family = canonical_family(family)
     if listed is not None and canonical_family(listed) != family:
         raise Refused("stated family contradicts the profile for model " + model)
+    other = value.get("unlisted_family")
+    if listed is None and other is not None and canonical_family(other) != family:
+        raise Refused("stated family contradicts the " + value["name"] + " profile, which places every model it "
+                      "does not list in the family " + canonical_family(other) + "; a CLI that runs models of "
+                      "another family needs a profile of your own without unlisted_family")
     return model, family
 
 
@@ -327,6 +335,9 @@ CODEX_NETWORK_OFF = ("no network option is passed: unless your own codex configu
                      "That is how the CLI runs this sandbox; sortie-kit does not enforce it")
 
 
+AGY_HEADLESS = ("--print", "{prompt}", "--model", "{model}")  # the built-in agy builder's form
+
+
 REVIEW_REACH = {
     "codex": (("--sandbox", "read-only"), "commands it runs cannot write files"),
     "claude": (("--permission-mode", "plan"), "the CLI's plan mode, meant for reading; edits and commands are not approved"),
@@ -387,6 +398,14 @@ def reach(role, value):
                      "no sandbox option is passed: what it can write is whatever your own codex configuration says")
     elif value["mode"] == "headless" and name == "claude":
         lines.append("no permission option is passed: it can do only what your Claude settings allow without asking")
+    elif value["mode"] == "headless" and name == "agy":
+        # The built-in profile's headless form is --print, the prompt and the model: it names
+        # no mode and no sandbox, so what the builder may do unasked is agy's own configuration's
+        # to say. That is said of this form alone; of any other arguments under the name, as a
+        # later version's profile might sign, nothing is known here.
+        lines.append("no permission, mode or sandbox option is passed: it can do whatever your own agy "
+                     "configuration allows without asking" if argv == list(AGY_HEADLESS) else
+                     "sortie-kit has not inspected what these arguments allow")
     elif value["mode"] == "headless" and codex and os.path.basename(value["executable"]["path"]) == "codex":
         lines += codex
         lines.append("a profile of your own: sortie-kit has not inspected what its other arguments allow")

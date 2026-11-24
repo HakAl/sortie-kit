@@ -152,6 +152,43 @@ class PickTests(ReviewerFixture):
         seat, choice = self.pick(self.builder("claude", "claude"))
         self.assertEqual((seat["agent"], seat["family"], choice), ("agy", "gemini", "picked-other-family"))
 
+    def test_an_agy_builder_on_another_makers_model_is_reviewed_as_that_makers_family(self):
+        # agy serves claude models. A builder on one is of the family claude, as the built-in
+        # agy profile says: a claude reviewer is of its own family, never another one.
+        self.installed("claude", "codex", "agy")
+        model, family = agents.choose_model(agents.load("agy", self.target, home=self.home), "claude-sonnet-5-5-high")
+        builder = {"agent": "agy", "model": model, "family": family}
+        self.assertEqual(family, "claude")
+        seat, choice = self.pick(builder)
+        self.assertEqual((seat["agent"], seat["family"], choice), ("codex", "gpt", "picked-other-family"))
+        # Named by flag, claude is refused as same-family while another family is installed.
+        named = dict(agent="claude", model=None, family=None)
+        self.refused("another family is installed.*--allow-same-family-review", self.pick, builder, named)
+        seat, choice = self.pick(builder, named, same_family=True)
+        self.assertEqual((seat["agent"], seat["family"], choice), ("claude", "claude", "given"))
+        # No statement of a family gets around that. The claude profile places every model, an
+        # alias such as sonnet too, in the family claude, and a stated family may not contradict it.
+        for model in ("sonnet", "claude-sonnet-5-5", None):
+            self.refused("contradicts", self.pick, builder, dict(agent="claude", model=model, family="gemini"))
+        self.refused("another family is installed.*--allow-same-family-review", self.pick, builder,
+                     dict(agent="claude", model="sonnet", family=None))
+        # Nor does a statement move the builder: a claude model the agy profile lists stays claude.
+        agy = agents.load("agy", self.target, home=self.home)
+        for model in ("claude-opus-5-5-low", "claude-sonnet-5-5-high"):
+            self.refused("contradicts", agents.choose_model, agy, model, "gemini")
+            self.refused("contradicts", launcher.signed_seats, self.target,
+                         {"driver": {"agent": "agy", "model": "gemini-4-neon-high", "family": None},
+                          "builder": {"agent": "agy", "model": model, "family": "gemini"}},
+                         home=self.home, search=str(self.bin))
+        # With codex gone, agy's own review model is of another family and is taken before claude is.
+        (self.bin / "codex").unlink()
+        seat, choice = self.pick(builder)
+        self.assertEqual((seat["agent"], seat["model"], seat["family"], choice),
+                         ("agy", "gemini-4-hydrogen-high", "gemini", "picked-other-family"))
+        # A gemini builder on agy is reviewed by claude as another family, as before.
+        seat, choice = self.pick({"agent": "agy", "model": "gemini-4-neon-high", "family": "gemini"})
+        self.assertEqual((seat["agent"], seat["family"], choice), ("claude", "claude", "picked-other-family"))
+
     def test_the_users_own_profiles_come_after_the_built_in_ones_by_name(self):
         self.install(profile("zeta"))
         self.install(profile("alpha"))

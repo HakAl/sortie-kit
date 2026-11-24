@@ -21,8 +21,8 @@ next. [Status](#status) says how far it has been tried.
 - macOS, Python 3.11 or later, `git`, and OpenSSH's `ssh-keygen`.
 - At least one agent CLI, installed and signed in. Profiles for Claude Code
   (`claude`), Codex (`codex`) and Antigravity (`agy`) are built in;
-  [agent profiles](docs/agents.md) says how to add another. `claude` and
-  `codex` can take any seat. The built-in `agy` profile can only review.
+  [agent profiles](docs/agents.md) says how to add another. Each of the
+  three can take any seat.
 - Better, two CLIs from different makers. The review is worth more when the
   reviewer's model is not of the builder's family. `sortie start` picks the
   reviewer for you ([who reviews](docs/who-reviews.md)); with one CLI the
@@ -105,7 +105,9 @@ can read. The toolkit asks Codex for its workspace-write sandbox, which runs
 the builder's commands without the network unless you start with
 `--builder-network` or your own Codex configuration turns it on; Codex
 itself still reaches its model. A `claude` builder gets no such option and
-can do only what your Claude settings allow without asking. Read
+can do only what your Claude settings allow without asking. The built-in
+`agy` builder gets none either and can do whatever your own agy
+configuration allows without asking. Read
 [what a shift can do to your machine](docs/machine.md) before you sign.
 
 ## Where to read more

@@ -9,6 +9,9 @@ is.
   `agy`, then your own profiles by name. It takes the first whose model family
   differs from the builder's. The driver's CLI is a fine reviewer. The summary
   says `picked: the first installed agent of another family than the builder`.
+- The family is the model's, not the CLI's. An `agy` builder on one of the
+  `claude` models its profile lists is of the family `claude`, and `claude`
+  is then passed over like any reviewer of the builder's own family.
 - When none of another family is installed, it takes the builder's own CLI.
   That is the one-CLI case and needs no flag. The summary, the terminal and
   the report say `same-family review` and the reason, that no agent of

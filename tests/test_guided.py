@@ -32,6 +32,12 @@ class GuidedTests(LocalTest):
     def complete(self, value, ask=None):
         return guided.complete(value, self.repo_path, ask=ask, home=self.home)
 
+    def without(self, name, form):
+        """A profile of the fixture's kind that lacks one start. No built-in profile lacks one."""
+        directory = agents.user_directory(self.home)
+        value = json.loads((directory / "fixture.json").read_text())
+        (directory / (name + ".json")).write_text(json.dumps(dict(value, name=name, **{form: None})))
+
     def test_every_choice_given_by_flags_asks_nothing(self):
         ask = Answers()
         choices, seconds = self.complete(given(
@@ -42,6 +48,8 @@ class GuidedTests(LocalTest):
         self.assertEqual(seconds, 1800.0)
 
     def test_missing_choices_are_asked_in_order_from_installed_profiles_and_the_reviewer_never_is(self):
+        self.without("no-driver", "interactive_argv")
+        self.without("no-builder", "headless_argv")
         ask = Answers("fixture", "fixture-model", "fixture", "fixture-model", "45m")
         choices, seconds = self.complete(given(), ask)
         self.assertEqual([label for label, _ in ask.asked],
@@ -49,9 +57,9 @@ class GuidedTests(LocalTest):
                           "How long may the shift run"])
         self.assertFalse([label for label, _ in ask.asked if "review" in label.casefold()])
         offered = dict(ask.asked)
-        # agy has no start of its own, so it is offered for neither seat.
-        self.assertEqual(offered["Driver agent"], ["claude", "codex", "fixture"])
-        self.assertEqual(offered["Builder agent"], ["claude", "codex", "fixture"])
+        # Every built-in profile can take either seat. One with no start for a seat is not offered for it.
+        self.assertEqual(offered["Driver agent"], ["agy", "claude", "codex", "fixture", "no-builder"])
+        self.assertEqual(offered["Builder agent"], ["agy", "claude", "codex", "fixture", "no-driver"])
         self.assertEqual(offered["Builder model"], ["fixture-model", "fixture-review-model"])
         self.assertEqual(choices["builder"], {"agent": "fixture", "model": "fixture-model", "family": None})
         self.assertEqual((sorted(choices), seconds), (["builder", "driver"], 2700.0))
@@ -74,6 +82,8 @@ class GuidedTests(LocalTest):
                 (dict(both, reviewer="plain"), {}, "has no review start and cannot be the reviewer"),
                 (dict(both, reviewer="nosuch"), {}, "no agent profile named nosuch"),
                 (dict(both, reviewer="fixture:new-model"), {}, "--family reviewer=FAMILY"),
+                (dict(both, reviewer="claude:sonnet"), {"reviewer": "gemini"}, "contradicts the claude profile"),
+                (dict(both, reviewer="fixture"), {"reviewer": "gpt"}, "contradicts the profile for model"),
                 (dict(both, reviewer="fixture:bad\x1b[2Jmodel"), {}, "invalid model ID for the reviewer"),
                 (both, {"reviewer": "gemini"}, "goes with --agent reviewer=")):
             with self.subTest(named=named, families=families), self.assertRaisesRegex(Refused, message) as caught:
@@ -144,10 +154,17 @@ class GuidedTests(LocalTest):
             self.assertNotIn("\x1b", str(caught.exception))
 
     def test_a_named_agent_that_cannot_take_the_seat_refuses_as_before(self):
-        for value in (given({"driver": "agy:gemini-4-carbon-high"}), given({"driver": "nosuch:model"})):
+        self.without("no-driver", "interactive_argv")
+        for value in (given({"driver": "no-driver:fixture-model"}), given({"driver": "nosuch:model"})):
             with self.assertRaises(Refused) as caught:
                 self.complete(value, Answers())
             self.assertNotIsInstance(caught.exception, guided.Missing)
+        # A stated family that contradicts the reviewer's profile is refused before any question,
+        # with the other seats still open.
+        ask = Answers("fixture", "fixture-model", "fixture", "fixture-model", "45m")
+        with self.assertRaisesRegex(Refused, "contradicts the claude profile"):
+            self.complete(given({"reviewer": "claude:sonnet"}, {"reviewer": "gemini"}), ask)
+        self.assertEqual(ask.asked, [])
 
 
 class AskerTests(LocalTest):

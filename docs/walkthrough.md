@@ -69,8 +69,8 @@ Everything a shift writes for itself (briefs, receipts, logs, the report) is
 under `.sortie/` in the repository, which Git is told to ignore through the
 repository's own `.git/info/exclude`. Your `.gitignore` is not touched. The
 builder commits its work in the repository itself. The toolkit never pushes.
-A seat's log holds what that seat's CLI printed, which for some CLIs is only
-its final message. sortie-kit does not record what a seat ran.
+A seat's log holds what that seat's CLI printed, which for some CLIs, `agy`
+among them, is only its final message. sortie-kit does not record what a seat ran.
 
 For its checks the builder may add Git working trees under the shift's
 `scratch/` folder. They are evidence and the host removes none, so `git

@@ -150,8 +150,8 @@ The builder is headless and runs in turns. Each turn is one owned process
 group started from the signed builder argv in the repository, with no terminal
 input, its output captured to `logs/builder-turn-TASK-N.log` (first 4 MiB kept,
 the rest counted as dropped), and a time limit. That log holds what the
-builder's CLI printed, which for some CLIs is only its final message; the
-same goes for a reviewer's logs. sortie-kit does not record what a seat ran. Its environment is the
+builder's CLI printed, which for some CLIs, `agy` among them, is only its
+final message; the same goes for a reviewer's logs. sortie-kit does not record what a seat ran. Its environment is the
 developer's with `GIT_*`, SSH agent and askpass variables removed,
 `GIT_TERMINAL_PROMPT=0`, and temporary directories under the shift's `scratch/`;
 HOME is unchanged because the agent CLI needs its own sign-in. `PATH` is the

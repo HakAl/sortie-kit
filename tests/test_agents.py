@@ -43,17 +43,56 @@ class AgentTests(LocalTest):
         with self.assertRaisesRegex(Refused, pattern):
             call(*args, **kwargs)
 
-    def test_packaged_profiles_are_valid_and_agy_starts_no_seat(self):
+    def test_packaged_profiles_are_valid_and_each_can_take_any_seat(self):
         self.assertEqual(agents.available(self.target, home=self.home), ["agy", "claude", "codex"])
+        pin = {"path": "/x/program", "sha256": "0" * 64, "bytes": 1}
         for name in ("claude", "codex", "agy"):
             found = agents.load(name, self.target, home=self.home)
             self.assertEqual((found["value"]["name"], found["source"]), (name, "built-in"))
             self.assertIsNone(found["value"]["default_model"])  # no model is ever assumed
-        pin = {"path": "/x/agy", "sha256": "0" * 64, "bytes": 1}
+            for role, mode in agents.MODES.items():
+                made = agents.seat(role, found, "some-model", "some-family", pin)
+                self.assertEqual((made["mode"], made["argv"]), (mode, found["value"][mode + "_argv"]), (name, role))
         agy = agents.load("agy", self.target, home=self.home)
-        for role in ("driver", "builder"):
-            self.refused("cannot be the " + role, agents.seat, role, agy, "gemini-4-carbon-high", "gemini", pin)
         self.assertEqual(agents.choose_model(agy, "gemini-4-carbon-high"), ("gemini-4-carbon-high", "gemini"))
+        # A profile with no interactive form cannot drive, and one with no headless form cannot build.
+        self.refused("fixture has no interactive start and cannot be the driver", agents.seat, "driver",
+                     self.loaded(interactive_argv=None), "fixture-model", "fixture-family", pin)
+        self.refused("fixture has no headless start and cannot be the builder", agents.seat, "builder",
+                     self.loaded(headless_argv=None), "fixture-model", "fixture-family", pin)
+
+    def test_built_in_agy_starts_each_seat_as_its_help_gives_the_options(self):
+        agy = agents.load("agy", self.target, home=self.home)["value"]
+        # --prompt-interactive: run an initial prompt interactively and continue the session.
+        self.assertEqual(agy["interactive_argv"], ["--prompt-interactive", "{prompt}", "--model", "{model}"])
+        # --print: run a single prompt non-interactively and print the response.
+        self.assertEqual(agy["headless_argv"], ["--print", "{prompt}", "--model", "{model}"])
+        self.assertEqual(agy["review_argv"], ["--print", "{prompt}", "--mode", "plan", "--sandbox", "--model", "{model}"])
+        self.assertEqual(agy["review_model"], "gemini-4-hydrogen-high")
+        # The builder's form asks for no mode and no sandbox, and nothing that turns asking off.
+        for key in ("interactive_argv", "headless_argv"):
+            self.assertFalse({"--mode", "--sandbox", "--dangerously-skip-permissions", "--settings"} & set(agy[key]), key)
+
+    def test_built_in_agy_places_each_listed_model_in_its_makers_family(self):
+        agy = agents.load("agy", self.target, home=self.home)
+        models = agy["value"]["models"]
+        for model in ("gemini-4-neon-high", "gemini-4-neon-medium", "gemini-4-hydrogen-high", "gemini-4-carbon-high"):
+            self.assertEqual(agents.choose_model(agy, model), (model, "gemini"))
+        # agy serves models of another maker too. Each one listed is in that maker's family,
+        # and a stated family cannot move it out.
+        served = [model for model in models if model.startswith("claude-")]
+        self.assertEqual(sorted(served), ["claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium",
+                                          "claude-sonnet-5-5-high", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"])
+        for model in served:
+            self.assertEqual(agents.choose_model(agy, model), (model, "claude"))
+            self.refused("contradicts", agents.choose_model, agy, model, "gemini")
+        self.assertEqual(agents.choose_model(agy, "gpt-oss-120b-medium"), ("gpt-oss-120b-medium", "gpt"))
+        for model, kind in models.items():
+            self.assertEqual(kind, {"claude": "claude", "gpt": "gpt"}.get(model.split("-")[0], "gemini"), model)
+            self.assertTrue(model.startswith(("claude-", "gpt-", "gemini-")), model)
+        # None is assumed for a model it does not list.
+        self.assertNotIn("unlisted_family", agy["value"])
+        self.refused("state its family", agents.choose_model, agy, "claude-some-later-model")
 
     def test_built_in_codex_builder_asks_for_repo_writes_and_no_profile_turns_a_sandbox_off(self):
         codex = agents.load("codex", self.target, home=self.home)["value"]
@@ -71,7 +110,7 @@ class AgentTests(LocalTest):
         for name in ("claude", "agy"):
             self.assertNotIn("headless_network_argv", agents.load(name, self.target, home=self.home)["value"])
         self.assertEqual(codex["interactive_argv"], ["--model", "{model}", "--cd", "{cwd}", "{prompt}"])
-        for name in ("claude", "codex"):
+        for name in ("claude", "codex", "agy"):
             value = agents.load(name, self.target, home=self.home)["value"]
             for key in ("interactive_argv", "headless_argv", "headless_network_argv"):
                 text = " ".join(value.get(key) or []).lower()
@@ -92,8 +131,8 @@ class AgentTests(LocalTest):
         self.assertEqual(set(wide), set(plain))
         self.assertEqual({k: v for k, v in wide.items() if k != "argv"}, {k: v for k, v in plain.items() if k != "argv"})
         # Asked of a profile that has no such form, it is refused and never dropped.
-        claude = agents.load("claude", self.target, home=self.home)
-        for profile_ in (claude, self.loaded()):
+        claude, agy = (agents.load(name, self.target, home=self.home) for name in ("claude", "agy"))
+        for profile_ in (claude, agy, self.loaded()):
             name = profile_["value"]["name"]
             self.refused("--builder-network was given, but the builder profile " + name + " has no form with the network on",
                          agents.seat, "builder", profile_, "fixture-model", "f", pin, network=True)
@@ -105,9 +144,9 @@ class AgentTests(LocalTest):
         self.assertEqual(agents.seat("builder", own, "fixture-model", "f", pin, network=True)["argv"],
                          ["run", "--net", "--model", "{model}", "{prompt}"])
         self.assertEqual(agents.seat("builder", own, "fixture-model", "f", pin)["argv"], profile()["headless_argv"])
-        # agy has no headless start at all: that is the reason given, not the missing network form.
+        # A profile with no headless start at all: that is the reason given, not the missing network form.
         self.refused("has no headless start and cannot be the builder", agents.seat, "builder",
-                     agents.load("agy", self.target, home=self.home), "m", "gemini", pin, network=True)
+                     self.loaded(headless_argv=None), "fixture-model", "f", pin, network=True)
         for bad in (dict(headless_network_argv=["--net", "{prompt}"]), dict(headless_network_argv="--net"),
                     dict(headless_network_argv=profile()["headless_argv"]),  # the same command: the flag would do nothing
                     dict(headless_network_argv=["--model={model}", "{prompt}"]),
@@ -183,9 +222,24 @@ class AgentTests(LocalTest):
     def test_a_profile_may_name_the_family_of_models_it_does_not_list(self):
         found = self.loaded(unlisted_family="fixture-family")
         self.assertEqual(agents.choose_model(found, "new-model"), ("new-model", "fixture-family"))
-        # A stated family still decides for a model the profile does not list, and never for one it does.
-        self.assertEqual(agents.choose_model(found, "new-model", "GPT"), ("new-model", "gpt"))
+        # A stated family never decides against the profile: not for a model it lists, and not
+        # for one it does not list when the profile names the family of all such models.
+        # Stating the profile's own family, in any spelling of it, changes nothing.
         self.refused("contradicts", agents.choose_model, found, "fixture-model", "gpt")
+        self.refused("contradicts the fixture profile, which places every model it does not list in the family "
+                     "fixture-family", agents.choose_model, found, "new-model", "GPT")
+        self.assertEqual(agents.choose_model(found, "new-model", "Fixture-Family"), ("new-model", "fixture-family"))
+        # Only a profile that names no such family leaves an unlisted model to what is stated.
+        open_ = self.loaded(name="fixture", unlisted_family=None)
+        self.assertEqual(agents.choose_model(open_, "new-model", "GPT"), ("new-model", "gpt"))
+        # So no statement makes a claude model on the built-in claude profile, an alias of one
+        # included, anything but claude, nor a model on the built-in codex profile anything but gpt.
+        claude, codex = (agents.load(name, self.target, home=self.root / "no-home") for name in ("claude", "codex"))
+        for model in ("sonnet", "opus", "claude-some-later-model"):
+            self.refused("contradicts", agents.choose_model, claude, model, "gemini")
+            self.assertEqual(agents.choose_model(claude, model, "Anthropic"), (model, "claude"))
+        self.refused("contradicts", agents.choose_model, codex, "some-model", "claude")
+        self.assertEqual(agents.choose_model(codex, "some-model", "OpenAI"), ("some-model", "gpt"))
         self.refused("none is assumed", agents.choose_model, found)
         for bad in ("Family", "", 3, ["gpt"]):
             with self.subTest(bad=bad), self.assertRaises(Refused):
@@ -209,7 +263,8 @@ class AgentTests(LocalTest):
         self.assertEqual(agents.choose_model(found, "fixture-model"), ("fixture-model", "gpt"))
         self.assertEqual(agents.choose_model(found, "fixture-model", "GPT"), ("fixture-model", "gpt"))
         self.assertEqual(agents.choose_model(found, "new-model"), ("new-model", "claude"))
-        self.assertEqual(agents.choose_model(found, "new-model", "openai"), ("new-model", "gpt"))
+        self.assertEqual(agents.choose_model(found, "new-model", "Anthropic"), ("new-model", "claude"))
+        self.refused("contradicts", agents.choose_model, found, "new-model", "openai")
         codex = agents.load("codex", self.target, home=self.root / "no-home")
         builder = agents.choose_model(codex, "gpt-next")
         for review_family in ("openai", "OpenAI", "gpt"):
@@ -432,6 +487,29 @@ class ReadableScopeTests(LocalTest):
         self.assertEqual([signing.span(s) for s in (0.4, 45, 600, 5400, 14400, 3661)],
                          ["0s", "45s", "10m", "1h 30m", "4h", "1h 1m"])
 
+    def test_summary_of_a_shift_with_agy_driving_and_building_shows_both_commands_and_what_the_builder_may_do(self):
+        from sortie_kit import grants, signing
+        agy = agents.load("agy", self.root, home=self.root / "no-home")
+        pin = {"path": "/opt/tools/agy", "sha256": "0" * 64, "bytes": 1}
+        seats = dict(self.value(reviewer="codex", family="gpt")["seats"],
+                     driver=agents.seat("driver", agy, "gemini-4-neon-high", "gemini", pin),
+                     builder=agents.seat("builder", agy, "claude-sonnet-5-5-high", "claude", pin))
+        text = signing.summary(self.value(reviewer="codex", family="gpt", seats=seats, review_policy=grants.review_policy(
+            "claude-sonnet-5-5-high", "claude", "model-reviewer", "gpt", "picked-other-family")))
+        for expected in (
+                "Driver:     agy, model gemini-4-neon-high (family gemini), in this terminal\n"
+                "              /opt/tools/agy --prompt-interactive PROMPT --model gemini-4-neon-high\n",
+                "Builder:    agy, model claude-sonnet-5-5-high (family claude), headless, one turn at a time\n"
+                "              /opt/tools/agy --print PROMPT --model claude-sonnet-5-5-high\n",
+                "  What the builder may do:\n"
+                "    - no permission, mode or sandbox option is passed: it can do whatever your own agy configuration "
+                "allows without asking\n"
+                "    - anything your own agy configuration allows on top still applies; sortie-kit does not read or "
+                "limit it\n"
+                "  What the reviewer can reach:\n"):
+            self.assertIn(expected, text)
+        self.assertNotIn("same-family", text)
+
     def test_summary_cannot_carry_terminal_control_or_non_ascii_text(self):
         from sortie_kit import signing
         text = signing.summary(self.value(repo="/work/\x1b[2J\x07\u202e\nrepo"))
@@ -475,6 +553,32 @@ class ReadableScopeTests(LocalTest):
         headless = agents.seat("builder", agents.load("claude", self.root, home=self.root / "no-home"), "m", "claude",
                                {"path": "/opt/tools/claude", "sha256": "0" * 64, "bytes": 1})
         self.assertIn("only what your Claude settings allow without asking", agents.reach("builder", headless)[0])
+        # The built-in agy builder: what its form does not pass is known and said, and no more.
+        agy = agents.load("agy", self.root, home=self.root / "no-home")
+        pin = {"path": "/opt/tools/agy", "sha256": "0" * 64, "bytes": 1}
+        self.assertEqual(agents.reach("builder", agents.seat("builder", agy, "gemini-4-neon-high", "gemini", pin)),
+                         ["no permission, mode or sandbox option is passed: it can do whatever your own agy "
+                          "configuration allows without asking",
+                          "anything your own agy configuration allows on top still applies; "
+                          "sortie-kit does not read or limit it"])
+        # Nothing is said of a driver beyond the one line every seat gets, agy as any other.
+        self.assertEqual(agents.reach("driver", agents.seat("driver", agy, "gemini-4-neon-high", "gemini", pin)),
+                         ["anything your own agy configuration allows on top still applies; "
+                          "sortie-kit does not read or limit it"])
+        # The line is said of the form it was written for and of no other. A seat named agy whose
+        # signed arguments are not that form, as a later version's might be, is not described by it.
+        for other in (["--print", "{prompt}", "--model", "{model}", "--dangerously-skip-permissions"],
+                      ["--print", "{prompt}", "--mode", "plan", "--sandbox", "--model", "{model}"],
+                      ["--print", "--model", "{model}", "{prompt}"]):
+            changed = dict(agents.seat("builder", agy, "gemini-4-neon-high", "gemini", pin), argv=other)
+            self.assertEqual(agents.reach("builder", changed),
+                             ["sortie-kit has not inspected what these arguments allow",
+                              "anything your own agy configuration allows on top still applies; "
+                              "sortie-kit does not read or limit it"], other)
+        # A profile of one's own on the agy program is not the built-in one: its arguments were not read.
+        mine = dict(agents.seat("builder", agy, "gemini-4-neon-high", "gemini", pin), agent="my-agy")
+        self.assertEqual(agents.reach("builder", mine)[0],
+                         "a profile of your own: sortie-kit has not inspected what these arguments allow")
         self.assertEqual(len(agents.reach("driver", value["seats"]["driver"])), 1)
         self.assertNotIn("has not inspected", " ".join(agents.reach("driver", value["seats"]["driver"])))
         other = dict(builder, agent="mine", executable=dict(builder["executable"], path="/opt/tools/mine"))

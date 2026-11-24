@@ -10,7 +10,7 @@ limited to `codex` or `claude`: any CLI with a profile can take a seat.
 
 A seat runs under your own configuration of that CLI. The toolkit supplies no
 permission file, fills none, and signs none. What a seat may do is whatever
-your `claude` or `codex` setup allows, with the exceptions that you see and sign
+your setup of that CLI allows, with the exceptions that you see and sign
 as part of the arguments: the built-in `codex` builder asks Codex for its
 workspace-write sandbox, and each built-in reviewer asks its CLI for its
 read-only or plan mode (see [what the built-in seats can reach](#what-the-built-in-seats-can-reach)).
@@ -80,8 +80,13 @@ terminal asks and any other start refuses. The reviewer's model is the one
 you named or the profile's `review_model`, and it is never asked for. A model missing from the profile's `models` takes the profile's
 `unlisted_family`; without one its family must be stated (`--family
 ROLE=FAMILY` with the role `driver`, `builder` or `reviewer`, or the question
-a guided start asks for the driver and the builder). A stated family decides for an unlisted model
-and may not contradict the profile for a listed one. A maker's name is the
+a guided start asks for the driver and the builder). A stated family decides
+only where the profile says nothing. It may not contradict the profile for a
+listed model, nor a profile's `unlisted_family` for an unlisted one: no
+statement makes a model on the built-in `claude` profile anything but
+`claude`, or one on the built-in `codex` profile anything but `gpt`. A CLI
+that you run with models of another family needs a profile of your own
+without `unlisted_family`. A maker's name is the
 same family as its model line: `openai` is read as `gpt`, `anthropic` as
 `claude`, `google` as `gemini`, wherever a family is stated or listed, so the
 two spellings can never pass as different families in the review policy. Families are canonical lower-case tokens.
@@ -186,6 +191,19 @@ the reviewer; the host does.
 - **`codex` as driver** and **`claude` as driver or builder** are started with a
   model and a prompt and nothing that selects permissions. The interactive
   driver asks you in the terminal when it needs approval.
+- **`agy` as driver** runs `agy --prompt-interactive PROMPT --model MODEL`,
+  and **`agy` as builder** runs `agy --print PROMPT --model MODEL`. Both were
+  written from `agy --help`, which says of `--prompt-interactive` "Run an
+  initial prompt interactively and continue the session" and of `--print`
+  "Run a single prompt non-interactively and print the response". Neither
+  form passes `--mode`, `--sandbox` or any permission option, so the built-in
+  `agy` builder can do whatever your own agy configuration allows without asking.
+  The summary you sign says so, of exactly that form. sortie-kit has not tried what `agy --print`
+  does when its configuration would have it ask. `--builder-network` is
+  refused for an `agy` builder, since the profile has no form with the
+  network on. With `agy` a builder's or a reviewer's log holds its final
+  message only: that is what the one real shift with `agy` in these seats
+  kept.
 - **`claude` as builder** runs `claude --print`. Nobody can answer a
   permission prompt there, so anything your Claude settings do not already
   allow without asking is denied, including file edits and shell commands
@@ -224,9 +242,19 @@ the reviewer; the host does.
   repository's commit and status and the names, sizes and times of the files
   in the shift's `receipts/` are compared before and after each run, and a
   difference fails that run of the review.
-- The built-in `agy` profile has a review form only: with it `agy` can be the
-  reviewer and no other seat. A profile of your own can give `agy` the other
-  two forms; one long shift ran with `agy` in all three seats that way.
+- All three built-in profiles can take any seat. `agy` as the driver and as
+  the builder has been shown on one real shift, through a profile of the
+  developer's own with the same forms as the built-in profile now has.
+- `agy` serves models of more than one maker. The built-in profile lists four
+  `gemini-4` models in the family `gemini`, the six `claude` models `agy
+  models` showed when the profile was written in the family `claude`, and
+  one `gpt` model, and names no family for a model it does not list. The
+  family is the model's, not the CLI's: an `agy` builder on one of those
+  `claude` models is of the family `claude`, so `claude` is not picked to
+  review it as if it were of another family, and `--family` cannot say
+  otherwise. For a model the profile does not list, the family is the one
+  you state, and you sign it; sortie-kit does not guess a family from a
+  model's name.
 
 ### What the summary says of a profile of your own
 
@@ -247,13 +275,13 @@ describe the signed command line and nothing else.
   inspected what its other arguments allow`, since another argument beside
   the run may undo it. Any other reviewer gets `sortie-kit has not inspected what these arguments allow;
   this reviewer may be able to write`.
-- **A builder.** The built-in `codex` and `claude` profiles get the lines
-  above, including what they do not pass. A profile of your own whose pinned
+- **A builder.** The built-in `codex`, `claude` and `agy` profiles get the
+  lines above, including what they do not pass. A profile of your own whose pinned
   program is named `codex` and that passes at least one of the three `codex`
   options gets a line for each one it passes, and then `a profile of your
   own: sortie-kit has not inspected what its other arguments allow`. Nothing is said about what it leaves out,
   since its other arguments were not read. Every other builder profile of
-  your own, one on `claude` too, gets `a profile of your own: sortie-kit has
+  your own, one on `claude` or `agy` too, gets `a profile of your own: sortie-kit has
   not inspected what these arguments allow`.
 
 When a builder turn ends without anything new under `receipts/`, the turn

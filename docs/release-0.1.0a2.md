@@ -13,8 +13,8 @@ shown is listed below so that you can decide what to trust it with.
 - macOS. No shift has been run on Linux. The tests have run there on a
   hosted runner, with a stand-in in every seat.
 - Python 3.11 or newer, Git, and OpenSSH's `ssh-keygen`.
-- At least one agent CLI you already use and have signed in to. `claude`
-  and `codex` can take any seat. The built-in `agy` profile can only review.
+- At least one agent CLI you already use and have signed in to. `claude`,
+  `codex` and `agy` are built in, and each can take any seat.
 
 Install from a checkout with `python -m pip install .`. The README's first
 shift takes it from there.
@@ -33,7 +33,8 @@ with keys made for testing, and most on small practice repositories.
   as the builder and the reviewer named by flag. Four tasks accepted.
 - One long shift on a copy of a real project accepted four tasks. It ran on
   a profile of the developer's own that put `agy` in all three seats, not on
-  the built-in profiles.
+  the built-in profiles. The built-in `agy` profile has had the same driver
+  and builder forms since.
 - A review that asked for changes on a plan was answered and then accepted.
 - Wind-down refused new work in a plain sentence and closed with a report
   that said what was not done.
@@ -69,6 +70,7 @@ developer's own key or sleeps a machine, and the tests that have run on
 Linux ran on a hosted runner with stand-ins in every seat:
 
 - `codex` as both the driver and the builder of one shift.
+- The built-in `agy` profile as the driver or as the builder.
 - A shift signed with a key you use for anything else. Make a key for this.
 - A machine put to sleep in the middle of a shift, and the hold against
   idle sleep on a machine that nothing else keeps awake.
@@ -87,6 +89,14 @@ Linux ran on a hosted runner with stand-ins in every seat:
   read.
 - A `claude` builder works only if your own Claude settings already allow,
   without asking, what the work needs.
+- The built-in `agy` builder is passed no permission, mode or sandbox
+  option. It can do whatever your own agy configuration allows without
+  asking, and sortie-kit neither reads nor limits that. With `agy` a
+  builder's or a reviewer's log holds its final message only.
+- A family stated with `--family` may not contradict the profile: no
+  statement makes a model on the built-in `claude` profile anything but
+  `claude`, or one on `codex` anything but `gpt`. For a model that a profile
+  neither lists nor places, the family is the one you state and sign.
 - What each reviewer's read-only or plan mode actually stops has not been
   checked by sortie-kit, and the summary you sign says so.
 - A reviewer is told that a finding which shows a breach of something the

@@ -654,8 +654,16 @@ class LauncherTests(LocalTest):
         with self.assertRaisesRegex(Refused, "builder profile claude has no form with the network on"):
             launcher.signed_seats(self.target, {"driver": seat, "builder": {"agent": "claude", "model": "m"}},
                                   builder_network=True, home=home, search=str(empty))
-        with self.assertRaisesRegex(Refused, "agy has no headless start and cannot be the builder"):
-            launcher.signed_seats(self.target, {"driver": seat, "builder": {"agent": "agy", "model": "m"}},
+        with self.assertRaisesRegex(Refused, "builder profile agy has no form with the network on"):
+            launcher.signed_seats(self.target, {"driver": seat, "builder": {"agent": "agy", "model": "gemini-4-neon-high"}},
+                                  builder_network=True, home=home, search=str(empty))
+        # A profile with no headless start at all is refused for that, with the flag as without it.
+        agents.user_directory(home).mkdir(parents=True)
+        (agents.user_directory(home) / "no-builder.json").write_text(json.dumps(dict(
+            version=1, name="no-builder", executable="no-builder-agent", headless_argv=None,
+            interactive_argv=["--model", "{model}", "{prompt}"], models={"fixture-model": "fixture-family"})))
+        with self.assertRaisesRegex(Refused, "no-builder has no headless start and cannot be the builder"):
+            launcher.signed_seats(self.target, {"driver": seat, "builder": {"agent": "no-builder", "model": "fixture-model"}},
                                   builder_network=True, home=home, search=str(empty))
         # A preparation signs nothing and names no seat: the request is refused, not dropped.
         with self.assertRaisesRegex(Refused, "--builder-network applies only when signing"):
@@ -999,7 +1007,7 @@ class LauncherTests(LocalTest):
                       "--for", "1m", "--prepare-only", "--seat-config", "builder=/x"])
         self.assertEqual(stop.exception.code, 2)
         self.assertIn("--seat-config", err.getvalue())
-        for name in ("claude", "codex"):
+        for name in ("claude", "codex", "agy"):
             value = agents.load(name, self.target, home=self.root / "no-home")["value"]
             self.assertNotIn("config", value)
             for key in ("interactive_argv", "headless_argv"):
@@ -1015,16 +1023,17 @@ class LauncherTests(LocalTest):
                  (changed("builder", model="unlisted"), "state its family"),
                  (changed("builder", family="gpt"), "contradicts"),
                  (changed("driver", agent="absent"), "no agent profile"),
-                 (changed("driver", agent="agy", model="gemini-4-carbon-high"), "cannot be the driver")]
-        # The built-in agy profile names its program by a bare name, so a stand-in of that name
-        # is put where the search looks: the case does not depend on what this machine has installed.
-        search = self.root / "stand-in-bin"
-        search.mkdir()
-        (search / "agy").write_text("#!/bin/sh\nexit 0\n")
-        (search / "agy").chmod(0o755)
+                 (changed("driver", agent="no-driver"), "no-driver has no interactive start and cannot be the driver")]
+        # A profile made here with no interactive form, on the fixture's own program: the case
+        # does not depend on which agent CLIs this machine has installed. No built-in profile is such a one.
+        directory = agents.user_directory(fixture["home"])
+        (directory / "no-driver.json").write_text(json.dumps(dict(
+            json.loads((directory / "fixture.json").read_text()), name="no-driver", interactive_argv=None)))
+        empty = self.root / "no-tools"
+        empty.mkdir()
         for choices, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(Refused, message):
-                launcher.signed_seats(self.target, choices, home=fixture["home"], search=str(search))
+                launcher.signed_seats(self.target, choices, home=fixture["home"], search=str(empty))
         self.assertEqual(launcher.signed_seats(self.target, changed("builder", model="unlisted", family="GPT"),
                                                home=fixture["home"])["builder"]["family"], "gpt")
 

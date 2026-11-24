@@ -106,6 +106,8 @@ def complete(given, repo, *, ask=None, home=None):
         if stated is None and unplaced(profile, model or profile["value"]["review_model"]):
             raise Refused("model " + (model or profile["value"]["review_model"]) + " is not in the " + name
                           + " profile; say who makes it with --family reviewer=FAMILY")
+        if stated is not None:  # refused here, before any question, when it contradicts the profile
+            agents.choose_model(profile, model or profile["value"]["review_model"], stated)
         reviewer = {"agent": name, "model": model or None,
                     "family": canonical_family(stated) if stated is not None else None}
     elif stated is not None:
