@@ -31,7 +31,9 @@ what it does not claim.
 - Tasks: 2 accepted locally of 2 briefed (trim-empty-args at 50b50ff, version-flag at 6a12567); the driver says the direction held no more.
 - Shutdown: confirmed.
 - Status: no problem was found with the evidence that was read.
+[...]
 - Ran for 9m 18s, from 2026-11-24T04:13:06.500076+00:00 to 2026-11-24T04:22:24.664376+00:00.
+[...]
 - Findings left open on accepted work: 4. They are listed under that heading below.
 [...]
 ### version-flag (feature): accepted locally
