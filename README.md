@@ -1,5 +1,9 @@
 # sortie-kit
 
+**Run coding agents in a time-boxed shift that you sign, in a Git repository
+of yours, with each plan and each build reviewed by an agent that sortie-kit
+starts itself.**
+
 sortie-kit runs a time-boxed working session, a shift, with coding agents in a
 Git repository of yours. You write down what you want done; a driver agent in
 your terminal breaks it into tasks and hands them to a builder agent, which
@@ -15,6 +19,28 @@ your own key, in your own terminal.
 This is an alpha, for macOS only. Linux is not supported yet. Commands, file
 formats and the wording of what you sign may change from one version to the
 next. [Status](#status) says how far it has been tried.
+
+This is what a report looks like: an excerpt of the `report.md` of a real
+shift on a practice repository, two tasks in nine minutes. Each line is a
+line of that report; `[...]` stands for lines left out.
+[Shift reports](docs/reports.md) says what the rest of a report holds and
+what it does not claim.
+
+```text
+## Outcome
+- Tasks: 2 accepted locally of 2 briefed (trim-empty-args at 50b50ff, version-flag at 6a12567); the driver says the direction held no more.
+- Shutdown: confirmed.
+- Status: no problem was found with the evidence that was read.
+- Ran for 9m 18s, from 2026-11-24T04:13:06.500076+00:00 to 2026-11-24T04:22:24.664376+00:00.
+- Findings left open on accepted work: 4. They are listed under that heading below.
+[...]
+### version-flag (feature): accepted locally
+- Result: accepted locally. The host's review of commit 6a125673c15f0b4df2f812f362b9bb06f19cfa7e ended in ACCEPT, and the review receipt the host wrote for it is kept, intact and in the consumed ledger. Nothing here shows it was pushed or merged.
+[...]
+  - Review 2, of the candidate, round 0: ACCEPT on commit 6a125673c15f0b4df2f812f362b9bb06f19cfa7e; 2 findings. Receipt: receipts/review-9b2ce2104a7d42b0-5b603b8d.json.
+    - F1 (minor) at cli/\_\_main\_\_.py:21: tomllib needs Python 3.11+ but pyproject.toml declares no requires-python, so on older interpreters --version fails with ImportError (a traceback).
+    - F2 (minor) at cli/\_\_main\_\_.py:48: Switching to argparse changes greeting behavior for dash-prefixed arguments: before, any argv was greeted verbatim; now \`--foo\` or \`-x\` exits 2 and \`--help\` prints usage.
+```
 
 ## What you need
 
@@ -135,8 +161,10 @@ uses for anything else; see
 ## License
 
 Sortie-kit is licensed under the [MIT license](LICENSE). That one file also
-covers the tiger working agreement it ships, which is the same owner's
-project under the same licence.
+covers the tiger working agreement it ships: the working rules the builder
+is given, copied unchanged into each shift as `tiger.md`
+([driver lifecycle](docs/lifecycle.md)). It is the same owner's project under
+the same licence.
 The owner authorized the copied shift-driver code for this divergent public
 instance. The private experiment named at the top continues separately; this
 project does not modify or deploy to it.
