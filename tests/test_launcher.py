@@ -1016,9 +1016,15 @@ class LauncherTests(LocalTest):
                  (changed("builder", family="gpt"), "contradicts"),
                  (changed("driver", agent="absent"), "no agent profile"),
                  (changed("driver", agent="agy", model="gemini-4-carbon-high"), "cannot be the driver")]
+        # The built-in agy profile names its program by a bare name, so a stand-in of that name
+        # is put where the search looks: the case does not depend on what this machine has installed.
+        search = self.root / "stand-in-bin"
+        search.mkdir()
+        (search / "agy").write_text("#!/bin/sh\nexit 0\n")
+        (search / "agy").chmod(0o755)
         for choices, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(Refused, message):
-                launcher.signed_seats(self.target, choices, home=fixture["home"])
+                launcher.signed_seats(self.target, choices, home=fixture["home"], search=str(search))
         self.assertEqual(launcher.signed_seats(self.target, changed("builder", model="unlisted", family="GPT"),
                                                home=fixture["home"])["builder"]["family"], "gpt")
 
