@@ -17,7 +17,7 @@ DIRECTION_SHOWN = 2000  # characters of the direction repeated in the report
 TEXT_SHOWN = 600  # characters of any one retained text in report.md; report.json keeps the rest
 # Bytes of retained detail one report repeats: the direction, the closeout, the driver's
 # list of what was not started, the data of each receipt, the turns, reviews and fields
-# of each task, and each driver command. A real shift of 69 minutes with four tasks came
+# of each task, the driver's notes, and each driver command. A real shift of 69 minutes with four tasks came
 # to 80 KB, so the bound is several hours of that. What is kept is repeated in other
 # places of report.json and takes more room in report.md, so this many bytes can still
 # pass the 1 MiB an output may be: write() then makes the report again at DETAIL_SMALL
@@ -316,7 +316,7 @@ def extract(view, *, previous=None, reader=None):
     reader = reader or Reader(view)
     result = dict(schema=SCHEMA, shift_id=view.shift.name, repo=str(view.repo), status='partial',
                   grant=None, actual_window=unknown('no retained host closeout'), tasks=[], actions=[],
-                  direction=None, blockers=[], next_owner='developer', not_started=None, metrics={}, delta={}, inputs=[], issues=[],
+                  direction=None, blockers=[], next_owner='developer', not_started=None, driver_notes=None, metrics={}, delta={}, inputs=[], issues=[],
                   limits=['Only what the kept files claim, and whether those files are intact. No signature, commit, '
                           'test or code quality was checked again.',
                           'Writing this report ran no command, agent or network call. Nothing is assumed to have been '
@@ -378,6 +378,16 @@ def extract(view, *, previous=None, reader=None):
                                          if state.get('not_started') is not None else None)
             except (Refused, KeyError, TypeError):
                 reader.issue('driver-state.json', "the driver's list of what was not started is malformed; not shown")
+            try:
+                # The driver's notes, its own words. A state from before they existed has
+                # none. Checked here and kept after the tasks, so that at the bound on
+                # details the notes are what is left out and never a task.
+                noted = channels.notes(state.get('notes', []))
+                if any(n['task_id'] is not None and n['task_id'] not in state['tasks'] for n in noted):
+                    raise Refused('a note names a task the state does not hold')
+            except (Refused, KeyError, TypeError):
+                noted = None
+                reader.issue('driver-state.json', "the driver's notes are malformed; not shown")
             # The ledger is written at the first consumed receipt. Its absence is
             # damage only when the state records a receipt it should account for.
             recorded = any(isinstance(t, dict) and t.get('receipts') for t in state['tasks'].values())
@@ -400,6 +410,9 @@ def extract(view, *, previous=None, reader=None):
                     raise Refused(TASKS_LEFT_OUT)
                 result['tasks'].append(summary)
             summarized = True  # every task of the driver's record is in the list
+            if noted is not None:
+                # No notes are not a detail that can be left out.
+                result['driver_notes'] = reader.retain(noted, 'driver-state.json') if noted else []
             for identity, command in state['commands'].items():
                 item = reader.retain(dict(id=identity, record=command), 'driver-state.json')
                 if item is not None:
@@ -1261,6 +1274,40 @@ def unstarted(doc):
         return None
 
 
+def driver_notes(doc):
+    """The notes the driver recorded with `note`: a list, or None when what is kept
+    of them is not one or was left out of the report."""
+    try:
+        return channels.notes(doc.get('driver_notes'))
+    except (Refused, KeyError, TypeError):
+        return None
+
+
+def notes_words(kept):
+    """(the Outcome line, the section) for the driver's notes. The section is given
+    only when there is something to list."""
+    line = '- Notes the driver left: '
+    try:
+        notes = channels.notes(kept)
+    except (Refused, KeyError, TypeError):
+        return line + 'not known; they could not be read or were left out of this report.', []
+    if not notes:
+        return line + 'none.', []
+    decisions = sum(n['kind'] == 'decision' for n in notes)
+    parts = ([count_words(decisions, 'decision')] if decisions else []) + (
+        [count_words(len(notes) - decisions, 'question')] if len(notes) > decisions else [])
+    out = ['## Notes from the driver', '',
+           "Each is the driver's own statement, recorded while the shift ran, under the kind the driver gave it: a "
+           'decision it says it made on its own, or a question it says it could not settle. The host kept the text '
+           'as written and checked none of it, also not whether a decision was within the direction. A note has no '
+           'answer in the shift: the command that records it gives the driver nothing back but that it was kept.', '']
+    for note in notes:
+        out.append('- ' + ('Decision' if note['kind'] == 'decision' else 'Open question') + ', '
+                   + ('task ' + plain(note['task_id'], 64) if note['task_id'] is not None else 'no task named')
+                   + ', ' + plain(note['at'], 40) + ': ' + plain(note['text'], channels.NOTE_TEXT))
+    return line + str(len(notes)) + ' (' + ', '.join(parts) + ', as the driver named them). They are listed under "Notes from the driver" below.', out + ['']
+
+
 def tasks_words(doc, inert=plain):
     """How many of the briefed tasks were accepted locally, and which at what commit:
     one sentence. The host counts what the driver briefed and cannot read a
@@ -1420,6 +1467,8 @@ def markdown(doc, sha):
     out += wake_words(window)
     left_open, open_section = open_words(doc.get('open_findings'))
     out += [left_open] if left_open else []
+    noted, notes_section = notes_words(doc.get('driver_notes'))
+    out.append(noted)
     out += head_words(window.get('repo'))
     out += unclean_words(window.get('repo'))
     out.append('- Next: ' + plain(doc.get('next_owner')) + '.')
@@ -1442,7 +1491,7 @@ def markdown(doc, sha):
         out += task_words(task, headless, shown)
     if not tasks:
         out += ['No task was briefed.', '']
-    out += open_section
+    out += open_section + notes_section
     out += ['## Not done', '']
     undone = ['- ' + undone_words(b) + owner_words(b) for b in blockers]
     left = unstarted(doc)
@@ -1558,7 +1607,7 @@ def write(view, *, previous=None):
                    metrics={k: unknown('output limit') for k in doc['metrics']},
                    delta={k: unknown('output limit') for k in doc['delta']})
         doc.pop('reason', None)
-        doc['not_started'] = None
+        doc['not_started'] = doc['driver_notes'] = None
         if doc.get('open_findings') is not None:
             doc['open_findings'] = dict(OPEN_UNKNOWN, items=[])  # the tasks are dropped, and a list of their findings with them
         raw = receipts.encoded(doc)

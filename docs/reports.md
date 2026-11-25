@@ -27,7 +27,7 @@ commands remain host/developer-owned.
 shift ended and how long it ran, repeats the direction, and for each task says
 whether it was accepted and at which commit, what each consumed receipt
 reported (plan, review verdict, tool, model and findings, build commit and
-checks), each builder turn with its exit and log, what was not done and why,
+checks), each builder turn with its exit and log, the notes the driver left, what was not done and why,
 what was left uncommitted in the repository, which driver commands were answered `blocked` or `invalid`, any problem with
 the evidence, what the kept grant says about starting the seats, what the
 host saw of its processes, and who is next. The grant is called "kept", not
@@ -147,6 +147,22 @@ clickable. If the readable part cannot be built from what was kept, a short
   whether the direction held more. So an empty section is never read as "the
   whole direction was done". A `not_started` kept in the state in another
   shape is not shown and is listed under "Problems with the evidence".
+- `driver_notes`: what the driver recorded with its `note` command, in the
+  order it was recorded. Each item has `kind` as the driver gave it (`decision`:
+  something it says it decided on its own; `question`: something it says it
+  could not settle before it went on), `text`, `task_id` (the briefed task it
+  named, or `null`) and `at`, the host's time when it took the note. The
+  Outcome has the line `Notes the driver left:` with the count of each kind,
+  or `none.`, and when there are notes `report.md` lists them under "Notes
+  from the driver", before "Not done". Each is the driver's own statement:
+  the host kept the text as written and checked none of it, also not whether
+  a decision was within the direction, and a note has no answer in the
+  shift. The section says so. A shift kept by a host from
+  before this field has no notes and reads `none.` Notes kept in another
+  shape are not shown and are listed under "Problems with the evidence";
+  `driver_notes` is then `null` and the line reads `not known`, as it does
+  when the notes were left out at the report's size limit or the report was
+  cut to the short form.
 - Under "Not done", a task that was not accepted is followed by the owner
   recorded on the task while the shift ran (the `next_owner` the driver gave
   with its brief or last repair, usually `builder`). That is not the "Next"
@@ -234,7 +250,7 @@ explicit partial reports when output can still be published.
 The 600 KB are counted over what the report repeats of the kept files: the
 direction, the closeout, the driver's list of what was not started, then for
 each task the data of its receipts, its turns, reviews, any send records and
-its fields, and last each driver command. What does not fit is left out and
+its fields, then the driver's notes, and last each driver command. What does not fit is left out and
 listed once for each place under "Problems with the evidence" as left out at
 the report's own size limit; the file was still read and checked. The status
 is still `partial`, since the report is not whole, but when every problem

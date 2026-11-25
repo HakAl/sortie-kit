@@ -432,6 +432,31 @@ class HostReviewTests(test_lifecycle.LifecycleFixture):
         self.assertEqual(state["tasks"]["task"]["stage"], "review")
         self.assertEqual(child.signals, [])
 
+    def test_a_note_sent_while_a_review_runs_is_answered_and_the_review_ends_as_it_would_have(self):
+        from sortie_kit import receipts, shift_wait
+        self.reach_review()
+        before = self.state()
+        command = dict(version=1, id="doubt", op="note", kind="question", text="Is the prior window the same length?",
+                       task_id="task")
+        raw = receipts.encoded(command)
+        (self.shift / "driver-command.json").write_bytes(raw)
+        self.driver.poll()
+        seen, _ = shift_wait.observe(self.shift, 5)
+        # The wait goes on for the review and already carries the answer to this command and no other.
+        self.assertEqual((seen["status"], seen["answered"], seen["response"]["id"], seen["response"]["status"]),
+                         ("waiting", True, "doubt", "recorded"))
+        self.assertEqual(seen["review"]["task_id"], "task")
+        state = self.state()
+        self.assertEqual((state["review"], state["tasks"]["task"], state["turn"]),
+                         (before["review"], before["tasks"]["task"], before["turn"]))
+        started = len(self.spawn.started)
+        state = self.end_review()
+        self.assertEqual((state["last_review"]["outcome"], state["tasks"]["task"]["stage"]), ("ACCEPT", "accepted"))
+        self.assertEqual(len(self.spawn.started), started)
+        self.assertEqual([(n["kind"], n["task_id"]) for n in state["notes"]], [("question", "task")])
+        seen, _ = shift_wait.observe(self.shift, 5)
+        self.assertEqual((seen["status"], seen["response"]["id"], seen["last_review"]["outcome"]), ("ready", "doubt", "ACCEPT"))
+
     def test_the_driver_cannot_hand_in_a_review_receipt_or_act_on_the_task_while_a_review_runs(self):
         self.reach_review()
         for op, extra in (("consume", dict(receipt="receipts/mine.json")), ("close", {}),

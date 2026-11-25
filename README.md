@@ -111,6 +111,10 @@ what it does not claim.
   repository, expect a question of its own first, such as whether you trust
   the folder. Read it before pressing Enter: its preselected answer can be
   the one that declines and exits, and a driver that exits ends the shift.
+  Once the driver has begun it is told not to wait for you: it decides within
+  the direction, and the report lists what it decided on its own or could not
+  settle. [What still needs you](docs/walkthrough.md#what-still-needs-you)
+  says where a person is still needed.
 - **The report.** When the shift ends (the driver exits, the time runs out, or
   you run `sortie stop --shift SHIFT` in another terminal, with the shift
   directory the signing summary showed), the command prints how it ended,

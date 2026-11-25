@@ -722,3 +722,19 @@ class ReceiptTests(LocalTest):
         for part in ("means `repair`, then `continue`", "means `continue`: the next turn reads that diagnostic",
                      "`finish` before wind-down is for two cases only"):
             self.assertIn(part, text)
+
+    def test_driver_md_tells_the_driver_not_to_wait_for_a_person_and_not_to_build_on_a_breach(self):
+        from importlib.resources import files
+        text = " ".join(files("sortie_kit").joinpath("data", "templates", "driver.md").read_text().split())
+        for gone in ("the developer can see and answer you", "ask the developer in this terminal"):
+            self.assertNotIn(gone, text)
+        for part in ("a question you ask in the terminal may never be answered, so never wait for one",
+                     "Where direction.md leaves a choice open, the decision is yours within the signed scope",
+                     # A line the direction states is not such a choice, and the way out is one that exists.
+                     "going on is not a choice of yours",
+                     "No command sends an accepted plan back or sets a task aside",
+                     "What stops the wrong work is `finish`",
+                     "accepted work that breaks a line direction.md states"):
+            self.assertIn(part, text)
+        # The example of a note is a choice the direction leaves open, not a mismatch with it.
+        self.assertNotIn("I went on with the plan as accepted", text)

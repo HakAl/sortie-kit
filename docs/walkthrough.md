@@ -35,7 +35,8 @@ steps before it.
   runs without a window, one turn at a time, when the driver asks for it. The
   reviewer runs without a window too: the host starts it when the builder
   hands in a plan or a build, and the driver waits for its answer. You can
-  watch and you can talk to the driver.
+  watch, and what you type goes to the driver, but the driver is told not to
+  count on you: see [what still needs you](#what-still-needs-you).
 - **The report.** When the shift ends (the driver exits, the time runs out, or
   you run `sortie stop --shift SHIFT` in another terminal, with the shift
   directory the signing summary showed), the terminal comes
@@ -77,6 +78,40 @@ For its checks the builder may add Git working trees under the shift's
 worktree list` in your repository goes on showing them; the report names
 them. When you no longer need a shift's evidence, remove `.sortie/` and run
 `git worktree prune` in the repository to clear those entries.
+
+## What still needs you
+
+The signature and the window are the handover. Within the direction and what
+you signed, the driver is told to decide for itself, never to wait for an
+answer in the terminal, and to record each decision it made on its own and
+each question it could not settle. The report counts these in its Outcome and
+lists them under "Notes from the driver", as the driver's own statements,
+of which the host checked none. One thing is not the driver's to decide:
+when it holds that accepted work breaks a line your direction states, it is
+told to note that and end the shift early with you as next owner, since no
+command sends an accepted plan back. sortie-kit itself asks you nothing after the signature. What
+has needed a person in the shifts run so far:
+
+- **Before the shift runs:** the questions of `sortie start` when the command
+  line left something out, and your key's passphrase at signing.
+- **The driver CLI's own first question,** such as whether you trust the
+  folder. Its preselected answer can be the one that declines and exits.
+- **A driver CLI that your own configuration makes ask before it runs a
+  command.** It asks in the terminal, and with nobody there it waits. The
+  builder and the reviewer are given no terminal input, and each turn and
+  each review has a time limit: a CLI that lacks a permission there normally
+  fails or stops short, and one that hangs all the same is stopped at its
+  limit.
+- **A machine that stays awake.** The host holds off idle sleep where it can
+  ([keeping the machine awake](lifecycle.md#keeping-the-machine-awake)); a closed lid, Sleep chosen by hand, an empty
+  battery or `--no-wake` still let the machine sleep, and the signed window
+  goes on running meanwhile.
+
+Beyond that list nothing is promised. Not waiting is an instruction to the
+driver, not something the host enforces: the driver is an interactive
+program, and the toolkit cannot prompt one that stops and waits all the same.
+Such a shift stands idle until its deadline, and the report says what was
+done until then.
 
 ## How a shift ends
 

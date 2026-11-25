@@ -266,6 +266,13 @@ def closing_lines(raw, code, inert, shutdown=None, seen=""):
     except failed:
         pass
     try:
+        # What the driver noted as a decision or a question is in the report, not here.
+        noted = report.driver_notes(doc) if doc is not None else None
+        if noted:
+            lines.append("Notes from the driver: " + str(len(noted)) + "; see the report.")
+    except failed:
+        pass
+    try:
         # A review by the builder's own model family is said wherever the result is.
         same = report.family_words(doc["grant"]["review_policy"]) if doc is not None else ""
         if same:

@@ -244,6 +244,118 @@ class ReportTests(LocalTest):
         self.assertEqual(report.tasks_words(dict(tasks=[])),
                          'none briefed; whether the direction held more is not known to the host.')
 
+    NOTES = [dict(kind='decision', text='The plan counts displayed days; I took that as the prior window.', task_id='task', at='2030-01-01T00:00:07+00:00'),
+             dict(kind='question', text='Should `--all` include *archived* rows?', task_id=None, at='2030-01-01T00:01:00+00:00')]
+
+    def test_the_drivers_notes_are_counted_in_the_outcome_and_listed_as_its_own_words(self):
+        self.state['notes'] = self.NOTES; self.store()
+        doc = self.generate(); text = (self.shift / 'report.md').read_text()
+        self.assertEqual((doc['driver_notes'], doc['status'], doc['issues']), (self.NOTES, 'evidence summarized', []))
+        outcome = text.split('## Outcome')[1].split('\n## ')[0]
+        self.assertIn('- Notes the driver left: 2 (1 decision, 1 question, as the driver named them). They are '
+                      'listed under "Notes from the driver" below.\n', outcome)
+        section = text.split('## Notes from the driver')[1].split('\n## ')[0]
+        self.assertLess(text.index('## Notes from the driver'), text.index('## Not done'))
+        # The host says what it knows: whose statement it is, and that it checked none of it.
+        self.assertIn("Each is the driver's own statement", section)
+        self.assertIn('The host kept the text as written and checked none of it', section)
+        self.assertIn('A note has no answer in the shift', section)
+        self.assertIn('also not whether a decision was within the direction', section)
+        self.assertNotIn('obody', section)
+        self.assertIn('- Decision, task task, 2030-01-01T00:00:07+00:00: The plan counts displayed days; I took that as '
+                      'the prior window.\n', section)
+        # What a seat wrote is inert in the report, as everywhere.
+        self.assertIn('- Open question, no task named, 2030-01-01T00:01:00+00:00: Should \\`--all\\` include '
+                      '\\*archived\\* rows?\n', section)
+        from sortie_kit import launcher
+        lines = launcher.closing_lines((self.shift / 'report.json').read_bytes(), 0, str)
+        self.assertIn('Notes from the driver: 2; see the report.', lines)
+
+    def test_a_shift_with_no_notes_says_none_and_one_kept_before_notes_existed_reads_the_same(self):
+        for case in ('empty', 'absent'):
+            with self.subTest(case=case):
+                if case == 'absent':
+                    del self.state['notes']
+                self.store()
+                doc = self.generate(); text = (self.shift / 'report.md').read_text()
+                self.assertEqual((doc['driver_notes'], doc['status'], doc['issues']), ([], 'evidence summarized', []))
+                self.assertIn('- Notes the driver left: none.\n', text)
+                self.assertNotIn('## Notes from the driver', text)
+                from sortie_kit import launcher
+                lines = launcher.closing_lines((self.shift / 'report.json').read_bytes(), 0, str)
+                self.assertFalse([l for l in lines if l.startswith('Notes')])
+
+    def test_notes_of_another_shape_are_a_problem_and_are_not_shown(self):
+        for kept in ('bad', None, [dict(kind='decision', text='x')], [dict(self.NOTES[0], kind='remark')], [self.NOTES[0]] * 33,
+                     [dict(self.NOTES[0], text='x' * 1001)], [dict(self.NOTES[0], at='noon')], [dict(self.NOTES[0], at=1893456007)],
+                     [dict(self.NOTES[0], at='2030-01-01T00:00:07')], [dict(self.NOTES[0], at='2030-01-01T00:00:07+00:00' + ' ' * 40)],
+                     [dict(self.NOTES[0], task_id='never-briefed')],
+                     # Times with an offset that cannot be brought to UTC, at both ends of the calendar.
+                     [dict(self.NOTES[0], at='0001-01-01T00:00:00+00:01')], [dict(self.NOTES[0], at='9999-12-31T23:59:59-00:01')]):
+            with self.subTest(kept=str(kept)[:60]):
+                self.state['notes'] = kept; self.store()
+                doc = self.generate(); text = (self.shift / 'report.md').read_text()
+                self.assertIsNone(doc['driver_notes'])
+                self.assertEqual(doc['status'], 'partial')
+                self.assertIn(dict(path='driver-state.json', reason="the driver's notes are malformed; not shown"), doc['issues'])
+                self.assertIn('- Notes the driver left: not known; they could not be read or were left out of this report.\n', text)
+                self.assertNotIn('## Notes from the driver', text)
+                from sortie_kit import launcher
+                lines = launcher.closing_lines((self.shift / 'report.json').read_bytes(), 0, str, shutdown=None)
+                self.assertFalse([l for l in lines if l.startswith('Notes')])
+        # A report whose own copy of the notes holds such a time still gets its last lines.
+        for at in ('0001-01-01T00:00:00+00:01', '9999-12-31T23:59:59-00:01'):
+            raw = receipts.encoded(dict(json.loads((self.shift / 'report.json').read_bytes()), driver_notes=[dict(self.NOTES[0], at=at)]))
+            lines = launcher.closing_lines(raw, 0, str, shutdown=dict(cleanup='done'))
+            self.assertTrue([l for l in lines if l.startswith('Shutdown')], lines)
+            self.assertFalse([l for l in lines if l.startswith('Notes')])
+
+    def test_the_drivers_notes_count_against_the_reports_bound_on_details(self):
+        self.store(); tasks_only = self.charged()
+        self.state['notes'] = [dict(kind='decision', text='x' * 1000, task_id=None, at='2030-01-01T00:00:07+00:00')] * 32; self.store()
+        self.assertEqual(len(self.generate()['driver_notes']), 32)
+        self.assertGreater(self.charged(), tasks_only + 32_000)
+        # A bound the notes fit under alone and the tasks fit under alone: the tasks
+        # are kept and the notes are what is left out, never the other way round.
+        with patch.object(report, 'DETAIL_LIMIT', max(tasks_only, 34_000) + 2_000):
+            doc = self.generate()
+        self.assertIsNone(doc['driver_notes'])
+        self.assertEqual(len(doc['tasks']), 1)
+        self.assertEqual({i['reason'] for i in doc['issues']}, {report.LEFT_OUT})
+        text = (self.shift / 'report.md').read_text()
+        self.assertIn('- Notes the driver left: not known; they could not be read or were left out of this report.\n', text)
+        self.assertNotIn('## Notes from the driver', text)
+
+    def test_no_notes_are_never_left_out_at_the_bound_on_details(self):
+        self.state['commands'] = {}; self.store()
+        # An empty list is not counted against the bound, so a report that is full
+        # to the byte still says `none` and not `not known`.
+        kept, real = [], report.Reader.retain
+        def spy(reader, value, path):
+            kept.append(value); return real(reader, value, path)
+        with patch.object(report.Reader, 'retain', spy):
+            self.generate()
+        empty = kept.count([]); del kept[:]
+        self.state['notes'] = self.NOTES[1:]; self.store()
+        with patch.object(report.Reader, 'retain', spy):
+            self.generate()
+        self.assertEqual((kept.count([]), kept.count(self.NOTES[1:])), (empty, 1))
+        self.state['notes'] = []; self.store()
+        with patch.object(report, 'DETAIL_LIMIT', self.charged()):
+            doc = self.generate()
+        self.assertEqual((doc['driver_notes'], doc['status'], doc['issues']), ([], 'evidence summarized', []))
+        self.assertIn('- Notes the driver left: none.\n', (self.shift / 'report.md').read_text())
+
+    def test_the_short_report_at_the_output_limit_says_the_notes_are_not_known(self):
+        self.state['notes'] = self.NOTES; self.state['next_owner'] = '&' * 300000; self.store()
+        with patch.object(receipts, 'DOCUMENT_LIMIT', 200000):
+            doc = self.generate()
+        self.assertIn('output limit', doc['issues'][0]['reason'])
+        self.assertIsNone(doc['driver_notes'])
+        text = (self.shift / 'report.md').read_text()
+        self.assertIn('- Notes the driver left: not known', text)
+        self.assertNotIn('## Notes from the driver', text)
+
     def test_not_done_lists_an_unaccepted_task_beside_what_the_driver_named_as_not_started(self):
         self.task.update(stage='ack',candidate=None,accepted=None,receipts=[],reason='')
         self.state['not_started']=[dict(name='second task',reason='no time')]

@@ -63,7 +63,7 @@ class LifecycleFixture(test_receipts.ReceiptTests):
     def action(self, op, **data):
         self.counter += 1
         cmd = dict(version=1, id="command-" + str(self.counter), op=op)
-        if op not in ("brief", "finish"):
+        if op not in ("brief", "finish", "note"):
             task = self.task_state()
             cmd.update(task_id=task["id"], request_id=task["request_id"])
         cmd.update(data)
@@ -407,6 +407,91 @@ class LifecycleTests(LifecycleFixture):
         result = self.action('continue')
         self.assertEqual(result['status'], 'blocked', result)
         self.assertIn('wind-down', result['detail'])
+
+    def note(self, **data):
+        return self.action('note', **dict(dict(kind='decision', text='I chose the first reading.'), **data))
+
+    def test_a_note_of_the_drivers_is_kept_and_changes_nothing_else(self):
+        # Before any task, with no task named.
+        result = self.note(kind='question', text='Does "the prior window" mean the same number of days?')
+        self.assertEqual(result['status'], 'recorded', result)
+        self.assertIn('a note gets no answer in the shift', result['detail'])
+        self.assertEqual(self.spawn.started, [])
+        self.action('brief', task_id='task', kind='feature', brief=self.artifact('briefs/task.md'), next_owner='builder')
+        before = self.task_state()
+        # While a builder turn runs, about that task.
+        self.clock.sleep(7)
+        result = self.note(task_id='task')
+        self.assertEqual(result['status'], 'recorded', result)
+        self.assertEqual(self.task_state(), before)
+        state = self.state()
+        # The time is the host's, written as every time the report shows is.
+        import datetime
+        first = datetime.datetime.fromisoformat(state['notes'][0]['at'])
+        self.assertEqual((first.utcoffset(), first.microsecond), (datetime.timedelta(0), 0))
+        self.assertEqual(state['notes'], [
+            dict(kind='question', text='Does "the prior window" mean the same number of days?', task_id=None, at=first.isoformat()),
+            dict(kind='decision', text='I chose the first reading.', task_id='task',
+                 at=(first + datetime.timedelta(seconds=7)).isoformat())])
+        self.assertEqual((state['mode'], state['active'], len(self.spawn.started)), ('active', 'task', 1))
+        # The same command again repeats nothing.
+        again = dict(version=1, id='command-' + str(self.counter), op='note', kind='decision', text='I chose the first reading.', task_id='task')
+        self.assertEqual(self.driver.apply(again)['status'], 'replayed')
+        self.assertEqual(len(self.state()['notes']), 2)
+        # The same id with other words is refused, as for every command.
+        self.assertEqual(self.driver.apply(dict(again, text='I chose the second reading.'))['status'], 'invalid')
+        self.assertEqual(len(self.state()['notes']), 2)
+        # A task_id of null is a note about no task, as when it is left out.
+        self.assertEqual(self.note(text='About no task.', task_id=None)['status'], 'recorded')
+        self.assertEqual(self.state()['notes'][2]['task_id'], None)
+
+    def test_a_note_that_is_not_one_is_invalid_and_keeps_nothing(self):
+        self.action('brief', task_id='task', kind='feature', brief=self.artifact('briefs/task.md'), next_owner='builder')
+        for bad in (dict(kind='remark'), dict(text=' '), dict(text='x' * 1001), dict(text=7), dict(task_id='never-briefed'),
+                    dict(task_id=7), dict(request_id='0' * 32)):
+            with self.subTest(bad=bad):
+                result = self.note(**bad)
+                self.assertEqual(result['status'], 'invalid', result)
+                self.assertEqual(self.state()['notes'], [])
+        self.assertEqual(self.task_state()['stage'], 'ack')
+
+    def test_notes_are_taken_in_wind_down_and_stop_at_thirty_two(self):
+        self.default_driver(600)
+        self.clock.sleep(400)
+        self.assertLessEqual(self.driver.active_seconds(), 0)
+        for number in range(32):
+            self.assertEqual(self.note(text='note %d' % number)['status'], 'recorded')
+        result = self.note(text='one too many')
+        # Not `invalid`: that answer asks for the command again under a new id.
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIn('32', result['detail'])
+        self.assertNotIn('send it again', result['detail'])
+        self.assertEqual([n['text'] for n in self.state()['notes']], ['note %d' % n for n in range(32)])
+        self.assertEqual(self.action('finish', reason='done', next_owner='developer')['status'], 'closed')
+
+    def test_a_state_from_a_host_without_notes_loads_and_one_with_bad_notes_does_not(self):
+        self.note()
+        state = self.state(); del state['notes']
+        (self.shift / 'driver-state.json').write_bytes(receipts.encoded(state))
+        self.assertEqual(self.note(text='after')['status'], 'recorded')
+        self.assertEqual([n['text'] for n in self.state()['notes']], ['after'])
+        state = self.state(); state['notes'][0]['kind'] = 'remark'
+        (self.shift / 'driver-state.json').write_bytes(receipts.encoded(state))
+        self.assertNotEqual(self.note(text='more')['status'], 'recorded')
+        # As every task a state names, the task of a note is one of the state's.
+        state['notes'][0].update(kind='decision', task_id='never-briefed')
+        (self.shift / 'driver-state.json').write_bytes(receipts.encoded(state))
+        self.assertNotEqual(self.note(text='more')['status'], 'recorded')
+        state['notes'][0]['task_id'] = None
+        good = state['notes'][0]['at']
+        # A time that cannot be brought to UTC is a state that does not load, not an error of the host's.
+        for at in ('0001-01-01T00:00:00+00:01', '9999-12-31T23:59:59-00:01'):
+            state['notes'][0]['at'] = at
+            (self.shift / 'driver-state.json').write_bytes(receipts.encoded(state))
+            self.assertIn(self.note(text='more')['status'], ('invalid', 'blocked'), at)
+        state['notes'][0]['at'] = good
+        (self.shift / 'driver-state.json').write_bytes(receipts.encoded(state))
+        self.assertEqual(self.note(text='more')['status'], 'recorded')
 
     def test_wind_down_is_twenty_minutes_or_a_third_of_a_shorter_window(self):
         from sortie_kit.bounds import wind_down

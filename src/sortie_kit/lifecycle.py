@@ -50,6 +50,7 @@ COMMANDS = {
     "close": ({"task_id", "request_id"}, set()),
     "stop-evidence": ({"task_id", "request_id", "receipt"}, set()),
     "finish": ({"reason", "next_owner"}, {"not_started"}),
+    "note": ({"kind", "text"}, {"task_id"}),
 }
 
 
@@ -291,7 +292,7 @@ class Driver:
     def initial(self):
         return dict(version=1, grant_sha256=self.pin, direction_sha256=self.value["direction_sha256"],
                     mode="active", active=None, tasks={}, commands={}, pending=None, turn=None, reason="",
-                    next_owner="driver", not_started=None, review=None, last_review=None)
+                    next_owner="driver", not_started=None, review=None, last_review=None, notes=[])
 
     def load(self, view):
         try:
@@ -300,6 +301,7 @@ class Driver:
             return self.initial()
         if isinstance(state, dict):
             state.setdefault("not_started", None)  # a state from a host that had no such field
+            state.setdefault("notes", [])
         channels.fields(state, self.initial())
         if (type(state["version"]) is not int or state["version"] != 1
                 or state["grant_sha256"] != self.pin or state["direction_sha256"] != self.value["direction_sha256"]
@@ -311,6 +313,9 @@ class Driver:
             raise Refused("active task missing")
         if state["not_started"] is not None:
             channels.unstarted(state["not_started"])
+        if any(note["task_id"] is not None and note["task_id"] not in state["tasks"]
+               for note in channels.notes(state["notes"])):
+            raise Refused("a note names a task the state does not hold")
         for key, task in state["tasks"].items():
             channels.token(key)
             channels.fields(task, self.new_task(key, "feature", {}, "builder"))
@@ -1274,6 +1279,25 @@ class Driver:
                 left = channels.unstarted(command["not_started"]) if "not_started" in command else None
             state.update(mode="closed", reason=reason, next_owner=owner, not_started=left)
             return "closed", state["reason"]
+        if op == "note":
+            # The driver's own statement for the report, under the kind it gives it: a
+            # decision, or a question. The host judges neither. Taken whenever
+            # commands are, bound to no phase, and it changes nothing but this list.
+            with asked():
+                if command["kind"] not in channels.NOTE_KINDS:
+                    raise Refused("kind is decision or question")
+                said = channels.text(command["text"], channels.NOTE_TEXT)
+                # A task_id of null is a note about no task, as when it is left out.
+                about = channels.token(command["task_id"]) if command.get("task_id") is not None else None
+                if about is not None and about not in state["tasks"]:
+                    raise Refused("task_id names no task briefed in this shift; leave it out for a note about no task")
+            if len(state["notes"]) >= channels.NOTES:
+                # Not `invalid`: that answer asks for the command again under a new id.
+                return "blocked", ("32 notes are kept already and no more are taken in this shift; nothing changed. "
+                                   "Send no further note; what is left to say goes in the reason of your finish")
+            state["notes"].append(dict(kind=command["kind"], text=said, task_id=about,
+                                       at=self.now().replace(microsecond=0).isoformat()))
+            return "recorded", "note kept for the report; nothing else changed, and a note gets no answer in the shift"
         task = self.task(state, command)
         if op == "continue":
             if task["stage"] in REVIEW:

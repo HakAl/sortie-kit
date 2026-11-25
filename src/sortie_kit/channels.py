@@ -9,6 +9,7 @@ import time
 from .layout import Refused
 from .receipts import session, encoded, digest
 from .receipt_schema import decode
+from .report_metrics import timestamp
 
 
 def token(value):
@@ -34,6 +35,28 @@ def unstarted(value):
         text(item["name"], 200)
         text(item["reason"], 500)
     return [dict(name=item["name"], reason=item["reason"]) for item in value]
+
+
+NOTE_KINDS = ("decision", "question")
+NOTE_TEXT, NOTES = 1000, 32
+
+
+def notes(value):
+    """What a driver recorded with `note`: at most 32 items, each what it calls a
+    decision or a question, in its own words, with the task it
+    is about when it named one and the host's time, written as the times of turns
+    and reviews are. Only the shape is checked."""
+    if not isinstance(value, list) or len(value) > NOTES:
+        raise Refused("notes is a list of at most 32 items")
+    for item in value:
+        fields(item, {"kind", "text", "task_id", "at"})
+        at = item["at"]
+        if item["kind"] not in NOTE_KINDS or not isinstance(at, str) or len(at) > 40 or timestamp(at) is None:
+            raise Refused("a note has a kind of decision or question and a time with its offset")
+        text(item["text"], NOTE_TEXT)
+        if item["task_id"] is not None:
+            token(item["task_id"])
+    return [dict(kind=item["kind"], text=item["text"], task_id=item["task_id"], at=item["at"]) for item in value]
 
 
 def fields(value, required, optional=()):

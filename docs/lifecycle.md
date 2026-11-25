@@ -144,7 +144,9 @@ refused prints the error and exits without the usual report line. A driver that 
 the shift with reason `driver exited`. A driver suspended with Ctrl-Z is treated
 the same way, because the host cannot resume an interactive program for the
 developer. An interactive driver that stops working without exiting cannot be
-prompted by the toolkit; the developer is at that terminal.
+prompted by the toolkit. Its instructions tell it that the developer may not
+be at that terminal and that it must never wait for an answer there; a driver
+that waits all the same leaves the shift idle until the signed deadline.
 
 The builder is headless and runs in turns. Each turn is one owned process
 group started from the signed builder argv in the repository, with no terminal
@@ -303,6 +305,7 @@ name `task_id` and the current phase `request_id` from `current-context.json`.
 | `close` | none | Close only a locally accepted candidate. |
 | `stop-evidence` | `receipt` | Record builder-seat cessation separately. |
 | `finish` | `reason`, `next_owner`, optional `not_started`; no task/request required | Close the local handoff. `not_started` is the driver's list of what the direction held and it never briefed: at most 32 items, each `{"name": text up to 200, "reason": text up to 500}` and nothing else; `[]` says the direction held no more. A list of another shape is answered `invalid` and nothing changes. The host keeps it as the driver's statement and checks only its shape. |
+| `note` | `kind` (`decision` or `question`), `text` up to 1000 characters, optional `task_id` of a task briefed in this shift; no request | Keep the driver's own statement for the report and change nothing else: what it calls a decision it made on its own, or a question it could not settle before it went on. Answered `recorded`. Served whenever commands are, also while a builder turn or a review runs and in wind-down. At most 32 are kept; a further one is answered `blocked`. The host checks the shape and nothing of what the text says, also not whether a decision was within the direction. A note has no answer: the command gives back only that it was kept. |
 
 `turn_seconds` is a whole number from 1 to 7200 (default 1800) and is clipped
 to the time left until the host stops all work, so a turn started before
@@ -504,7 +507,7 @@ is started, the receipt that was handed in stays taken, and the report says
 the work was handed in and not reviewed. With the default limit of ten
 minutes that is every review in the wind-down of a shift of thirty minutes or
 less. `consume`, `close`, `progress`,
-`stop-evidence` and `finish` are served as before, so the driver can take what
+`stop-evidence`, `note` and `finish` are served as before, so the driver can take what
 that turn hands in and write its last statement. The host begins to stop all
 work a short closing margin before the signed deadline: ten seconds, or half
 of a wind-down shorter than twenty seconds. That moment is the start of a

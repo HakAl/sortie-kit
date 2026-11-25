@@ -20,7 +20,8 @@ def timestamp(value):
     try:
         dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
         return dt.astimezone(timezone.utc) if dt.tzinfo else None
-    except ValueError:
+    except (ValueError, OverflowError):
+        # OverflowError: a time at an end of the calendar whose offset takes it past that end.
         return None
 
 
