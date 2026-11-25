@@ -808,6 +808,107 @@ class HostReviewTests(ReviewFixture):
                              next_owner="builder")
         self.assertEqual(result["status"], "recorded", result)
 
+    def out_of_time_at_the_second_attempts_intent(self, *, landed, record_fails=False):
+        """The host runs a failed attempt once more by itself. The save of that second
+        attempt's intent finds the time under the lock over: before anything was written,
+        or (`landed`) after the state file took it. `record_fails`: the write of the
+        record that follows, on its own time, runs out as well."""
+        from unittest import mock
+        from sortie_kit.layout import Elapsed
+        real, calls = self.driver.save, []
+
+        def save(view, state):
+            calls.append(1)
+            if len(calls) == 1:
+                if landed:
+                    real(view, state)
+                raise Elapsed("duration elapsed")
+            if len(calls) == 2 and record_fails:
+                raise Elapsed("duration elapsed")
+            return real(view, state)
+        return mock.patch.object(self.driver, "save", save)
+
+    def failed_once_and_told(self, state):
+        """The review is on record as failed with its one attempt, nothing is left begun,
+        the work stays handed in, and the wait shows it to a driver nobody answered."""
+        from sortie_kit import shift_wait
+        task, last = state["tasks"]["task"], state["last_review"]
+        self.assertEqual((state["review"], state["mode"], state["active"], task["stage"]), (None, "active", "task", "review"))
+        self.assertEqual((last["outcome"], last["receipt"], len(task["reviews"])), ("FAILED", None, 1))
+        self.assertEqual([item["attempt"] for item in task["reviews"][0]["attempts"]], [1])
+        for part in ("attempt 2 could not start", "the time under the host's lock ran out", "Send `continue`"):
+            self.assertIn(part, last["detail"])
+        (self.shift / "driver-command.json").unlink(missing_ok=True)
+        reading = shift_wait.observe(self.shift)[0]
+        self.assertEqual((reading["status"], reading["review"], reading["last_review"]["outcome"]),
+                         ("ready", None, "FAILED"))
+        started = len(self.spawn.started)
+        self.assertEqual(self.action("continue")["status"], "recorded")
+        state = self.state()
+        self.assertEqual((len(self.spawn.started), state["review"]["review"], state["review"]["running"]["attempt"]),
+                         (started + 1, 2, 1))
+        self.assertEqual(self.end_review()["last_review"]["outcome"], "ACCEPT")
+
+    def test_a_second_attempt_whose_intent_could_not_be_saved_in_time_is_not_left_begun_and_untold(self):
+        """No command of the driver's is answered here, so a review left begun with no
+        attempt running would be known to nobody and be in no report."""
+        self.reach_review()
+        with self.out_of_time_at_the_second_attempts_intent(landed=False):
+            state = self.end_review("I looked and it seems fine.\n")
+        self.failed_once_and_told(state)
+
+    def test_the_same_when_that_intent_had_reached_the_state_file(self):
+        self.reach_review()
+        with self.out_of_time_at_the_second_attempts_intent(landed=True):
+            state = self.end_review("I looked and it seems fine.\n")
+        self.failed_once_and_told(state)
+
+    def test_the_end_of_a_first_attempt_is_never_taken_as_the_end_of_a_second_that_did_not_run(self):
+        """The second attempt's intent reached the state file, the time was found over, and
+        the record on its own time ran out too. The host still holds what it saw of the
+        first attempt's end. At the next chance that is not the end of attempt 2, which
+        no process ever ran: the review is failed once, and not twice with a made-up attempt."""
+        from sortie_kit.layout import Elapsed
+        self.reach_review()
+        with self.out_of_time_at_the_second_attempts_intent(landed=True, record_fails=True):
+            self.prints(b"I looked and it seems fine.\n")
+            self.spawn.child.code = 0
+            with self.assertRaises(Elapsed):
+                self.driver.poll_turn()
+        on_file = self.state()["review"]
+        self.assertEqual((on_file["running"]["attempt"], len(on_file["attempts"])), (2, 1))
+        started = len(self.spawn.started)
+        self.driver.record_turn(live=True)
+        self.assertEqual(len(self.spawn.started), started)
+        self.failed_once_and_told(self.state())
+
+    def test_no_reviewer_is_started_by_a_command_whose_time_is_over(self):
+        """The start check of the reviewer took longer than a command has. No process is
+        started after that: the review is kept as failed once, as any attempt that could
+        not start with no time left for its receipt, and `continue` starts another."""
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        started, real = len(self.spawn.started), self.admission.seat_start
+
+        def seat_start(role, prompt, cwd=None):
+            self.clock.sleep(16)
+            return real(role, prompt, cwd)
+        self.admission.seat_start = seat_start
+        try:
+            _, path = self.phase_receipt(target={"kind": "commit", "commit": self.candidate})
+            answer = self.action("consume", receipt=path, target={"kind": "commit", "commit": self.candidate})
+        finally:
+            self.admission.seat_start = real
+        state = self.state()
+        task, last = state["tasks"]["task"], state["last_review"]
+        self.assertEqual(len(self.spawn.started), started)
+        self.assertEqual((answer["status"], state["mode"], state["pending"], state["review"], task["stage"]),
+                         ("advanced", "active", None, None, "review"))
+        self.assertEqual((last["outcome"], last["receipt"]), ("FAILED", None))
+        self.assertIn("time of the command ran out", last["detail"])
+        self.assertEqual(self.action("continue")["status"], "recorded")
+        self.assertEqual(self.end_review()["last_review"]["outcome"], "ACCEPT")
+
     def test_the_repository_is_untouched_by_the_host_making_a_review_directory(self):
         before = subprocess.check_output(["git", "-C", str(self.target), "status", "--porcelain"], timeout=5)
         self.reach_review()

@@ -877,7 +877,9 @@ class TurnTests(LifecycleFixture):
             return {}
         # Under half a second is left to write the turn's end: no listing competes with it.
         # The lock's time is counted by the fixture's clock, so it is 0.4 s however long the write takes.
+        # The serving loop's lock takes the cap of a live command, so that is what is lowered here.
         with patch.object(lifecycle, "receipt_marks", listing), self.session_time_by_the_clock(), \
+                patch.object(lifecycle, "COMMAND_SECONDS", 0.4), \
                 patch.object(self.driver, "final_seconds", lambda: 0.4):
             self.driver.poll_turn()
         self.assertEqual(calls, [])
@@ -887,6 +889,7 @@ class TurnTests(LifecycleFixture):
         self.assertEqual(self.action("continue")["status"], "recorded")
         self.spawn.child.code = 0
         with patch.object(lifecycle, "receipt_marks", listing), self.session_time_by_the_clock(), \
+                patch.object(lifecycle, "COMMAND_SECONDS", 0.6), \
                 patch.object(self.driver, "final_seconds", lambda: 0.6):
             self.driver.poll_turn()
         self.assertEqual(len(calls), 1)
@@ -1907,3 +1910,530 @@ class BuilderTests(LifecycleFixture):
         packaged=files('sortie_kit').joinpath('data','templates','tiger.md').read_bytes()
         self.assertEqual(without_repository_block(source),packaged)
         self.assertEqual(without_repository_block(packaged),packaged)
+
+
+def real_ledger_entries(shift):
+    """The entries of the shift's receipt ledger as they are on file; none when there is no file."""
+    try:
+        return json.loads((shift / "receipts" / ".consumed.json").read_text())["entries"]
+    except FileNotFoundError:
+        return []
+
+
+class CommandTimeTests(LifecycleFixture):
+    """What time a driver command has under the lock, and that its record is not lost to it. A real
+    shift on a loaded machine ended when a `continue` took more than five seconds: the builder turn
+    was started, the last save found the command's time over, and the next command blocked the shift."""
+
+    def slow_dispatch(self, seconds):
+        real = self.driver.dispatch
+
+        def dispatch(*args):
+            result = real(*args)
+            self.clock.sleep(seconds)
+            return result
+        return patch.object(self.driver, "dispatch", side_effect=dispatch)
+
+    def test_a_command_that_took_more_than_five_seconds_keeps_its_record(self):
+        for seconds in (6, 16):  # more than a command once had, and more than one has now
+            with self.subTest(seconds=seconds):
+                self.begin(name="task-" + str(seconds)) if seconds == 6 else self.end_turn()
+                started = len(self.spawn.started)
+                with self.session_time_by_the_clock(), self.slow_dispatch(seconds):
+                    result = self.action("continue", again=True)
+                self.assertEqual(result["status"], "recorded", result)
+                state = self.state()
+                self.assertIsNone(state["pending"])
+                self.assertEqual((state["mode"], len(self.spawn.started)), ("active", started + 1))
+                self.assertIsNotNone(state["turn"])
+
+    def test_a_live_command_has_fifteen_seconds_and_finalization_keeps_its_five(self):
+        from sortie_kit.lifecycle import COMMAND_SECONDS
+        self.assertEqual(COMMAND_SECONDS, 15)
+        self.begin()
+        seen, real = [], self.driver.dispatch
+
+        def dispatch(view, *rest):
+            seen.append((view.budget.remaining(), self.driver.work_seconds()))
+            return real(view, *rest)
+        with self.session_time_by_the_clock(), patch.object(self.driver, "dispatch", side_effect=dispatch):
+            self.assertEqual(self.action("continue", again=True)["status"], "recorded")
+            self.end_turn()
+            self.clock.sleep(985)  # less working time left than a command has: never more than that
+            self.action("continue", again=True)
+            self.clock.sleep(15)   # the working time is over: a direct caller has the finalization time
+            self.action("finish", reason="done", next_owner="developer")
+        self.assertEqual(len(seen), 3, seen)
+        self.assertEqual(seen[0][0], 15)
+        self.assertTrue(0 < seen[1][0] == seen[1][1] < 15, seen)
+        self.assertEqual((seen[2][0], seen[2][1]), (5, 0), seen)
+
+    def test_time_that_ran_out_before_the_command_began_leaves_nothing_pending(self):
+        """Nothing of the command was done, whether or not its intent reached the state file."""
+        for landed in (False, True):
+            with self.subTest(intent_on_disk=landed):
+                self.begin(name="task-" + str(landed)) if not landed else self.end_turn()
+                started, before = len(self.spawn.started), self.task_state()
+                real, calls = self.driver.save, []
+
+                def save(view, state):
+                    calls.append(1)
+                    if len(calls) == 1:
+                        if landed:
+                            real(view, state)
+                        raise Elapsed("duration elapsed")
+                    return real(view, state)
+                self.driver.save = save
+                try:
+                    result = self.action("continue", again=True)
+                finally:
+                    self.driver.save = real
+                self.assertEqual(result["status"], "blocked", result)
+                for part in ("no time was left to begin", "Nothing of this command was done", "current-context.json", "new id"):
+                    self.assertIn(part, result["detail"])
+                self.assertNotIn("could not be recorded", result["detail"])
+                state = self.state()
+                self.assertEqual((state["pending"], state["mode"], len(self.spawn.started)), (None, "active", started))
+                self.assertEqual(self.task_state(), before)
+                self.assertEqual(self.action("continue", again=True)["status"], "recorded")
+
+    def test_time_that_really_ran_out_on_the_way_to_the_command_is_answered_the_same(self):
+        self.begin()
+        real = self.driver.load
+
+        def load(view):
+            state = real(view)
+            self.clock.sleep(16)
+            return state
+        with self.session_time_by_the_clock():
+            with patch.object(self.driver, "load", side_effect=load):
+                result = self.action("continue", again=True)
+            self.assertEqual(result["status"], "blocked", result)
+            self.assertIn("no time was left to begin", result["detail"])
+            self.assertEqual((self.state()["pending"], self.state()["mode"]), (None, "active"))
+            self.assertEqual(self.action("continue", again=True)["status"], "recorded")
+
+    def test_time_that_ran_out_before_the_state_was_read_is_answered_the_same_and_not_as_a_wrong_command(self):
+        """At the wait for the lock, at the reading of the state, or while the end of an
+        earlier turn was worked out: the command was not looked at, so it is not `invalid`."""
+        from sortie_kit import lifecycle
+        self.begin()
+        real = self.driver.load
+
+        def load(view):
+            self.clock.sleep(16)
+            return real(view)
+
+        def settle(state, view=None):
+            raise Elapsed("duration elapsed")
+        for name, patched in (
+                ("lock", patch.object(lifecycle.channels, "locked", side_effect=Elapsed("duration elapsed"))),
+                ("read", patch.object(self.driver, "load", side_effect=load)),
+                ("settle", patch.object(self.driver, "settle", side_effect=settle))):
+            with self.subTest(at=name), self.session_time_by_the_clock():
+                before = self.state()
+                with patched:
+                    result = self.action("continue", again=True)
+                self.assertEqual(result["status"], "blocked", result)
+                self.assertIn("no time was left to begin", result["detail"])
+                self.assertEqual(self.state(), before)
+        self.assertEqual(self.action("continue", again=True)["status"], "recorded")
+
+    def test_an_outcome_whose_context_file_could_not_be_written_is_not_on_file_as_recorded(self):
+        """A save writes two files. When the time runs out between them the driver is told
+        that the outcome could not be recorded, so the state file must not say that it was:
+        the state file is written last, and the intent is still in it."""
+        self.begin("defect")
+        _, path = self.phase_receipt()
+        real_record, real_atomic, recording = self.driver.record, receipts.Evidence.atomic, []
+
+        def record(view, state, serving=None):
+            recording.append(1)
+            return real_record(view, state, serving)
+
+        def atomic(view, name, raw, **kwargs):
+            if recording and name == "current-context.json":
+                raise Elapsed("duration elapsed")
+            return real_atomic(view, name, raw, **kwargs)
+        with patch.object(self.driver, "record", side_effect=record), patch.object(receipts.Evidence, "atomic", atomic):
+            result = self.action("consume", receipt=path)
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("could not be recorded", result["detail"])
+        state = self.state()
+        self.assertEqual((state["pending"]["op"], state["mode"], self.task_state()["stage"]), ("consume", "active", "ack"))
+        result = self.action("continue", again=True)
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("unresolved effect intent", result["detail"])
+        self.assertEqual(self.state()["mode"], "blocked")
+
+    def test_no_builder_is_started_by_a_command_whose_time_is_over(self):
+        """The time is asked once more at the start itself: a start check that took longer
+        than a command has starts nothing, and the turn is one that did not start."""
+        self.begin()
+        started, real = len(self.spawn.started), self.admission.seat_start
+
+        def seat_start(role, prompt, cwd=None):
+            self.clock.sleep(16)
+            return real(role, prompt, cwd)
+        with self.session_time_by_the_clock():
+            with patch.object(self.admission, "seat_start", seat_start):
+                result = self.action("continue", again=True)
+            self.assertEqual(result["status"], "blocked", result)
+            self.assertIn("did not start", result["detail"])
+            self.assertIn("time of the command ran out", result["detail"])
+            state = self.state()
+            self.assertEqual((state["mode"], state["pending"], state["turn"], len(self.spawn.started)),
+                             ("active", None, None, started))
+            self.assertEqual(self.action("continue", again=True)["status"], "recorded")
+        self.assertEqual(len(self.spawn.started), started + 1)
+
+    def test_the_receipt_check_of_a_consume_is_given_no_more_than_the_command_has_left(self):
+        self.begin("defect")
+        _, path = self.phase_receipt()
+        real_load, real_check, given = self.driver.load, receipts.validate_receipt, []
+
+        def load(view):
+            state = real_load(view)
+            self.clock.sleep(13)  # two of the fifteen seconds are left
+            return state
+
+        def check(*args, **kwargs):
+            given.append(kwargs["seconds"])
+            return real_check(*args, **kwargs)
+        with self.session_time_by_the_clock(), patch.object(self.driver, "load", side_effect=load), \
+                patch.object(receipts, "validate_receipt", check):
+            result = self.action("consume", receipt=path)
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertEqual(len(given), 1)
+        self.assertTrue(0 < given[0] <= 2, given)
+
+    def test_no_receipt_check_begins_once_the_command_has_no_time_left_for_it(self):
+        """The look at the ledger before the check can use up what the command had. The
+        check writes the ledger, so it is not begun then, with no least time of its own."""
+        self.begin("defect")
+        _, path = self.phase_receipt()
+        real_ledger, real_check = receipts.ledger, receipts.validate_receipt
+        for name, before, after in (("the look itself ran out", 16, 0), ("nothing was left after it", 0, 14.7)):
+            with self.subTest(name), self.session_time_by_the_clock():
+                looks, checks = [], []
+
+                def ledger(view):
+                    looks.append(1)
+                    if len(looks) == 1:
+                        self.clock.sleep(before)
+                        value = real_ledger(view)
+                        self.clock.sleep(after)
+                        return value
+                    return real_ledger(view)
+
+                def check(*args, **kwargs):
+                    checks.append(kwargs["seconds"])
+                    return real_check(*args, **kwargs)
+                with patch.object(receipts, "ledger", ledger), patch.object(receipts, "validate_receipt", check):
+                    result = self.action("consume", receipt=path)
+                self.assertEqual(checks, [])
+                self.assertEqual(result["status"], "blocked", result)
+                self.assertIn("ran out of time", result["detail"])
+                self.assertIn("Nothing changed", result["detail"])
+                task = self.task_state()
+                self.assertEqual((self.state()["mode"], self.state()["pending"], task["stage"], task["receipts"]),
+                                 ("active", None, "ack", []))
+                self.assertEqual(real_ledger_entries(self.shift), [])
+        self.assertEqual(self.action("consume", receipt=path)["status"], "advanced")
+
+    def test_an_outcome_whose_state_file_was_replaced_and_not_synced_still_stops_the_shift(self):
+        """The state file is replaced before its directory is synced. When that sync fails
+        the driver is told that the outcome could not be recorded, while the file that can
+        be read says it was and holds no intent. The host that gave that answer takes no
+        further command as if nothing had happened: the next one stops the shift."""
+        self.begin()
+        real_record, real_atomic, recording = self.driver.record, receipts.Evidence.atomic, []
+
+        def record(view, state, serving=None):
+            recording.append(1)
+            try:
+                return real_record(view, state, serving)
+            finally:
+                recording.clear()
+
+        def atomic(view, name, raw, **kwargs):
+            real_atomic(view, name, raw, **kwargs)
+            if recording and name == "driver-state.json":
+                raise OSError(5, "Input/output error")
+        with patch.object(self.driver, "record", side_effect=record), patch.object(receipts.Evidence, "atomic", atomic):
+            result = self.action("continue", again=True)
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("could not be recorded", result["detail"])
+        state, started = self.state(), len(self.spawn.started)
+        self.assertEqual((state["pending"], state["mode"]), (None, "active"))  # what a reader sees
+        self.end_turn()
+        result = self.action("continue", again=True)
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("unresolved effect intent", result["detail"])
+        self.assertEqual((self.state()["mode"], self.state()["next_owner"], len(self.spawn.started)),
+                         ("blocked", "developer", started))
+
+    def sync_fails_once_after_the_state_was_replaced(self, when=lambda state: True):
+        """The state file is replaced and the sync of its directory then fails, once, for
+        the first state `when` takes."""
+        real, failed = receipts.Evidence.atomic, []
+
+        def atomic(view, name, raw, **kwargs):
+            real(view, name, raw, **kwargs)
+            if name == "driver-state.json" and not failed and when(decode(raw)):
+                failed.append(1)
+                raise OSError(5, "Input/output error")
+        return patch.object(receipts.Evidence, "atomic", atomic)
+
+    def test_the_command_whose_outcome_could_not_be_recorded_is_not_replayed_round_the_stop(self):
+        """After such a sync the readable state holds that command's own id as taken. Sent
+        again, unchanged or changed, it stops the shift as any other command does."""
+        self.begin()
+        task = self.task_state()
+        command = dict(version=1, id="unrecorded", op="continue", task_id=task["id"], request_id=task["request_id"],
+                       again=True)
+        with self.sync_fails_once_after_the_state_was_replaced(lambda state: "unrecorded" in state["commands"]):
+            result = self.driver.apply(command)
+        self.assertIn("could not be recorded", result["detail"])
+        state, started = self.state(), len(self.spawn.started)
+        self.assertEqual((state["pending"], state["mode"], "unrecorded" in state["commands"]), (None, "active", True))
+        for sent in (command, dict(command, turn_seconds=60)):
+            result = self.driver.apply(sent)
+            self.assertEqual(result["status"], "blocked", result)
+            self.assertIn("unresolved effect intent", result["detail"])
+            self.assertEqual((self.state()["mode"], self.state()["next_owner"]), ("blocked", "developer"))
+        self.assertEqual(len(self.spawn.started), started)
+
+    def test_a_finish_whose_outcome_could_not_be_recorded_is_not_kept_as_a_clean_close(self):
+        """The readable state says closed, with the driver's next owner. The driver was told
+        that the outcome could not be recorded, and the host's own end says the same: the
+        developer is the next owner and the reason names the command."""
+        from sortie_kit import host
+        self.begin()
+        sent = []
+
+        def sleep(seconds):
+            self.clock.sleep(seconds)
+            if not sent:
+                sent.append(1)
+                (self.shift / "driver-command.json").write_bytes(receipts.encoded(dict(
+                    version=1, id="last", op="finish", reason="all done", next_owner="maintainer")))
+            elif len(sent) > 20:
+                self.clock.sleep(max(0, 990 - self.clock.now()))
+            else:
+                sent.append(1)
+        with patch.object(host, "Driver", lambda *args, **kwargs: self.driver), \
+                self.sync_fails_once_after_the_state_was_replaced(lambda state: state["mode"] == "closed"):
+            code, why = host.run_shift(self.admission, self.spawn, seconds=1000, wind_down=10, poll=1, sleep=sleep)
+        answer = decode((self.shift / "driver-response.json").read_bytes())
+        self.assertEqual((answer["id"], answer["status"]), ("last", "blocked"))
+        self.assertIn("could not be recorded", answer["detail"])
+        state = self.state()
+        self.assertEqual((state["mode"], state["next_owner"]), ("closed", "developer"))
+        for words in (state["reason"], why):
+            self.assertIn("the outcome of command last could not be recorded", words)
+        self.assertLess(len(sent), 5)  # the host ended on that pass and did not run on to the end of its time
+        self.assertEqual(code, self.code_of_a_shift_stopped_on_an_intent())
+
+    def code_of_a_shift_stopped_on_an_intent(self):
+        """What the host's loop returns for a shift a command blocked on an intent left on file."""
+        from sortie_kit import host
+        other = type(self)("code_of_a_shift_stopped_on_an_intent")
+        other.setUp()
+        try:
+            other.begin()
+            state = other.state()
+            state["pending"] = dict(id="crashed", digest="0" * 64, op="consume")
+            (other.shift / "driver-state.json").write_bytes(receipts.encoded(state))
+            sent = []
+
+            def sleep(seconds):
+                other.clock.sleep(seconds)
+                if not sent:
+                    (other.shift / "driver-command.json").write_bytes(receipts.encoded(dict(
+                        version=1, id="next", op="finish", reason="all done", next_owner="maintainer")))
+                sent.append(1)
+                if len(sent) > 20:
+                    other.clock.sleep(max(0, 990 - other.clock.now()))
+            with patch.object(host, "Driver", lambda *args, **kwargs: other.driver):
+                code, why = host.run_shift(other.admission, other.spawn, seconds=1000, wind_down=10, poll=1, sleep=sleep)
+            self.assertIn("unresolved effect intent", why)
+            return code
+        finally:
+            other.doCleanups()
+            other.tearDown()
+
+    def test_a_stop_found_before_the_command_is_told_as_that_when_its_record_ran_out_of_time(self):
+        """An intent left by an earlier command stops the shift. When the write of that stop
+        runs out of time the answer is still the stop, and not advice to send the command again."""
+        self.begin()
+        state = self.state()
+        state["pending"] = dict(id="crashed", digest="0" * 64, op="consume")
+        (self.shift / "driver-state.json").write_bytes(receipts.encoded(state))
+        with patch.object(self.driver, "save", side_effect=Elapsed("duration elapsed")):
+            result = self.action("continue", again=True)
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("unresolved effect intent", result["detail"])
+        self.assertNotIn("no time was left to begin", result["detail"])
+
+    def test_a_record_that_still_cannot_be_written_is_the_stop_it_was(self):
+        """The record has its own time. When that runs out too, nothing is tried again."""
+        self.begin()
+        real, calls = self.driver.save, []
+
+        def save(view, state):
+            calls.append(1)
+            if len(calls) == 3:  # the intent, the turn's intent, then the record
+                self.clock.sleep(6)
+            return real(view, state)
+        self.driver.save = save
+        try:
+            with self.session_time_by_the_clock():
+                result = self.action("continue", again=True)
+        finally:
+            self.driver.save = real
+        self.assertEqual(result["status"], "blocked", result)
+        for part in ("could not be recorded", "not certain", "developer"):
+            self.assertIn(part, result["detail"])
+        self.assertIsNotNone(self.state()["pending"])
+        result = self.action("continue", again=True)
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("unresolved effect intent", result["detail"])
+        self.assertEqual(self.state()["mode"], "blocked")
+
+    def test_a_turn_whose_intent_could_not_be_saved_in_time_did_not_start(self):
+        self.begin()
+        started = len(self.spawn.started)
+        real, calls = self.driver.save, []
+
+        def save(view, state):
+            calls.append(1)
+            if len(calls) == 2:  # the turn's intent, inside the command
+                raise Elapsed("duration elapsed")
+            return real(view, state)
+        self.driver.save = save
+        try:
+            result = self.action("continue", again=True)
+        finally:
+            self.driver.save = real
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("did not start", result["detail"])
+        self.assertNotIn("effect incomplete", result["detail"])
+        state = self.state()
+        self.assertEqual((state["mode"], state["pending"], state["turn"], len(self.spawn.started)),
+                         ("active", None, None, started))
+        self.assertTrue(self.task_state()["turns"][-1]["outcome"].startswith("not started"))
+        self.assertEqual(self.action("continue", again=True)["status"], "recorded")
+
+    def test_a_builder_start_that_pauses_five_and_a_half_seconds_on_the_machine_clock(self):
+        """The pause that reproduced the lost shift, with the lock's time on the real clock."""
+        self.begin()
+        real = self.admission.seat_start
+
+        def seat_start(role, prompt, cwd=None):
+            time.sleep(5.5)
+            return real(role, prompt, cwd)
+        self.admission.seat_start = seat_start
+        result = self.action("continue", again=True)
+        self.assertEqual(result["status"], "recorded", result)
+        state = self.state()
+        self.assertIsNone(state["pending"])
+        self.assertIsNotNone(state["turn"])
+        self.end_turn()
+        self.assertEqual(self.action("continue", again=True)["status"], "recorded")
+
+    def test_a_brief_whose_task_could_not_be_saved_in_time_was_not_briefed(self):
+        real, calls = self.driver.save, []
+
+        def save(view, state):
+            calls.append(1)
+            if len(calls) == 2:  # the new task, inside the command
+                raise Elapsed("duration elapsed")
+            return real(view, state)
+        self.driver.save = save
+        try:
+            result = self.action("brief", task_id="task", kind="feature", brief=self.artifact("briefs/task.md"),
+                                 next_owner="builder")
+        finally:
+            self.driver.save = real
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("was not briefed", result["detail"])
+        state = self.state()
+        self.assertEqual((state["mode"], state["pending"], state["tasks"], state["active"], len(self.spawn.started)),
+                         ("active", None, {}, None, 0))
+        self.begin()  # the same task can be briefed after it
+
+    def test_a_review_whose_intent_could_not_be_saved_in_time_is_not_an_attempt_and_not_a_lost_review(self):
+        """A record on its own time must not put on file a review that never ran."""
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.assertEqual(self.task_state()["stage"], "build")
+        self.end_turn() if self.state()["turn"] is not None else None
+        real, calls = self.driver.save, []
+
+        def save(view, state):
+            calls.append(1)
+            if len(calls) == 2:  # the review's intent, inside the consume that takes the build receipt
+                real(view, state)  # on file, and then the time is found over
+                raise Elapsed("duration elapsed")
+            return real(view, state)
+        self.driver.save = save
+        try:
+            result = self.consume_phase()
+        finally:
+            self.driver.save = real
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertIn("did not start", result["detail"])
+        state = self.state()
+        self.assertEqual((state["mode"], state["pending"], state["review"], self.task_state()["stage"]),
+                         ("active", None, None, "review"))
+        started = len(self.spawn.started)
+        self.assertEqual(self.action("continue")["status"], "recorded")
+        self.assertEqual((len(self.spawn.started), self.state()["review"]["running"]["attempt"]), (started + 1, 1))
+
+    def test_a_receipt_check_that_ran_out_of_time_with_nothing_recorded_costs_no_repair(self):
+        """With more time under the lock the ledger can be read after such a check; the
+        receipt is then known not to be recorded, and it is not the builder's to repair."""
+        self.begin("defect")
+        _, path = self.phase_receipt()
+        with patch.object(receipts, "validate_receipt", side_effect=Elapsed("duration elapsed")):
+            result = self.action("consume", receipt=path)
+        self.assertEqual(result["status"], "blocked", result)
+        for part in ("ran out of time checking the receipt", "Nothing changed", "same consume again"):
+            self.assertIn(part, result["detail"])
+        task = self.task_state()
+        self.assertEqual((self.state()["mode"], self.state()["pending"], task["stage"], task["round"], task["receipts"]),
+                         ("active", None, "ack", 0, []))
+        self.assertEqual(self.action("consume", receipt=path)["status"], "advanced")
+
+    def test_the_end_of_a_turn_is_written_on_its_own_time_too(self):
+        self.begin(running=True)
+        self.spawn.child.code = 0
+        real = self.driver.load
+
+        def load(view):
+            state = real(view)
+            self.clock.sleep(16)
+            return state
+        with self.session_time_by_the_clock(), patch.object(self.driver, "load", side_effect=load):
+            self.driver.poll_turn(record=False)
+            self.driver.record_turn(live=True)
+        state = self.state()
+        self.assertIsNone(state["turn"])
+        self.assertEqual(self.task_state()["turns"][-1]["outcome"], "exit")
+
+    def test_the_record_through_the_running_host_has_a_second_once_the_working_time_ran_out(self):
+        """The fixture's working time ends at 995 on its clock and its finalization time at 1010."""
+        def seconds():
+            return (self.driver.work_seconds(), self.driver.record_seconds(True), self.driver.record_seconds(False))
+        self.assertEqual(seconds()[1:], (5, 5))
+        self.clock.sleep(993)   # two seconds of working time left: the running host has those
+        self.assertEqual(seconds(), (2, 2, 5))
+        self.clock.sleep(1.5)   # half a second left: one second all the same
+        self.assertEqual(seconds(), (0.5, 1, 5))
+        self.clock.sleep(3.5)   # none left
+        self.assertEqual(seconds(), (0, 1, 5))
+        self.clock.sleep(11.5)  # half a second of the finalization time left: never more than that
+        self.assertEqual(seconds(), (0, 0.5, 0.5))
+        self.clock.sleep(1)     # the finalization time is over
+        self.assertEqual(seconds(), (0, 0, 0))

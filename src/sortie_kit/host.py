@@ -113,9 +113,15 @@ def run_shift(admission, spawn=None, *, seconds, wind_down=None, poll=0.1, sleep
                     if lost:
                         driver.lost(state)
                     if lost or ended:
-                        driver.save(view, state)
+                        # On a time of its own, as every record of an end is: what the
+                        # end took to work out under this lock does not count against it.
+                        driver.record(view, state, serving=True)
                     if state["mode"] != "active":
                         reason = state["reason"] or "driver closed"
+                        if driver.unrecorded is not None:
+                            # The file shows a close or a stop that the driver was told
+                            # could not be recorded. The end is told as that.
+                            reason = driver.unrecorded_words()
                         break
                 unsaved = 0
             except Elapsed:

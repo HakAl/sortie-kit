@@ -30,6 +30,23 @@ TURN_LOG_LIMIT = 4 * 1024 * 1024
 PUMP_READS = 64  # at most 4 MiB read per host loop pass
 LAST_PUMPS = 16  # passes of that size at a review's close, to come to the end of both pipes
 WRITE_RESERVE = 0.5  # seconds kept for writing a turn's end before any optional listing
+# The most one live command, or one write of a turn's end, has under the lock. Measured with the
+# live-start test on one Mac: under half a second at rest, 3.4 s for the slowest command under 28
+# computing and 4 syncing processes, 2.9 s for a `continue` under 14 and 24, and more than 5 s
+# once in a real run at a load average near 11, which is what this once was and what ended that
+# shift. Fifteen is three times that and over four times the slowest measured. Not more, because
+# the host's loop takes no other step while a command is applied: it reads no output of a running
+# builder or review and sees no exit, and the shortest review limit that can be signed is 30 s.
+# Never past the working time: see `coordination`.
+COMMAND_SECONDS = 15
+# The least the record of an outcome is given through the running host once the working time ran
+# out while the command was applied: one save of the state, which took about a second under the
+# syncing load above. The stop waits that long at most.
+RECORD_FLOOR = 1.0
+NOT_BEGUN = ("no time was left to begin this command: the wait for the shift's lock and what the host had "
+             "to write first took all the time a command has. Nothing of this command was done, and it "
+             "started no builder turn or review. The end of an earlier turn or review may have been "
+             "recorded meanwhile, so read current-context.json again and then send the command under a new id.")
 PREPARE_ROOM = 3 * WRITE_RESERVE + 1  # seconds under the lock without which no further review attempt is prepared
 RECEIPT_ENTRIES = 1024  # entries of receipts/ the host will walk for one observation
 LOST = ("a builder turn from an earlier host process has no recorded end; "
@@ -142,6 +159,11 @@ class Unusable(Refused):
     """A driver command refused for what it says, found before it had any effect."""
 
 
+class Unchecked(Unusable):
+    """The host ran out of time on a check of its own and recorded nothing: answered
+    `blocked` with nothing changed, since no command was wrong and nothing is to repair."""
+
+
 class Uncertain(Refused):
     """Authority or storage failed after a command began to take effect. What
     was done is not known to be complete, so this is never a receipt to repair."""
@@ -180,6 +202,10 @@ class Driver:
         # observed: an end this host saw but has not yet written. unconfirmed: a
         # builder group this host could not confirm stopped before it let go.
         self.stopping, self.observed, self.unconfirmed, self.cleaned = None, None, False, False
+        # unrecorded: the id of a command whose outcome this host could not record. The
+        # state file may show that outcome all the same, with no intent in it (it is
+        # replaced before its directory is synced), so the stop does not rest on that field.
+        self.unrecorded = None
         self.cleanup_errors = []  # what went wrong while ending a turn at the host's own stop
         self.leftover_groups = []  # process group ids of builder turns whose stop was not confirmed
         self.halt = lambda: False  # the host's stop latch: cheap, asked right before a spawn
@@ -263,6 +289,16 @@ class Driver:
         Never more than is left of the finalization time; zero when that is over."""
         return min(self.final_seconds(), max(0.25, self.work_seconds()))
 
+    def record_seconds(self, serving):
+        """Time to write the record of a command's outcome, counted from when the
+        command was applied: the finalization time left, five seconds at most.
+        Through the running host it is the working time left when that is less,
+        and one second when less than a second of it or none is left, so that
+        the stop is held up by a second at most. Zero when the finalization time
+        is over."""
+        final = self.final_seconds()
+        return min(final, max(RECORD_FLOOR, self.work_seconds())) if serving else final
+
     @contextmanager
     def coordination(self, *, local_only=False, live=False, serving=False):
         """The shift's coordination lock. `live`: the wait for the lock and the work
@@ -273,7 +309,7 @@ class Driver:
         which is how the host's own finalization closes the shift."""
         seconds, work = self.final_seconds(), self.work_seconds()
         if live and work > 0:
-            seconds = min(seconds, work)
+            seconds = min(COMMAND_SECONDS, work)
         elif serving:
             raise Elapsed("working time over: the host is stopping; no command is taken")
         if seconds <= 0:
@@ -371,7 +407,22 @@ class Driver:
             raise Refused("invalid last review")
         return state
 
+    def record(self, view, state, serving=None):
+        """Write the state that holds the outcome of a command, or the end of a turn
+        or review, on a time of its own: what was spent under the lock before
+        does not count against the record. That
+        time is `record_seconds`. A record that still cannot be written is not
+        tried again: the caller answers that the outcome could not be recorded."""
+        view.renew(self.record_seconds(self.serving if serving is None else serving))
+        self.save(view, state)
+
     def save(self, view, state):
+        """Write what the driver and the builder read of the active task, and then the
+        state. The state file is the last write: a save that fails before it leaves
+        the state as it was, with any intent it held, so nothing is on file as done
+        that the caller was not told is done. The other file is worked out from the
+        state and written again by every save."""
+        self.context(view, state)
         view.atomic("driver-state.json", receipts.encoded(state), replace=True)
         if state["turn"] is None and (state["review"] is None or state["review"]["running"] is None):
             self.observed = None  # the end this host saw is on disk now, not before
@@ -379,6 +430,8 @@ class Driver:
                 # What a review's end is worked out from is kept until that end is on
                 # disk, so that a write that ran out of time can be made again.
                 self.kind, self.reviewing = "turn", None
+
+    def context(self, view, state):
         if state["active"]:
             task = state["tasks"][state["active"]]
             context = self.expected(task, None) if task["stage"] in PHASE else None
@@ -464,7 +517,14 @@ class Driver:
         # Intent first: a crash after this line leaves a turn the next host records as lost.
         state["turn"] = dict(task_id=task["id"], turn=number, started=self.now().isoformat(),
                              limit_seconds=seconds, log=log)
-        self.save(view, state)
+        try:
+            self.save(view, state)
+        except Elapsed as exc:
+            # The command's time ran out before anything was started. Whether or not the
+            # intent reached the file, the record of this answer replaces it.
+            self.ended(state, "not started: " + str(exc)[:500], None, False, 0, None)
+            return "blocked", ("builder turn " + str(number) + " did not start: the command's time ran out "
+                               "before the start (" + str(exc)[:300] + "). Send `continue` again under a new id.")
         fd = None
         try:
             # The host creates the log and keeps this descriptor for the whole turn. The
@@ -483,6 +543,7 @@ class Driver:
                 raise Refused("wind-down or the turn limit was reached while checking the start")
             if self.halt():
                 raise Refused("the host is stopping")
+            self.in_time(view, "the start was checked")
             self.turn_began, self.turn_over, self.turn_receipts = self.clock(), None, marks
             self.kind = "turn"
             self.child = self.spawn(argv, cwd=cwd, env=env)
@@ -500,6 +561,17 @@ class Driver:
         if stream is not None:
             os.set_blocking(stream.fileno(), False)
         return "recorded", "builder turn " + str(number) + " started; a started turn is not acknowledgment"
+
+    @staticmethod
+    def in_time(view, while_what):
+        """Asked last before a process is started: a command whose time under the lock
+        is over starts none. The host's loop has by then seen nothing for as long as a
+        command may take, and what the command did so far is recorded as not started."""
+        try:
+            view.guard()
+        except Elapsed as exc:
+            raise Refused("the time of the command ran out while " + while_what + " (" + str(exc)[:200]
+                          + "); nothing was started") from exc
 
     def busy(self, state):
         """Why nothing new is started while the one owned process is still there."""
@@ -566,7 +638,20 @@ class Driver:
                                  directory=review_dir.FOLDER + "/" + name, marker=contract.nonce(),
                                  stdout=log + ".out", stderr=log + ".err")
         running = review["running"]
-        self.save(view, state)
+        try:
+            self.save(view, state)
+        except Elapsed as exc:
+            # The time under the lock ran out before anything of this attempt was made or
+            # started. It is not an attempt, and whoever holds the lock records the state.
+            review["running"] = None
+            if review["attempts"]:
+                # An earlier attempt failed and the host runs this one by itself, often
+                # with no command of the driver's to answer. Left begun, the review would
+                # be in no report and known to no driver: it is kept as failed once.
+                return self.failed_unrecorded(state, task, number, "the time ran out before its start")
+            state["review"] = None  # as before the review was begun; `continue` begins it
+            return "blocked", ("review attempt " + str(number) + " did not start: the time under the host's lock "
+                               "ran out before the start (" + str(exc)[:300] + "). Send `continue` at this stage.")
         # An earlier attempt's end is on disk with this one's intent: nothing of it is held.
         self.kind, self.reviewing, self.observed = "turn", None, None
         opened, made, sha = [], None, None
@@ -597,12 +682,14 @@ class Driver:
                 raise Refused("the time for the review ran out while it was prepared")
             if self.stopped or self.halt():
                 raise Refused("the host is stopping")
+            self.in_time(view, "the review was prepared")
             self.turn_began, self.turn_over, self.turn_receipts = self.clock(), None, None
             self.kind = "review"
             # `printed` is what the host itself reads from the reviewer's two pipes. A
             # verdict is taken from these bytes alone: the logs are files in the shift,
             # which another seat can write to while the review runs.
-            self.reviewing = dict(argv=[str(item) for item in argv], before=before, marks=marks, instructions=sha,
+            self.reviewing = dict(attempt=number, argv=[str(item) for item in argv], before=before, marks=marks,
+                                  instructions=sha,
                                   printed=dict(stdout=bytearray(), stderr=bytearray()))
             self.child = self.spawn_review(argv, cwd=cwd, env=builder_env(self.shift, temp=self.temp_path()))
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
@@ -644,6 +731,15 @@ class Driver:
         which the repository and receipts/ are as they were before it."""
         review = state["review"]
         running, task, held = review["running"], state["tasks"][review["task_id"]], self.reviewing or {}
+        if (held.get("final") is None and held.get("attempt") is not None and held["attempt"] != running["attempt"]
+                and [item["attempt"] for item in review["attempts"]][-1:] == [held["attempt"]]):
+            # What this host holds is the end of an earlier attempt, which is on file. The
+            # attempt on file as running is the next one: its intent reached the state
+            # file, the time was found over, and the record that takes it out again could
+            # not be written either. This host started no process for it, so nothing that
+            # was seen is its end.
+            review["running"] = None
+            return self.failed_unrecorded(state, task, running["attempt"], "the time ran out before its start")
         if held.get("final") is not None and all(
                 held["final"]["value"][name] == wanted for name, wanted in
                 (("task_id", task["id"]), ("request_id", review["request_id"]), ("round", task["round"]))):
@@ -1147,7 +1243,7 @@ class Driver:
                 state = self.load(view)
                 if state["review"] is not None and state["review"]["running"] is not None and self.kind == "review":
                     self.review_ended(view, state, *self.observed)
-                    self.save(view, state)
+                    self.record(view, state, serving=live)
                 elif state["turn"] is not None:
                     # The record of the end comes first: the listing gets only time left
                     # above what the write is kept, and is skipped when there is none.
@@ -1156,7 +1252,7 @@ class Driver:
                     if after is not None:
                         self.observed = self.observed[:4] + ((elapsed, before != after),)
                     self.ended(state, *self.observed)
-                    self.save(view, state)
+                    self.record(view, state, serving=live)
                 else:
                     self.observed = None
         except Elapsed:
@@ -1229,10 +1325,25 @@ class Driver:
 
             def held():
                 return len(receipts.ledger(view)["entries"])
+
+            def unchecked(exc):
+                return Unchecked("the host ran out of time checking the receipt (" + str(exc)[:300] + ") and "
+                                 "recorded nothing of it. Nothing changed: the task is at the same stage and "
+                                 "round, the receipt is not at fault and the builder has nothing to redo. "
+                                 "Send the same " + ("stop-evidence" if stop else "consume") + " again under a new id.")
             try:
                 had = held()
+            except Elapsed as exc:
+                # The command's time ran out at this look, before the check: nothing was recorded.
+                raise unchecked(exc) from exc
             except (Refused, OSError, KeyError, TypeError):
                 had = None  # the check below fails on the same ledger, before it writes
+            # The check writes the ledger. It is given what this command still has under the
+            # lock, less what the write of its record needs, and is not begun with none:
+            # the look above may have used it up, and no least time is made up for it.
+            seconds = min(seconds, self.room(view) - WRITE_RESERVE)
+            if seconds <= 0:
+                raise unchecked("no time of the command was left for the check")
             # The published file is builder-writable; bind validation to the context built here.
             try:
                 result = receipts.validate_receipt(self.shift, command["receipt"], path, record=True,
@@ -1249,9 +1360,11 @@ class Driver:
                                     "be read afterwards (" + str(unread)[:300] + ")") from exc
                 if now != had:
                     raise Uncertain("the receipt check failed after the ledger took the receipt: " + str(exc)[:800]) from exc
-                if isinstance(exc, Elapsed) and self.serving and self.work_seconds() <= 0:
+                if isinstance(exc, Elapsed):
                     # Out of time, with nothing recorded: not something the builder has to repair.
-                    raise Unusable("working time over: the host is stopping and the receipt was not checked") from exc
+                    if self.serving and self.work_seconds() <= 0:
+                        raise Unusable("working time over: the host is stopping and the receipt was not checked") from exc
+                    raise unchecked(exc) from exc
                 raise
             try:
                 self.require_live()  # the ledger may hold this receipt by now
@@ -1317,7 +1430,16 @@ class Driver:
             task["base"] = base
             state["tasks"][identity], state["active"] = task, identity
             seconds = self.turn_limit(command)
-            self.save(view, state)
+            try:
+                self.save(view, state)
+            except Elapsed as exc:
+                # Out of time before the task was on file or a turn was started: the task
+                # is taken out again, so the same brief can be sent once more.
+                del state["tasks"][identity]
+                state["active"] = None
+                return "blocked", ("the task was not briefed: the command's time ran out before it was recorded ("
+                                   + str(exc)[:300] + "). Nothing changed and no builder turn was started. Send "
+                                   "the brief again under a new id.")
             return self.builder_turn(view, state, task, builder_prompt(
                 self.shift, "Task brief " + task["brief"]["path"] + " SHA256 " + task["brief"]["sha256"]
                 + ". Read current-context.json for the bound request and round."), seconds)
@@ -1411,7 +1533,7 @@ class Driver:
     def apply(self, command, *, serving=False):
         """Take one driver command. `serving` is the running host taking it from the
         channel: it is given no more than the working time and none after it."""
-        intent = sha = None
+        intent = sha = halted = None
         self.serving = serving
         try:
             if not isinstance(command, dict) or command.get("op") not in COMMANDS:
@@ -1428,22 +1550,26 @@ class Driver:
             sha = receipts.digest(receipts.encoded(command))
             with self.coordination(live=True, serving=serving) as view:
                 state = self.load(view)
+                # The stop is asked first, whatever the id: after an outcome that could not
+                # be recorded the state file may hold that command's own id as taken.
+                if state["pending"] is not None or self.unrecorded is not None:
+                    state.update(mode="blocked", reason="unresolved effect intent; no automatic replay", next_owner="developer")
+                    halted = state["reason"]
+                    self.save(view, state)
+                    self.report(view, state)
+                    return channels.response(identity, "blocked", state["reason"], sha=sha)
                 if identity in state["commands"]:
                     old = state["commands"][identity]
                     if old["digest"] != sha:
                         raise Refused("changed reuse of a command ID")
                     return channels.response(identity, "replayed", "already processed; no effects repeated", sha=sha)
-                if state["pending"] is not None:
-                    state.update(mode="blocked", reason="unresolved effect intent; no automatic replay", next_owner="developer")
-                    self.save(view, state)
-                    self.report(view, state)
-                    return channels.response(identity, "blocked", state["reason"], sha=sha)
                 if state["mode"] != "active" or len(state["commands"]) >= 512:
                     raise Refused("lifecycle closed/blocked or command limit reached")
                 if command["op"] != "finish":
                     self.require_live()
                 if self.settle(state, view):
                     self.lost(state)
+                    halted = state["reason"]
                     self.save(view, state)
                     self.report(view, state)
                     return channels.response(identity, "blocked", state["reason"], sha=sha)
@@ -1452,15 +1578,24 @@ class Driver:
                 # is replaced before its directory is synced), so the answer is never
                 # `invalid` again.
                 intent = identity
-                self.save(view, state)
                 try:
-                    status, detail = self.dispatch(view, state, command)
+                    self.save(view, state)
+                    begun = True
+                except Elapsed:
+                    # Out of time before anything of the command was done. The intent is
+                    # not in the state file unless that write was refused after it replaced
+                    # the file; either way the record below writes the state without it.
+                    begun = False
+                try:
+                    status, detail = self.dispatch(view, state, command) if begun else ("blocked", NOT_BEGUN)
+                except Unchecked as exc:
+                    status, detail = "blocked", str(exc)
                 except Unusable as exc:
                     # Found before any effect: answered, recorded, and nothing else changes.
                     status, detail = "invalid", self.unusable(str(exc))
                 except (OSError, ValueError, KeyError, TypeError) as exc:
                     state.update(mode="blocked", reason="effect incomplete: " + str(exc)[:1500], next_owner="developer")
-                    self.save(view, state)
+                    self.record(view, state)
                     self.early_report(view, state)
                     return channels.response(identity, "blocked", state["reason"], sha=sha)
                 stage = state["tasks"][state["active"]]["stage"] if state["active"] else None
@@ -1468,7 +1603,7 @@ class Driver:
                 state["commands"][identity] = dict(digest=sha, response=result,
                                                    at=self.now().replace(microsecond=0).isoformat())
                 state["pending"] = None
-                self.save(view, state)
+                self.record(view, state)
                 intent = None
                 if state["mode"] == "closed":
                     self.early_report(view, state)
@@ -1477,11 +1612,21 @@ class Driver:
             if intent is not None:
                 # A write failed after the command began. Which writes reached the disk
                 # is not known here. That is not a mistake the driver can correct.
+                self.unrecorded = intent
                 return channels.response(intent, "blocked", "the outcome of this command could not be recorded ("
                                          + str(exc)[:1000] + "). It is not certain what of it reached the disk: "
                                          "it may have taken effect, in part or in whole, and the host may take "
                                          "no further command. Send nothing again: tell the developer, who has "
                                          "to look at the shift.", sha=sha)
+            if halted is not None:
+                # The shift was found stopped before this command was looked at, and the
+                # write of that stop failed. The next command finds the same.
+                return channels.response(identity, "blocked", halted, sha=sha)
+            if isinstance(exc, Elapsed) and sha is not None and self.work_seconds() > 0:
+                # The time of the command ran out at the wait for the lock, at the reading
+                # of the state or while the end of an earlier turn or review was written,
+                # with working time left: nothing of the command was done or put on file.
+                return channels.response(identity, "blocked", NOT_BEGUN, sha=sha)
             return channels.response(command.get("id") if isinstance(command, dict) else None, "invalid", str(exc))
 
     def publish_initial(self):
@@ -1533,6 +1678,11 @@ class Driver:
             **({"wake": self.wake()} if self.wake is not None and final else {}))), replace=True)
         report.write(view)
 
+    def unrecorded_words(self):
+        """Why the shift is the developer's when this host could not record an outcome."""
+        return ("the outcome of command " + str(self.unrecorded) + " could not be recorded, so what of it is on "
+                "file is not certain; no automatic replay")
+
     def finish(self, reason):
         """Bounded local finalization only: no guard, agent start or execution.
         Returns whether a report was published."""
@@ -1551,7 +1701,12 @@ class Driver:
             # A driver that closed the shift named who acts next; the host's own ending
             # does not replace that. Every other ending is the developer's to pick up.
             # A process that may still run, or a terminal not put back, is the developer's.
-            kept = state["mode"] == "closed" and not self.unconfirmed and not self.attention
+            # Nor is a close the driver was told could not be recorded: the state file can
+            # show it all the same, and the host's own end then says what the driver was told.
+            if self.unrecorded is not None and self.unrecorded_words() not in reason:
+                reason = self.unrecorded_words() + "; " + reason[:1200]
+            kept = (state["mode"] == "closed" and not self.unconfirmed and not self.attention
+                    and self.unrecorded is None)
             owner = state["next_owner"] if kept else "developer"
             state.update(mode="closed", reason=reason[:2000], next_owner=owner)
             self.save(view, state)

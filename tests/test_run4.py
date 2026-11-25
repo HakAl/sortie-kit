@@ -348,8 +348,9 @@ class RefusedCommandTests(LifecycleFixture):
         self.replaced_while_checked(fails=True)
 
     def test_a_receipt_check_the_serving_host_ran_out_of_time_for_costs_no_repair_round(self):
-        """Out of working time with nothing in the ledger: not the builder's to repair,
-        while the same failure with time left is still a returned receipt."""
+        """Out of working time with nothing in the ledger: not the builder's to repair.
+        The same with working time left is not the builder's either: the check ran out
+        of its own time, nothing changed, and the same consume is sent again."""
         from unittest.mock import patch
         from sortie_kit.layout import Elapsed
         self.begin("defect")
@@ -370,7 +371,13 @@ class RefusedCommandTests(LifecycleFixture):
         self.clock.value, self.late = 0.0, 0
         with patch.object(receipts, "validate_receipt", validated):
             result = self.action("consume", receipt=path)
-        self.assertEqual((result["status"], self.task_state()["stage"]), ("blocked", "repair_needed"))
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("ran out of time checking the receipt", result["detail"])
+        self.assertEqual(self.task_state(), before)
+        state = self.state()
+        self.assertEqual((state["mode"], state["pending"]), ("active", None))
+        # With the check answering again, the same receipt is taken under a new id.
+        self.assertEqual(self.action("consume", receipt=path)["status"], "advanced")
 
     def test_a_target_of_the_wrong_kind_for_the_phase_changes_nothing(self):
         """A well-formed command that names the wrong thing is the

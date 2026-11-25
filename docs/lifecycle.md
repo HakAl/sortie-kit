@@ -494,7 +494,11 @@ The same holds when the check succeeds but recorded other bytes than the host
 had read, because the receipt file was replaced in between: the phase slot is
 used up by a version the host did not see. A
 validation that the running host could not finish because the working time
-ran out, with nothing in the ledger, is `invalid` and changes nothing. Any
+ran out, with nothing in the ledger, is `invalid` and changes nothing. One
+that ran out of the time the host gives the check while working time is left,
+again with nothing in the ledger, is `blocked` and changes nothing: the
+receipt is not at fault, no repair round is used, and the driver sends the
+same `consume` again under a new ID. Any
 other failure inside validation, whatever its cause, still counts as a
 returned receipt. When a write fails once a command has begun (the note of its
 intent, or its result), the answer is `blocked` and says the outcome could not
@@ -503,6 +507,91 @@ is replaced before its directory is synced, so the command may have taken
 effect in part or in whole, and its intent may or may not be on file. The
 driver sends nothing again and the developer has to look. `driver.md` shows one exact
 example of every command.
+
+### The time a command has
+
+A command is applied under the shift's lock, and the host's loop takes no
+other step meanwhile. From the moment the host asks for the lock a command has
+at most 15 seconds, and never more than the working time left. Until this was
+changed it had five, for everything from the wait for the lock to the last
+write, and a shift on a loaded machine ended on it: a `continue` started its
+builder turn, the last write found the five seconds over, and the next command
+blocked the shift on the intent that was left on file. Measured on one Mac
+with the fixture shift of the tests, a command took under half a second on a
+machine at rest, but for one `close` at 1.6 seconds, and up to 3.4 seconds beside 28 computing and 4 writing
+processes; a `continue` took up to 2.9 seconds beside 14 and 24. Fifteen is
+three times what the real shift exceeded. It is not more because, while a
+command is applied, the host reads no output of a running builder or review
+and sees no exit and no stop.
+
+What follows from running out of that time depends on where it happens:
+
+- **Before the command began.** The wait for the lock, the reading of the
+  state or the writing of an earlier turn's or review's end used it up. The
+  answer is `blocked` and says that no time was left to begin. Nothing of the command was done and no intent stays on file. The end
+  of an earlier turn or review may have been recorded in the same pass, so the
+  driver reads `current-context.json` again and sends the command under a new
+  ID.
+- **Before a builder turn, a review or a new task was on file.** The turn is
+  recorded as not started and the answer is `blocked`, as for any turn that
+  could not be started. A review attempt that was not begun is not an attempt:
+  the stage stays, and `continue` starts the review. When it was the second
+  attempt, which the host runs by itself after a first that failed, the review
+  is kept as failed once with no receipt, `last_review` says so, the work stays
+  handed in, and `continue` starts another review. A `brief` whose task
+  could not be recorded leaves no task, and the same brief can be sent again.
+  The lifecycle stays open in each case.
+- **After the command took effect.** The record of the outcome has a time of
+  its own, counted from when the command was applied and not from when it was
+  taken: the finalization time left, five seconds at most. Through the running
+  host it is the working time left when that is less, and one second when less
+  than a second of it or none is left, so the stop is held up by a second at
+  most. The end of a builder
+  turn or of a review is written on such a time of its own as well.
+- **Anywhere else inside a command**, once it began to take effect and where
+  the command does not handle it itself, the time running out is still an
+  incomplete effect: the lifecycle is `blocked` for the developer. What was
+  done is not known there.
+
+A command whose time is over starts no process. The time is asked once more
+at the start of a builder or a reviewer, after the start's own checks: a turn
+is then recorded as not started and the review attempt as one that could not
+start, as above. The check of a builder's receipt is given no more than the
+command still has, and is not begun when the look at the ledger before it left
+none: the answer is then `blocked` with nothing changed, as for a check that
+ran out of its own time.
+
+A save writes `current-context.json` first and `driver-state.json` last. The
+state file is what counts: a save that fails before it leaves the state as it
+was, with the intent still in it. The state file is replaced before its
+directory is synced. When that sync fails, the file that can be read may show
+the outcome with no intent in it while the driver was told that it could not
+be recorded. The stop does not rest on the file then: the host that gave that
+answer remembers it and blocks the lifecycle at the next command, as it does
+for an intent on file, also when that command carries the id the file shows
+as taken. When the command was `finish` and the file shows the lifecycle
+closed, the host ends on that pass and does not keep the close as the
+driver's: the developer is the next owner and the reason names the command
+whose outcome could not be recorded. The exit status is what a lifecycle
+stopped on an intent gives. A host started later has only the file.
+
+When the record still cannot be written, on its own time or because storage
+failed, nothing is tried again and nothing is replayed: the answer is
+`blocked` and says the outcome could not be recorded, the intent stays on
+file, the next command blocks the lifecycle with `unresolved effect intent`,
+and the developer is the next owner. That is the stop it always was.
+
+Limits. Every time named here is asked between one step and the next and
+interrupts none: a write or a sync that the system holds up is waited for,
+past the end of the command's time, of the record's second and of the working
+or finalization time, and the host stops no seat and writes no report until
+it returns. The host has one thread for this. `sortie report` waits at most five seconds for the same lock, so one
+run beside a command that takes longer ends with `duration elapsed` and can be
+run again. A review that ended within its limit while a slow command was
+applied, and that the host looked at only after the limit, is recorded as
+late, which is a failed attempt. A machine on which a command takes more than
+15 seconds still loses the command, in one of the ways above. None of the
+figures was measured on Linux.
 
 A `target` is `{kind: plan, artifact: ...}` for plan consumption or
 `{kind: commit, commit: FULL_OID}` for build. Later reviews cannot rebind those

@@ -132,6 +132,13 @@ class Evidence:
         if why := self.budget.guard():
             raise Elapsed(why)
 
+    def renew(self, seconds):
+        """Give what follows a time of its own, apart from what was spent so far."""
+        if isinstance(seconds, (int, float)) and seconds <= 0:
+            raise Elapsed("no time was left for this")
+        self.budget = Budget(seconds)
+        self.guard()  # also what a caller put around the guard, such as the end of finalization
+
     @contextmanager
     def parent(self, path):
         parts = relative(path)

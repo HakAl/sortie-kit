@@ -48,6 +48,11 @@ the task is at the same stage and repair round and the builder has nothing to
 redo. Read `detail`, correct the command and send it again under a new `id`.
 Do not send `repair` or `continue` because of your own `invalid` command.
 `blocked` means the host would not do it now; `detail` says why. If it says
+that no time was left to begin the command, or that a turn, a review, a brief
+or a receipt check ran out of time with nothing changed, the machine was slow
+and nothing is wrong with your command: read `current-context.json` again and
+send under a new `id` the command that `detail` names, which is the same
+command or, where a task or a stage was already recorded, `continue`. If it says
 the outcome could not be recorded, the command may or may not have taken
 effect: resend nothing and tell the developer. `invalid` with `working time
 over` means the host is stopping and takes no more commands. One case is
