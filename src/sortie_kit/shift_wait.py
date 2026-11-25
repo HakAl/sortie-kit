@@ -84,7 +84,9 @@ def observe(shift, seconds=5):
     with receipts.session(shift, seconds, local_only=True) as view:
         def optional(path):
             try:
-                return view.read(path)
+                # The host replaces its files, and the driver its command, while this
+                # reads: a read cut across by that is made again and is not damage.
+                return view.settled(path)
             except FileNotFoundError:
                 return None
             except (OSError, ValueError):
@@ -141,7 +143,8 @@ def observe(shift, seconds=5):
         result["note"] = note
     if damaged:
         result["detail"] = ("driver-state.json is missing, unreadable, malformed or from another grant; "
-                            "whether a builder turn runs is unknown. Do not treat this as ready.")
+                            "whether a builder turn runs is unknown. Do not treat this as ready. Read again before "
+                            "concluding anything: this is one reading, and it is not a finding about the shift.")
     return result, until
 
 

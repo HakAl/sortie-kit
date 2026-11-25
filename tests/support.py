@@ -1,9 +1,11 @@
+import contextlib
 import datetime as dt
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +72,36 @@ class LocalTest(unittest.TestCase):
                        capture_output=True, timeout=10)
         (repo / "direction.md").write_text("Implement the selected task.\n")
         return repo
+
+
+@contextlib.contextmanager
+def replaced_while_read(path, times=1):
+    """While the block runs, the file at `path` is replaced by a new file with the same
+    bytes, as an atomic write replaces it, each time something has been read from it: the
+    first `times` times, or every time when `times` is None. Gives a list that grows by one
+    with each replacement."""
+    from unittest.mock import patch
+    path, real, done = Path(path), os.read, []
+
+    def read(fd, count):
+        chunk = real(fd, count)
+        if chunk and (times is None or len(done) < times):
+            try:
+                same = os.fstat(fd).st_ino == os.stat(path).st_ino
+            except OSError:
+                same = False
+            if same:
+                fresh = path.with_name(path.name + ".replacing")
+                fresh.write_bytes(path.read_bytes())
+                # A file system that stamps changes by a coarse clock gives two changes
+                # within one tick the same time, and the read would not see the second.
+                time.sleep(0.005)
+                os.replace(fresh, path)
+                done.append(len(done) + 1)
+        return chunk
+
+    with patch.object(os, "read", read):
+        yield done
 
 
 class Clock:

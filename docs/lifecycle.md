@@ -129,7 +129,30 @@ the driver the terminal foreground, and prints nothing while it runs; host notes
 Ctrl-C in the terminal reaches the driver, not the host. When the shift ends
 for any reason the host signals the driver group and waits a bounded time for
 it, tries to take the terminal back and restore its settings, and prints where
-the report is. These are attempts: a group that was not seen gone, or a
+the report is. A full-screen program turns terminal modes on and turns them
+off as it leaves; one that is stopped by a signal may leave them on, and the
+shell then prints bytes for every movement of the mouse and every key. So
+after the driver, on every way out, the host also writes to that terminal
+what turns them off: mouse reporting (1000, 1002, 1003, 1006), focus
+reporting (1004), bracketed paste (2004) and a hidden cursor. Two more things
+a driver changes can be the caller's own as well, an entry of the kitty
+keyboard protocol and the alternate screen (1049) with the cursor saved for
+it, so the host writes nothing for them on a guess. It asks the terminal
+before the driver starts and again after it whether the alternate screen is
+on and which keyboard flags are in force, waits half a second at most for
+each answer, and puts back only what differs: it leaves an alternate screen
+that was not on before, and pops the keyboard stack, asking again after each
+pop and eight times at most, until the flags are the ones from before. A
+terminal that gave no answer before the driver, or said what kind of
+terminal it is and nothing of what it holds, is not asked after it and
+gets only the plain modes turned off; one that stops answering, or whose
+answer does not come back to what it was, is reported as not restored. A key
+typed during the half second of a question is read with the answer and
+dropped, and so is what was typed to the driver and not read by it when it
+ended. The host writes all of this to
+the terminal's own device and never to standard output, so none of it reaches
+a pipe or a file; a terminal that takes no output at that moment is reported
+as not restored. These are attempts: a group that was not seen gone, or a
 terminal that could not be restored, is said in the `Shutdown` and `Driver
 process` lines and in the closeout, and the command exits with status 3. A stop signal to the
 host (hangup, interrupt, terminate) is noted from before the driver starts
@@ -233,6 +256,18 @@ bound to another grant, or is missing although a response exists: the host
 writes its initial state before it answers anything, so only a shift whose
 host has not begun has neither. It comes with `mode` `unknown` and a `detail`;
 it is never `ready`, because whether a builder turn runs cannot be told.
+The host replaces its files while seats run, and the driver replaces its
+command file. A read that such a replacement cut across is made again within
+the same reading, up to twenty times a hundredth of a second apart, and is not
+reported as damage; only a file that changed under every one of them, or that
+is unreadable or malformed, is. The host reads the command file and a
+builder's check request in the same way and leaves one that changed under
+every read of a pass to its next pass. A receipt, and a file a receipt names,
+is written once and is still refused when it changes while it is read. One
+`damaged` reading is one reading: the driver is told to read again, up to
+three more times, before it concludes anything, and `sortie wait` writes
+nothing, so a `damaged` reading that the next one clears leaves no trace in
+the shift.
 `ready` is a statement about these files as read, not about processes.
 `expired` outranks `stopped`, which outranks `damaged`. N is at most 540
 seconds. The first reading of the files always happens and has between 50 ms
@@ -380,7 +415,9 @@ same logical task to evade the cap. The toolkit cannot infer semantic task ident
 or hidden, unreported builder work.
 
 `driver-state.json` records these distinctions, a grant/direction binding, task
-history and command results. It permits at most 128 tasks and 512 commands; state
+history and command results, each command with the host's time when it was
+recorded (`at`; a state kept by a host from before that has none and still
+loads). It permits at most 128 tasks and 512 commands; state
 and input documents are limited to 1 MiB. Each metadata operation/lock wait is
 bounded. Intent is persisted before a builder start or receipt consumption. An unresolved
 intent after interruption is a blocker with next owner, never a guessed replay
@@ -459,6 +496,11 @@ any receipt, and moves the task:
   review may still start.
 - A reviewer that cannot be started (the pin changed, the program is gone) is
   a failed attempt with that reason.
+  When it could not be started and the time under the host's lock ran out
+  before a receipt for the review could be recorded, the review is kept as
+  failed with no receipt and backs nothing; `last_review` and the report show
+  it, and the task moves as after any failed review: blocked after two
+  attempts, and otherwise handed in still, for a `continue` to start another.
 
 While a review is open the driver cannot hand in a review receipt, and
 `consume`, `repair` and `close` are answered `blocked`. `sortie wait` waits

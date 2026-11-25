@@ -271,6 +271,178 @@ class ReportTests(LocalTest):
         lines = launcher.closing_lines((self.shift / 'report.json').read_bytes(), 0, str)
         self.assertIn('Notes from the driver: 2; see the report.', lines)
 
+    def idle(self, end='2030-01-01T00:21:40+00:00', **commands):
+        """The report of a shift whose host closed at `end`, with these commands on record:
+        each a time, or None for a record kept without one. Returns (report.json, Outcome)."""
+        self.state['commands'] = {
+            name: dict(dict(digest='0' * 64, response=dict(status='recorded', detail='kept')), **({'at': at} if at else {}))
+            for name, at in commands.items()}
+        self.store()
+        if not (self.shift / 'closeout.json').exists():
+            with self.no_external(): self.driver.finish('working time over: stopped before the signed deadline')
+        closed = decode((self.shift / 'closeout.json').read_bytes())
+        apart = int((dt.datetime.fromisoformat(end) - dt.datetime.fromisoformat(closed['start'])).total_seconds())
+        closed.update(end=end, elapsed_seconds=apart)
+        (self.shift / 'closeout.json').write_bytes(receipts.encoded(closed))
+        doc = self.generate()
+        return doc, (self.shift / 'report.md').read_text().split('## Outcome')[1].split('\n## ')[0]
+
+    LAST = '- **Last driver command: recorded at '
+
+    def test_the_outcome_says_when_the_last_driver_command_was_recorded_when_nothing_ran_after_it(self):
+        """A driver that gave up leaves a host that runs on to the end of the window. The
+        report says when the last command was recorded and how long before the end, and
+        gives no reason: the host does not know one."""
+        doc, outcome = self.idle(first='2030-01-01T00:00:05+00:00', second='2030-01-01T00:01:00+00:00')
+        self.assertEqual(doc['last_activity'], dict(command='2030-01-01T00:01:00+00:00', commands=2, work=None, work_known=True, running=False))
+        self.assertIn(self.LAST + '2030-01-01T00:01:00+00:00, 20m 40s before the end.** No builder turn and no review '
+                      'ended in that time. The host does not know why no command followed.\n', outcome)
+        self.assertLess(outcome.index('- Ran for '), outcome.index(self.LAST))
+        self.assertEqual((doc['status'], doc['issues']), ('evidence summarized', []))
+
+    def test_the_time_nothing_ran_is_counted_from_the_last_end_of_a_turn_or_a_review(self):
+        self.task['reviews'] = [dict(review=1, stage='review', round=0, request_id='review', target=self.task['candidate'],
+                                     outcome='ACCEPT', receipt=None, findings=[], attempts=[
+                                         dict(attempt=1, status='complete', verdict='ACCEPT', ended_by='exit', reasons=[],
+                                              started='2030-01-01T00:01:02+00:00', ended='2030-01-01T00:02:12+00:00',
+                                              elapsed_seconds=70, repository='unchanged')])]
+        doc, outcome = self.idle(first='2030-01-01T00:01:00+00:00')
+        self.assertEqual(doc['last_activity']['work'], '2030-01-01T00:02:12+00:00')
+        self.assertIn(self.LAST + '2030-01-01T00:01:00+00:00, 20m 40s before the end.** The last builder turn or review '
+                      'the host ran ended at 2030-01-01T00:02:12+00:00; in the 19m 28s after that no command was '
+                      'recorded and no turn or review ended. The host does not know why no command followed.\n', outcome)
+        # A turn that ran until shortly before the end: the driver was waiting for it.
+        self.task['turns'] = [dict(task_id='task', turn=1, started='2030-01-01T00:02:20+00:00',
+                                   ended='2030-01-01T00:17:00+00:00', limit_seconds=900, outcome='exit', exit=0,
+                                   reaped=True, log='logs/turn-1.log', receipts_changed=True)]
+        doc, outcome = self.idle(first='2030-01-01T00:01:00+00:00')
+        self.assertEqual(doc['last_activity']['work'], '2030-01-01T00:17:00+00:00')
+        self.assertNotIn('Last driver command', outcome)
+
+    def test_the_line_is_given_from_five_minutes_of_nothing_and_not_before(self):
+        self.assertNotIn('Last driver command', self.idle(first='2030-01-01T00:16:41+00:00')[1])
+        self.assertIn(self.LAST + '2030-01-01T00:16:40+00:00, 5m before the end.**', self.idle(first='2030-01-01T00:16:40+00:00')[1])
+        # A turn or a review recorded as started with no end: what ran at the end is not known.
+        self.state['turn'] = dict(task_id='task', turn=1)
+        doc, outcome = self.idle(first='2030-01-01T00:01:00+00:00')
+        self.assertEqual(doc['last_activity']['running'], True)
+        self.assertNotIn('Last driver command', outcome)
+
+    def test_a_shift_with_no_command_at_all_says_so_and_one_kept_without_times_says_nothing(self):
+        doc, outcome = self.idle()
+        self.assertEqual(doc['last_activity'], dict(command=None, commands=0, work=None, work_known=True, running=False))
+        self.assertIn('- **No driver command was recorded in the 21m 40s this shift ran**, and no builder turn and no '
+                      'review is on record. The host does not know why.\n', outcome)
+        self.assertNotIn('No driver command was recorded', self.idle(end='2030-01-01T00:04:59+00:00')[1])
+        for commands in (dict(first=None), dict(first=None, second='2030-01-01T00:01:00+00:00'),
+                         dict(first='not a time', second='2030-01-01T00:01:00+00:00')):
+            with self.subTest(commands=commands):
+                doc, outcome = self.idle(**commands)
+                self.assertEqual((doc['last_activity']['command'], doc['last_activity']['commands']), (None, len(commands)))
+                self.assertNotIn('driver command', outcome.split('- Next:')[0].replace('Driver commands', ''))
+
+    def test_the_time_nothing_ran_is_the_time_the_host_counted_and_whole_seconds_are_compared(self):
+        # The machine slept: the stamps are 21m 40s apart and the host counted two minutes.
+        self.idle()
+        closed = decode((self.shift / 'closeout.json').read_bytes())
+        closed['elapsed_seconds'] = 120
+        (self.shift / 'closeout.json').write_bytes(receipts.encoded(closed))
+        self.generate()
+        outcome = (self.shift / 'report.md').read_text().split('## Outcome')[1].split('\n## ')[0]
+        self.assertIn('the machine was asleep or its clock was changed', outcome)
+        self.assertNotIn('No driver command was recorded', outcome)
+        self.state['commands'] = dict(first=dict(digest='0' * 64, response=dict(status='recorded', detail='kept'),
+                                                 at='2030-01-01T00:01:00+00:00'))
+        self.store(); self.generate()
+        self.assertNotIn('Last driver command', (self.shift / 'report.md').read_text())
+        (self.shift / 'closeout.json').unlink()
+        # A command is stamped in whole seconds and a turn's end is not: a turn that ended
+        # in the second the command was recorded in did not end after it.
+        self.task['turns'] = [dict(task_id='task', turn=1, started='2030-01-01T00:00:20+00:00',
+                                   ended='2030-01-01T00:01:00.700000+00:00', limit_seconds=900, outcome='exit', exit=0,
+                                   reaped=True, log='logs/turn-1.log', receipts_changed=True)]
+        outcome = self.idle(first='2030-01-01T00:01:00+00:00')[1]
+        self.assertIn('20m 40s before the end.** No builder turn and no review ended in that time.', outcome)
+        # No command on record and a turn that ended: the line does not say that nothing ran.
+        doc, outcome = self.idle()
+        self.assertIn('- **No driver command was recorded in the 21m 40s this shift ran.** The last builder turn or '
+                      'review the host ran ended at 2030-01-01T00:01:00.700000+00:00. The host does not know why.\n', outcome)
+
+    def test_the_line_does_not_say_nothing_ran_when_the_end_of_a_turn_or_review_is_not_known(self):
+        """A turn kept with no readable end, a review kept as lost with no attempt that ended:
+        when the host last ran something is then not known, and the line says only when the
+        last command was recorded."""
+        turn = dict(task_id='task', turn=1, started='2030-01-01T00:02:20+00:00', ended='2030-01-01T00:03:00+00:00',
+                    limit_seconds=900, outcome='exit', exit=0, reaped=True, log='logs/turn-1.log', receipts_changed=True)
+        lost = dict(review=1, stage='review', round=0, request_id='review', target=self.task['candidate'],
+                    outcome='lost', receipt=None, findings=[], detail='lost', attempts=[])
+        for field, rows in (('turns', [dict(turn, ended=None)]), ('turns', [dict(turn, ended='soon')]),
+                            ('turns', [turn, 7]), ('turns', 7), ('reviews', [lost]), ('reviews', 'abc'),
+                            ('reviews', [dict(lost, attempts=[dict(attempt=1, ended=None)])]),
+                            ('reviews', [dict(lost, attempts=3)])):
+            with self.subTest(field=field, rows=rows):
+                self.task['turns'], self.task['reviews'] = [], []
+                self.task[field] = rows
+                doc, outcome = self.idle(first='2030-01-01T00:01:00+00:00')
+                self.assertEqual(doc['last_activity']['work_known'], False)
+                line = [text for text in outcome.splitlines() if 'Last driver command' in text]
+                self.assertEqual(line, [self.LAST + '2030-01-01T00:01:00+00:00, 20m 40s before the end.** When the '
+                                        'last builder turn or review the host ran ended is not known from the kept '
+                                        'state. The host does not know why no command followed.'])
+        self.task['turns'], self.task['reviews'] = [turn], []
+        self.assertEqual(self.idle(first='2030-01-01T00:01:00+00:00')[0]['last_activity']['work_known'], True)
+
+    def test_a_shift_the_machine_slept_through_says_that_the_quiet_time_is_of_the_wall_clock(self):
+        """The host worked ten minutes, the machine slept, the host closed on waking. The
+        stamps are apart by the sleep too, and the line must not read as time the host sat
+        with nothing to do."""
+        self.idle(first='2030-01-01T00:01:00+00:00')
+        closed = decode((self.shift / 'closeout.json').read_bytes())
+        closed['elapsed_seconds'] = 600
+        (self.shift / 'closeout.json').write_bytes(receipts.encoded(closed))
+        self.generate()
+        outcome = (self.shift / 'report.md').read_text().split('## Outcome')[1].split('\n## ')[0]
+        self.assertIn(self.LAST + '2030-01-01T00:01:00+00:00, 20m 40s before the end.** No builder turn and no review '
+                      'ended in that time. Both times are of the wall clock, and for 11m 40s of this shift the machine '
+                      'was asleep or its clock was changed: how much of the 20m 40s the host was running is not known. '
+                      'The host does not know why no command followed.\n', outcome)
+
+    def test_a_ledger_replaced_while_the_report_reads_it_is_read_again(self):
+        from support import replaced_while_read
+        with replaced_while_read(self.shift / 'receipts/.consumed.json') as done:
+            doc = self.generate()
+        self.assertEqual((done, doc['status'], doc['issues']), ([1], 'evidence summarized', []))
+        # What a receipt names keeps its pin: a file that changes under the read is a problem.
+        with replaced_while_read(self.shift / 'logs/tests.txt') as done:
+            doc = self.generate()
+        self.assertEqual((done, doc['status']), ([1], 'partial'))
+
+    def test_turns_and_reviews_of_another_shape_are_not_known_and_ones_a_task_never_had_are_none(self):
+        for field, bad in (('turns', 7), ('turns', 'abc'), ('reviews', True), ('reviews', [dict(attempts=3)]),
+                           ('reviews', ['x']), ('turns', None)):
+            with self.subTest(field=field, bad=bad):
+                self.assertEqual(report.last_activity(dict(commands={}, tasks=dict(task={field: bad}))),
+                                 dict(command=None, commands=0, work=None, work_known=False, running=False))
+        # A task kept by a host from before turns or reviews were recorded has no such key.
+        ended = '2030-01-01T00:03:00+00:00'
+        for task in ({}, dict(turns=[dict(ended=ended, outcome='exit')])):
+            with self.subTest(task=task):
+                self.assertEqual(report.last_activity(dict(commands={}, tasks=dict(task=task))),
+                                 dict(command=None, commands=0, work=ended if task else None, work_known=True, running=False))
+        self.assertEqual(report.last_activity(dict(commands={}, tasks=dict(task=7)))['work_known'], False)
+
+    def test_work_that_ended_near_the_end_gives_no_line_also_when_another_end_is_not_known(self):
+        """An end that is on record is the earliest the host can have stopped working: one
+        that is not known can only be later. Within five minutes of the end there is no
+        quiet time to report, whatever else is unknown."""
+        turn = dict(task_id='task', turn=1, started='2030-01-01T00:02:20+00:00', ended='2030-01-01T00:20:00+00:00',
+                    limit_seconds=900, outcome='exit', exit=0, reaped=True, log='logs/turn-1.log', receipts_changed=True)
+        self.task['turns'], self.task['reviews'] = [dict(turn, ended=None), turn], []
+        doc, outcome = self.idle(first='2030-01-01T00:01:00+00:00')
+        self.assertEqual((doc['last_activity']['work_known'], doc['last_activity']['work']), (False, turn['ended']))
+        self.assertNotIn('Last driver command', outcome)
+        self.assertNotIn('No driver command', self.idle()[1])
+
     def test_a_shift_with_no_notes_says_none_and_one_kept_before_notes_existed_reads_the_same(self):
         for case in ('empty', 'absent'):
             with self.subTest(case=case):

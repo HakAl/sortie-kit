@@ -8,6 +8,7 @@ from sortie_kit import cli, receipts, shift_wait
 from sortie_kit.layout import Refused
 from sortie_kit.receipt_schema import decode
 from test_lifecycle import LifecycleFixture
+from support import replaced_while_read
 
 
 class WaitTests(LifecycleFixture):
@@ -170,10 +171,44 @@ class WaitTests(LifecycleFixture):
                 self.assertEqual((result["status"], result["answered"], result["turn"], result["last_turn"]),
                                  ("damaged", True, None, None))
                 self.assertIn("Do not treat this as ready", result["detail"])
+                self.assertIn("Read again before concluding anything", result["detail"])
                 self.assertEqual(self.sleeps, [])
         (self.shift / "grant.json").unlink()
         with self.assertRaisesRegex(Refused, "not a signed shift"):
             self.wait()
+
+    def test_a_file_replaced_while_it_is_read_is_read_again_and_is_not_damage(self):
+        """The host replaces driver-state.json and driver-response.json with every write, and
+        the driver replaces its command file. A read that such a replacement cut across is
+        the ordinary work of the shift and is made again within the same reading."""
+        self.brief()
+        self.driver.poll()
+        self.end_turn()
+        calm = shift_wait.observe(self.shift)
+        self.assertEqual((calm[0]["status"], calm[0]["answered"]), ("ready", True))
+        for name in ("driver-state.json", "driver-response.json", "driver-command.json"):
+            with self.subTest(name=name), replaced_while_read(self.shift / name) as done:
+                self.assertEqual(shift_wait.observe(self.shift), calm)
+                self.assertEqual(done, [1])
+        with replaced_while_read(self.shift / "driver-state.json", times=3) as done:
+            result = self.wait()
+        self.assertEqual((result["status"], done, self.sleeps), ("ready", [1, 2, 3], []))
+        # STOP says `stopped` whether or not it could be read; that it was read again is
+        # seen in the second replacement, which only a second read brings about.
+        (self.shift / "STOP").write_text("{}")
+        with replaced_while_read(self.shift / "STOP", times=2) as done:
+            self.assertEqual(shift_wait.observe(self.shift)[0]["status"], "stopped")
+        self.assertEqual(done, [1, 2])
+
+    def test_a_state_file_that_never_holds_still_is_damaged_after_a_bounded_number_of_reads(self):
+        self.brief()
+        self.driver.poll()
+        self.end_turn()
+        with replaced_while_read(self.shift / "driver-state.json", times=None) as done:
+            result = self.wait()
+        self.assertEqual(result["status"], "damaged")
+        self.assertEqual(len(done), receipts.SETTLE_TRIES)
+        self.assertEqual(self.sleeps, [])
 
     def test_state_that_cannot_establish_idle_is_damaged_not_ready(self):
         self.brief()

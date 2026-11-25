@@ -57,7 +57,8 @@ def queue_check(shift, path):
         try:
             pending = decode(view.read("builder-check.json"))
             if pending != spec:
-                answer = decode(view.read("builder-check-response.json"))
+                # The host replaces its answer with no lock of the builder's.
+                answer = decode(view.settled("builder-check-response.json"))
                 if answer.get("id") != pending.get("id") or answer.get("digest") != receipts.digest(receipts.encoded(pending)):
                     raise Refused("wait for the pending check response before replacing the slot")
         except FileNotFoundError:

@@ -56,6 +56,41 @@ clickable. If the readable part cannot be built from what was kept, a short
   stamps are more than a minute further apart than the seconds counted,
   `report.md` says so in the "Ran for" line: the machine slept, or its clock
   was changed, for the difference.
+- `last_activity`: the host's own stamps of what it last did for the driver.
+  `command` is when the last driver command was recorded, `commands` how many
+  are on record, `work` when a builder turn or a review attempt the host ran
+  last ended, and `running` whether one is recorded as started with no end.
+  A time is `null` when there is none; `command` is also `null` when a record
+  has no time, as in a shift kept by a host from before the time was
+  recorded, because which command was the last is then not known.
+  `work_known` is `false` when the kept state does not tell when everything
+  the host ran ended: a turn or an attempt with no readable end, a turn or a
+  review kept as lost, or a review with no attempt. A task kept from before
+  turns or reviews were recorded has none, which is known. `work` is then
+  still the latest end on record, and an end that is not known can only be
+  later, so a shift whose `work` is within five minutes of its end gets no
+  line. When the shift ended five
+  minutes or more after the later of `command` and `work`, the Outcome has a
+  line in bold after "Ran for": `Last driver command: recorded at TIME, N
+  before the end.` It is followed by one of three statements: when the last
+  turn or review ended and that nothing is on record after it; that no turn
+  and no review ended in that time; or, with `work_known` false, that when
+  the host last ran something is not known. A shift of five minutes or more
+  with no command at all says `No driver command was recorded in the N this
+  shift ran`. The line ends by saying that the host does not know why. A
+  driver that gave up, one that waited for a person and one whose process
+  hung all leave the same record: a host that went on to the end of the
+  window with no command to serve. The line is the only place the report
+  shows it; "How it ended" gives the host's own ending. Five minutes is the
+  bound because a driver that works reads a result and sends its next
+  command well within that, and a wait on a turn or a review is not counted.
+  The times in the line are stamps of the wall clock, as the "Ran for" line's
+  are. When that line says the machine slept or its clock was changed, this
+  one says for how long and that how much of the quiet time the host was
+  running is not known. No line is given when the last command's time is not
+  known, when a turn or review is recorded as still running, when the host
+  counted less than five minutes for the whole shift, or when the report was
+  cut to the short form.
 - `actual_window.wake`: the closeout's `wake`, the host's hold against idle
   sleep (see [the lifecycle](lifecycle.md#keeping-the-machine-awake)), or no
   such entry for an earlier shift. `report.md` says under Outcome whether the

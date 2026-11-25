@@ -595,6 +595,50 @@ class ReceiptTests(LocalTest):
         self.assertFalse((self.shift / "receipts/.consumed.json").exists())
         self.assertEqual(list((self.shift / "receipts").glob(".receipt-*")), [])
 
+    def test_an_expected_context_or_a_ledger_replaced_while_it_is_read_is_read_again(self):
+        """The host replaces both while seats run. What a seat wrote once, a receipt or a
+        file it names, is still refused when it changes under the read."""
+        from support import replaced_while_read
+        value, expected = self.case("build")
+        path = self.store(value, expected)
+        with replaced_while_read(self.shift / "expected.json") as done:
+            self.assertDiagnostic(receipts.validate_receipt(self.shift, path, "expected.json"))
+        self.assertEqual(done, [1])
+        self.assertEqual(receipts.validate_receipt(self.shift, path, "expected.json", record=True)["status"], "satisfied")
+        with replaced_while_read(self.shift / "receipts/.consumed.json") as done:
+            self.assertEqual(receipts.validate_receipt(self.shift, path, "expected.json")["status"], "duplicate")
+        self.assertEqual(done, [1])
+        with replaced_while_read(self.shift / "receipts/.consumed.json") as done:
+            with self.assertRaisesRegex(Refused, "already consumed"):
+                receipts.write_receipt_atomic(self.shift, dict(value, receipt_id="another"), "expected.json")
+        self.assertEqual(done, [1])
+        for name in (path, "logs/tests.txt", "briefs/task.md"):
+            with self.subTest(name=name), replaced_while_read(self.shift / name) as done:
+                with self.assertRaisesRegex(Refused, "evidence changed while reading"):
+                    receipts.validate_receipt(self.shift, path, "expected.json")
+                self.assertEqual(done, [1])
+        with replaced_while_read(self.shift / "expected.json", times=None) as done:
+            with self.assertRaisesRegex(Refused, "evidence changed while reading"):
+                receipts.validate_receipt(self.shift, path, "expected.json")
+        self.assertEqual(len(done), receipts.SETTLE_TRIES)
+
+    def test_time_that_runs_out_while_a_changed_file_is_read_again_is_still_time_that_ran_out(self):
+        """Callers tell the end of their time from every other refusal: the host writes a
+        review's end again under a new lock, and a consume is answered as out of time."""
+        from support import replaced_while_read
+        from sortie_kit.layout import Elapsed
+        (self.shift / "expected.json").write_text("{}")
+        with receipts.session(self.shift, 5, local_only=True) as view:
+            def out_of_time(seconds):
+                if seconds == receipts.SETTLE_PAUSE:  # the pause before the file is read again
+                    view.guard = lambda: (_ for _ in ()).throw(Elapsed("duration elapsed"))
+            with replaced_while_read(self.shift / "expected.json", times=None) as done, \
+                 patch("sortie_kit.receipts.time.sleep", out_of_time):
+                with self.assertRaises(Elapsed) as caught:
+                    view.settled("expected.json")
+            self.assertEqual(done, [1])
+            self.assertIsInstance(caught.exception, receipts.Changed)
+
     def test_pinned_expected_digest_refuses_other_contents_before_recording(self):
         value, expected = self.case()
         pin = receipts.digest(receipts.encoded(expected))
@@ -722,6 +766,15 @@ class ReceiptTests(LocalTest):
         for part in ("means `repair`, then `continue`", "means `continue`: the next turn reads that diagnostic",
                      "`finish` before wind-down is for two cases only"):
             self.assertIn(part, text)
+
+    def test_driver_md_says_that_one_damaged_reading_is_read_again_before_anything_is_concluded(self):
+        from importlib.resources import files
+        text = " ".join(files("sortie_kit").joinpath("data", "templates", "driver.md").read_text().split())
+        for part in ("One `damaged` reading settles nothing",
+                     "run the wait again, up to three more times a few seconds apart",
+                     "Only when every one of them says `damaged`"):
+            self.assertIn(part, text)
+        self.assertNotIn("it is not `ready`. Publish nothing, tell the developer and stop.", text)
 
     def test_driver_md_tells_the_driver_not_to_wait_for_a_person_and_not_to_build_on_a_breach(self):
         from importlib.resources import files

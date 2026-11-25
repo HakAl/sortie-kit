@@ -36,6 +36,22 @@ class TooLarge(Refused):
     and it is known not to be a file that was read within that limit."""
 
 
+class Changed(Refused):
+    """A file that was written or replaced between the first look at it and the last.
+    Nothing is known of its content from this read. It is not known to be damaged."""
+
+
+class Unsettled(Elapsed, Changed):
+    """The time ran out while a file that changed under the read was read again. Both
+    hold: a caller that gives an operation that ran out of time another try, or answers
+    it as out of time, still does, and one that takes a changed file as no reading does."""
+
+
+# How often one name is read while it keeps changing under the read, and the pause
+# between two reads: a fifth of a second in all.
+SETTLE_TRIES, SETTLE_PAUSE = 20, 0.01
+
+
 def kept_path(sha256):
     return KEPT + "/" + sha256
 
@@ -155,10 +171,34 @@ class Evidence:
             after = os.fstat(fd)
             pin = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
             if pin(before) != pin(after):
-                raise Refused("evidence changed while reading")
+                raise Changed("evidence changed while reading")
             return b"".join(chunks)
         finally:
             os.close(fd)
+
+    def settled(self, path, limit=DOCUMENT_LIMIT):
+        """Read a file that its owner replaces while others read it: the host's state,
+        answers, expected context and ledger, a seat's command or request. A read the
+        replacement cut across is made again, SETTLE_TRIES times in all and within this
+        session's time; a name that changed under every one of them is refused as `read`
+        refuses it, and one whose reading again ran out of time is Unsettled. Each read is pinned
+        as any other. Never for a receipt or a file a
+        receipt names: those are written once, and one that changes is refused."""
+        changed = None
+        for left in range(SETTLE_TRIES - 1, -1, -1):
+            total = self.total
+            try:
+                return self.read(path, limit)
+            except Changed as exc:
+                if not left:
+                    raise
+                changed = exc
+                self.total = total  # what is read again is counted once
+                time.sleep(max(0, min(SETTLE_PAUSE, self.budget.remaining())))
+            except Elapsed as exc:
+                if changed is None:
+                    raise
+                raise Unsettled("evidence changed while reading, and the time ran out on reading it again") from exc
 
     def artifact(self, ref):
         raw = self.read(ref["path"], ARTIFACT_LIMIT)
@@ -428,7 +468,7 @@ def context(view, expected):
 
 def ledger(view):
     try:
-        value = decode(view.read("receipts/.consumed.json"))
+        value = decode(view.settled("receipts/.consumed.json"))
     except FileNotFoundError:
         return {"version": 1, "entries": []}
     if (not isinstance(value, dict) or set(value) != {"version", "entries"}
@@ -468,7 +508,7 @@ def validate_receipt(shift, receipt_path, expected_path, *, record=False, second
     """
     with session(shift, seconds) as view:
         def check():
-            pinned = view.read(expected_path)
+            pinned = view.settled(expected_path)
             if expected_sha256 is not None and digest(pinned) != expected_sha256:
                 raise Refused("expected context changed after its owner published it")
             expected = decode(pinned)
@@ -517,7 +557,7 @@ def written(view, value, expected_path, *, host=False):
         raise Refused("receipt document exceeds limit")
     if not host and isinstance(value, dict) and (value.get("phase") == "review" or value.get("role") == "reviewer"):
         raise Refused("a review receipt is written by the host from the reviewer's own output; no seat writes one")
-    result = payload(view, decode(raw), decode(view.read(expected_path)))
+    result = payload(view, decode(raw), decode(view.settled(expected_path)))
     # The ledger is read as the receipt check reads it, so that what is written here
     # is something that check would still take: an unreadable ledger refuses, and so
     # does a receipt ID or a phase slot the driver has already consumed.

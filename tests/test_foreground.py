@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import sys
@@ -58,11 +59,47 @@ raw = termios.tcgetattr(0); raw[3] &= ~(termios.ECHO | termios.ICANON); termios.
 def keep(**more): Path(sys.argv[1]).write_text(json.dumps(dict(seen, **more)))
 keep()
 '''
+# What a full-screen program turns on and one stopped by a signal leaves on: an entry
+# on the keyboard stack of the main screen, the alternate screen, an entry on its stack.
+MODES_ON = r'os.write(1, b"\x1b[>1u\x1b[?1049h\x1b[>3u\x1b[?1000h")' + "\n"
 CHILDREN = {
     "exit": CHILD_HEAD + 'print("driver ready", flush=True)\nkeep(read=os.read(0, 5).decode())\nsys.exit(7)\n',
     "stop": CHILD_HEAD + 'print("driver ready", flush=True)\ntime.sleep(30)\n',
+    "modes": CHILD_HEAD + MODES_ON + 'print("driver ready", flush=True)\ntime.sleep(30)\n',
     "suspend": CHILD_HEAD + 'print("driver ready", flush=True)\nos.kill(os.getpid(), signal.SIGSTOP)\ntime.sleep(30)\n',
 }
+
+
+class Terminal:
+    """The other end of the PTY: what a terminal keeps of the state the host asks about,
+    and its answers. The caller of the host has one entry of its own on the keyboard
+    stack of the main screen and a saved cursor; each screen has its own stack."""
+    SEEN = re.compile(rb"\x1b\[\?u|\x1b\[\?1049\$p|\x1b\[c|\x1b\[>(\d+)u|\x1b\[<u|\x1b\[\?1049([hl])|\x1b7")
+
+    def __init__(self, answers="all"):
+        self.answers, self.done = answers, 0
+        self.alternate, self.stacks, self.cursor = False, {False: [5], True: []}, "the caller's"
+
+    def feed(self, output, master):
+        for found in self.SEEN.finditer(output, self.done):
+            self.done, text, stack = found.end(), found.group(0), self.stacks[self.alternate]
+            if text == b"\x1b[c":
+                if self.answers:
+                    os.write(master, b"\x1b[?62;22c")
+            elif text == b"\x1b[?u":
+                if self.answers == "all":
+                    os.write(master, b"\x1b[?%du" % (stack[-1] if stack else 0))
+            elif text == b"\x1b[?1049$p":
+                if self.answers == "all":
+                    os.write(master, b"\x1b[?1049;%d$y" % (1 if self.alternate else 2))
+            elif text == b"\x1b[<u":
+                del stack[-1:]
+            elif text == b"\x1b7":
+                self.cursor = "overwritten"
+            elif found.group(1):
+                stack.append(int(found.group(1)))
+            else:
+                self.alternate = found.group(2) == b"h"
 
 
 class ForegroundStatusTests(LocalTest):
@@ -97,6 +134,78 @@ class ForegroundStatusTests(LocalTest):
         seat.child.code = 0
         self.assertEqual(seat.close(), "exited on its own with status 0; terminal not restored")
 
+
+    def test_nothing_is_written_to_what_is_not_a_terminal(self):
+        """The modes a full-screen program turns on are turned off by bytes written to the
+        terminal. A descriptor that is no terminal gets none of them."""
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        seat = self.seat(exit="exited on its own with status 0")
+        os.close(seat.tty)
+        seat.tty = writer
+        seat.child.code = 0
+        self.assertEqual(seat.close(), "exited on its own with status 0; terminal not restored")
+        os.set_blocking(reader, False)
+        self.assertEqual(os.read(reader, 100), b"")  # the writing end is closed and nothing was written
+
+    def test_taking_back_is_bounded_and_says_when_the_terminal_did_not_come_back(self):
+        """Each step is followed by asking again. A terminal that stops answering, one
+        whose flags never come back and a difference no step undoes all end with the
+        terminal said to be not as it was, after a bounded number of pops."""
+        from unittest.mock import patch
+        from sortie_kit import tick_supervise
+        for answers, pops, back in (
+                ([(False, 1), (False, 0)], 1, True),
+                ([(True, 3), (False, 1), (False, 0)], 1, True),
+                ([(False, 1), None], 1, False),            # silent after the first pop
+                ([(False, 1)] * 40, tick_supervise.KEYBOARD_ENTRIES, False),
+                ([(False, 1)] * tick_supervise.KEYBOARD_ENTRIES + [(False, 0)], tick_supervise.KEYBOARD_ENTRIES, True),
+                ([(True, 0)] * 40, 0, False),               # a screen that is not left is asked to once
+                ([(False, 0)], 0, True),
+                ([(None, 4)], 0, False),                   # the screen answer is gone: not compared
+                ([(False, None)], 0, False)):
+            with self.subTest(answers=answers):
+                written = []
+                with patch.object(tick_supervise, "ask", side_effect=list(answers)), \
+                        patch.object(tick_supervise, "put", side_effect=lambda fd, data: written.append(data)):
+                    self.assertEqual(tick_supervise.take_back(-1, None, (False, 0)), back)
+                self.assertEqual(written.count(tick_supervise.KEYBOARD_POP), pops)
+                self.assertEqual(len(written) - pops, sum(1 for item in answers[:1] if item and item[0]))
+
+    def test_an_answer_is_read_for_what_it_says_and_a_mode_the_terminal_does_not_know_is_not_known(self):
+        from sortie_kit import tick_supervise
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        import termios
+        def settings():
+            value = termios.tcgetattr(slave)
+            value[3] &= ~getattr(termios, "PENDIN", 0)  # transient on macOS, not a setting
+            return value
+        saved = settings()
+        for reply, expected in ((b"\x1b[?1049;1$y\x1b[?3u\x1b[?62c", (True, 3)), (b"\x1b[?1049;2$y\x1b[?62c", (False, None)),
+                                (b"\x1b[?1049;0$y\x1b[?0u\x1b[?1;2c", (None, 0)), (b"x\x1b[?4;1$y", None)):
+            with self.subTest(reply=reply):
+                os.write(master, reply)
+                self.assertEqual(tick_supervise.ask(slave, saved, 0.2), expected)
+                self.assertEqual(settings(), saved)
+                # The reply was written before the question, so the terminal echoed it first.
+                self.assertTrue(os.read(master, 100).endswith(tick_supervise.TERMINAL_ASKED))
+
+    def test_a_terminal_that_hung_up_ends_the_question_at_once(self):
+        from sortie_kit import tick_supervise
+        import termios
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, slave)
+        saved = termios.tcgetattr(slave)
+        os.close(master)
+        began = time.monotonic()
+        try:
+            answer = tick_supervise.ask(slave, saved, 5)
+        except (OSError, termios.error):
+            answer = None  # a terminal that is gone may also refuse the question itself
+        self.assertIsNone(answer)
+        self.assertLess(time.monotonic() - began, 2)
 
     def exiting(self):
         """A driver that took the stop and is still inside its own exit: macOS answers
@@ -193,7 +302,8 @@ class OwnTerminalTests(LocalTest):
 
 
 class ForegroundTests(LocalTest):
-    def run_host(self, mode, typed=b""):
+    def run_host(self, mode, typed=b"", answers="all"):
+        self.terminal = Terminal(answers)
         out = self.root / "host.json"
         script = self.root / "host.py"
         script.write_text(HOST)
@@ -210,6 +320,7 @@ class ForegroundTests(LocalTest):
                         output += os.read(master, 65536)
                     except OSError:
                         pass
+                    self.terminal.feed(output, master)
                 if typed and b"driver ready" in output:
                     os.write(master, typed)
                     typed = b""
@@ -225,6 +336,7 @@ class ForegroundTests(LocalTest):
                 os.waitpid(pid, 0)
             os.close(master)
         self.assertIn(b"host writes after reclaim", output)
+        self.output = output
         return json.loads(out.read_text()), json.loads((self.root / "host.json.child").read_text())
 
     def check_handoff(self, host, child):
@@ -234,6 +346,22 @@ class ForegroundTests(LocalTest):
         self.assertEqual((host["ended"] or host["outcome"].startswith("stopped"), host["reclaimed"],
                           host["attributes"], host["handlers"]), (True, True, True, True))
         self.assertEqual(host["again"], host["outcome"])
+        # After the driver, and before anything the host writes: the modes a full-screen
+        # program turns on and a program stopped by a signal leaves on. Once: the second
+        # close() writes nothing.
+        from sortie_kit.tick_supervise import TERMINAL_MODES_OFF
+        for mode in (b"\x1b[?1000l", b"\x1b[?1002l", b"\x1b[?1003l", b"\x1b[?1006l", b"\x1b[?1004l", b"\x1b[?2004l",
+                     b"\x1b[?25h"):
+            self.assertIn(mode, TERMINAL_MODES_OFF)
+        # Never blind: what the caller may hold itself. A pop takes an entry of the
+        # keyboard stack whoever pushed it, and saving the cursor overwrites the one saved.
+        for mode in (b"\x1b[<u", b"\x1b[?1049l", b"\x1b7"):
+            self.assertNotIn(mode, TERMINAL_MODES_OFF)
+        self.assertEqual((self.terminal.cursor, self.terminal.alternate, self.terminal.stacks[False]),
+                         ("the caller's", False, [5]))
+        self.assertEqual(self.output.count(TERMINAL_MODES_OFF), 1)
+        self.assertLess(self.output.index(b"driver ready"), self.output.index(TERMINAL_MODES_OFF))
+        self.assertLess(self.output.index(TERMINAL_MODES_OFF), self.output.index(b"host writes after reclaim"))
 
     def test_driver_owns_the_terminal_reads_from_it_and_its_exit_is_observed(self):
         host, child = self.run_host("exit", typed=b"hello")
@@ -245,6 +373,47 @@ class ForegroundTests(LocalTest):
         host, child = self.run_host("stop")
         self.check_handoff(host, child)
         self.assertEqual((host["ended"], host["code"], host["outcome"]), (False, -15, "stopped by the host"))
+
+    def test_a_driver_that_left_the_terminal_as_it_was_costs_the_caller_nothing(self):
+        """The caller's own entry on the keyboard stack and its saved cursor are the
+        caller's. After a driver that changed neither, on its own exit and on the
+        host's stop, the host writes no pop, does not leave an alternate screen and
+        saves no cursor."""
+        for mode in ("exit", "stop"):
+            with self.subTest(mode=mode):
+                host, child = self.run_host(mode, typed=b"hello" if mode == "exit" else b"")
+                self.check_handoff(host, child)
+                for never in (b"\x1b[<u", b"\x1b[?1049l", b"\x1b7"):
+                    self.assertNotIn(never, self.output)
+
+    def test_what_a_stopped_driver_left_on_is_taken_back_and_no_more(self):
+        """The host asks the terminal before the driver and after it and puts back what
+        differs: it leaves the alternate screen the driver entered and pops the one
+        entry the driver pushed on the main screen's keyboard stack. The caller's entry
+        under it stays."""
+        host, child = self.run_host("modes")
+        self.check_handoff(host, child)
+        self.assertEqual(host["outcome"], "stopped by the host")
+        self.assertEqual((self.output.count(b"\x1b[?1049l"), self.output.count(b"\x1b[<u")), (1, 1))
+        self.assertEqual(self.terminal.stacks, {False: [5], True: [3]})
+        self.assertNotIn(b"\x1b7", self.output)
+
+    def test_a_terminal_that_does_not_say_what_it_holds_gets_only_the_plain_modes_turned_off(self):
+        """Without an answer the host cannot tell the driver's entry from the caller's,
+        so it pops nothing and leaves no screen. A terminal that answers only what it
+        is, and one that answers nothing."""
+        from sortie_kit import tick_supervise
+        from sortie_kit.tick_supervise import TERMINAL_MODES_OFF
+        for answers in ("", "identity"):
+            with self.subTest(answers=answers):
+                host, child = self.run_host("modes", answers=answers)
+                self.assertEqual((host["outcome"], host["reclaimed"], host["attributes"]),
+                                 ("stopped by the host", True, True))
+                self.assertEqual(self.output.count(TERMINAL_MODES_OFF), 1)
+                for never in (b"\x1b[<u", b"\x1b[?1049l", b"\x1b7"):
+                    self.assertNotIn(never, self.output)
+                # Asked before the driver, and with nothing to compare not again after it.
+                self.assertEqual(self.output.count(tick_supervise.TERMINAL_ASKED), 1)
 
     def test_suspended_driver_counts_as_ended_and_is_stopped(self):
         host, child = self.run_host("suspend")

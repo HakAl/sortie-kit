@@ -339,8 +339,12 @@ class Driver:
                     channels.fields(kept, {"path", "sha256"})
         for identity, item in state["commands"].items():
             channels.token(identity)
-            channels.fields(item, {"digest", "response"})
-            if not isinstance(item["response"], dict) or not isinstance(item["digest"], str):
+            # `at`: the host's time when it recorded the command. A state kept by a host
+            # from before that has none.
+            channels.fields(item, {"digest", "response"}, {"at"})
+            if (not isinstance(item["response"], dict) or not isinstance(item["digest"], str)
+                    or ("at" in item and (not isinstance(item["at"], str) or len(item["at"]) > 40
+                                          or channels.timestamp(item["at"]) is None))):
                 raise Refused("invalid command record")
         if state["pending"] is not None:
             channels.fields(state["pending"], {"id", "digest", "op"})
@@ -598,11 +602,22 @@ class Driver:
                 os.close(fd)
             self.kind, self.reviewing = "turn", None
             why = "not started: " + (str(exc)[:500] or type(exc).__name__)
-            return self.attempt_done(view, state, task, dict(
-                attempt=number, directory=made, instructions_sha256=sha, marker=running["marker"], argv=[],
-                started=running["started"], ended=self.now().isoformat(), elapsed_seconds=None, exit_status=None,
-                ended_by="not started", stdout=None, stderr=None, output_dropped_bytes=0, status="failed",
-                verdict=None, reasons=[why], record=None, repository="not checked"))
+            try:
+                return self.attempt_done(view, state, task, dict(
+                    attempt=number, directory=made, instructions_sha256=sha, marker=running["marker"], argv=[],
+                    started=running["started"], ended=self.now().isoformat(), elapsed_seconds=None, exit_status=None,
+                    ended_by="not started", stdout=None, stderr=None, output_dropped_bytes=0, status="failed",
+                    verdict=None, reasons=[why], record=None, repository="not checked"))
+            except Elapsed:
+                # No process was started and none is held. The time under this lock ran
+                # out before a receipt for the failed review could be recorded. Raised
+                # further, this would block the whole shift as an effect of unknown
+                # extent, which it is not; left begun, the review would be in no report
+                # and known to no driver whose command this does not answer.
+                review = state["review"]
+                if review is None or review["running"] is not None or not review["attempts"]:
+                    raise
+                return self.failed_unrecorded(state, task, number, why[len("not started: "):])
         self.turn_end, self.turn_fd, self.err_fd = cutoff, opened[0], opened[1]
         self.turn_bytes = self.turn_dropped = self.err_bytes = self.err_dropped = 0
         self.pipe_end = {}
@@ -855,17 +870,44 @@ class Driver:
     def review_lost(self, state):
         """A review recorded as running by an earlier host process: nothing is known of
         its end and nothing is taken from it."""
+        self.closed_without_receipt(state, "lost", LOST_REVIEW)
+
+    def closed_without_receipt(self, state, outcome, detail):
+        """Move the review in the state onto its task with no receipt: it backs nothing."""
         review = state["review"]
         task = state["tasks"][review["task_id"]]
         task["reviews"].append(dict(
             review=review["review"], stage=review["stage"], round=review["round"], request_id=review["request_id"],
-            target=review["target"], outcome="lost", receipt=None, findings=[], detail=LOST_REVIEW,
+            target=review["target"], outcome=outcome, receipt=None, findings=[], detail=detail,
             attempts=[{name: item[name] for name in ("attempt", "status", "verdict", "ended_by", "reasons", "started",
                                                      "ended", "elapsed_seconds", "repository")}
                       for item in review["attempts"]]))
-        state["last_review"] = dict(task_id=task["id"], stage=review["stage"], round=review["round"], outcome="lost",
-                                    receipt=None, findings=[], detail=LOST_REVIEW)
+        state["last_review"] = dict(task_id=task["id"], stage=review["stage"], round=review["round"], outcome=outcome,
+                                    receipt=None, findings=[], detail=detail)
         state["review"] = None
+
+    def failed_unrecorded(self, state, task, number, why):
+        """A review whose last attempt could not start, with no time left under the lock
+        to record a receipt for it. It is kept as failed with no receipt, as a review
+        whose receipt could not be written is, and the task moves as after any failed
+        review: blocked after two attempts, and otherwise handed in still, for a review
+        with a request of its own. Returns the status and words for the driver."""
+        review = state["review"]
+        stage, tried = review["stage"], len(review["attempts"])
+        failures = "; ".join(item["reasons"][0] for item in review["attempts"] if item["reasons"])[:1200]
+        detail = ("review attempt " + str(number) + " could not start (" + why + ") and the time under the host's "
+                  "lock ran out before a receipt for the review could be recorded. The review is kept as failed "
+                  "with no receipt and backs nothing. ")
+        if tried >= REVIEW_TRIES:
+            task.update(stage="blocked", reason="review failed twice: " + failures)
+            state["active"] = None
+            detail += "The task is blocked for the developer; no repair round was used"
+        else:
+            self.stage(task, stage)
+            detail += ("The work stays handed in and not reviewed. Send `continue` at this stage: it starts "
+                       "another review when one may still start")
+        self.closed_without_receipt(state, "FAILED", detail[:2000])
+        return "blocked", detail[:2000]
 
     def pump(self):
         """Move what the owned process printed into its log, up to a fixed size; the rest
@@ -1415,7 +1457,8 @@ class Driver:
                     return channels.response(identity, "blocked", state["reason"], sha=sha)
                 stage = state["tasks"][state["active"]]["stage"] if state["active"] else None
                 result = channels.response(identity, status, detail, state=stage, sha=sha)
-                state["commands"][identity] = dict(digest=sha, response=result)
+                state["commands"][identity] = dict(digest=sha, response=result,
+                                                   at=self.now().replace(microsecond=0).isoformat())
                 state["pending"] = None
                 self.save(view, state)
                 intent = None

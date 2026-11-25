@@ -99,8 +99,11 @@ before you do anything else. A turn's `outcome` (`exit`,
 `timeout`, `signal`, `stopped: ...`, `not started: ...`, `lost`) and exit status
 describe a process, never the work: only a consumed receipt advances a task.
 Status `damaged` means the shift state could not be read and whether a turn
-runs is unknown: it is not `ready`. Publish nothing, tell the developer and
-stop. The same holds when a command is answered `blocked` because a turn was
+runs is unknown: it is not `ready`. One `damaged` reading settles nothing: run
+the wait again, up to three more times a few seconds apart, and go on from the
+first reading that is not `damaged`. Only when every one of them says
+`damaged`: publish nothing, tell the developer and
+stop. The same holds at once when a command is answered `blocked` because a turn was
 lost or its stop could not be confirmed: a builder process may still be
 running, the toolkit will start no other, and only the developer can look.
 If you end your own turn without a command outstanding, nothing wakes you; the

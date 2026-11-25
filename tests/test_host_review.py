@@ -705,7 +705,10 @@ class HostReviewTests(test_lifecycle.LifecycleFixture):
         self.begin("defect")
         self.assertEqual(self.consume_phase()["status"], "advanced")
         self.spawn.failure = OSError("no such program")
-        with mock.patch.object(Driver, "room", return_value=0.5):
+        # Only the room a further attempt needs is taken away. The lock itself keeps its
+        # time: the record of the failure is written on a real clock, and with half a
+        # second of room it was given 50 ms, which a loaded machine does not always meet.
+        with mock.patch("sortie_kit.lifecycle.PREPARE_ROOM", 10 ** 6):
             _, path = self.phase_receipt(target={"kind": "commit", "commit": self.candidate})
             self.action("consume", receipt=path, target={"kind": "commit", "commit": self.candidate})
         state = self.state()
@@ -715,6 +718,83 @@ class HostReviewTests(test_lifecycle.LifecycleFixture):
         self.spawn.failure = None
         self.assertEqual(self.action("continue")["status"], "recorded")
         self.assertEqual(self.end_review()["last_review"]["outcome"], "ACCEPT")
+
+    def out_of_time_at_the_record(self, calls):
+        """The check of the receipt the host writes for a review finds no time left; a
+        builder's own receipt is checked as ever."""
+        from unittest import mock
+        from sortie_kit import receipts
+        from sortie_kit.layout import Elapsed
+        real = receipts.validate_receipt
+
+        def check(*args, **kwargs):
+            calls.append(args[1])
+            if args[1].startswith("receipts/review-"):
+                raise Elapsed("duration elapsed")
+            return real(*args, **kwargs)
+        return mock.patch.object(receipts, "validate_receipt", check)
+
+    def test_a_failed_start_whose_record_ran_out_of_time_is_a_failed_review_on_record_and_the_shift_goes_on(self):
+        """The attempt could not start and nothing is left under the lock to record a
+        receipt for it. That is a shortage of time under one lock and no damage: the
+        shift is not blocked, the review is kept as failed with no receipt, so the wait
+        and the report show it, nothing is left begun, and `continue` starts another."""
+        from unittest import mock
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.spawn.failure = OSError("no such program")
+        calls = []
+        with mock.patch("sortie_kit.lifecycle.PREPARE_ROOM", 10 ** 6), self.out_of_time_at_the_record(calls):
+            _, path = self.phase_receipt(target={"kind": "commit", "commit": self.candidate})
+            answer = self.action("consume", receipt=path, target={"kind": "commit", "commit": self.candidate})
+        self.assertEqual((len(calls), calls[0], calls[1].startswith("receipts/review-")), (2, path, True))
+        state = self.state()
+        task, last = state["tasks"]["task"], state["last_review"]
+        self.assertEqual((answer["status"], state["mode"], state["pending"], state["active"], state["review"]),
+                         ("advanced", "active", None, "task", None))
+        self.assertEqual((task["stage"], last["outcome"], last["receipt"], len(task["reviews"])), ("review", "FAILED", None, 1))
+        kept = task["reviews"][0]
+        self.assertEqual((kept["outcome"], kept["receipt"], len(kept["attempts"]), kept["detail"]),
+                         ("FAILED", None, 1, last["detail"]))
+        self.assertIn("no such program", kept["attempts"][0]["reasons"][0])
+        for part in ("could not start", "no such program", "the time under the host's lock ran out",
+                     "backs nothing", "Send `continue`"):
+            self.assertIn(part, answer["detail"])
+            self.assertIn(part, last["detail"])
+        # The wait shows the failed review, and the state loads in a host started later.
+        from sortie_kit import shift_wait
+        (self.shift / "driver-command.json").unlink(missing_ok=True)
+        reading = shift_wait.observe(self.shift)[0]
+        self.assertEqual((reading["status"], reading["review"], reading["last_review"]["outcome"]),
+                         ("ready", None, "FAILED"))
+        self.spawn.failure = None
+        self.assertEqual(self.action("continue")["status"], "recorded")
+        state = self.state()
+        self.assertEqual((state["review"]["review"], state["review"]["running"]["attempt"]), (2, 1))
+        state = self.end_review()
+        self.assertEqual((state["last_review"]["outcome"], state["tasks"]["task"]["stage"]), ("ACCEPT", "accepted"))
+        self.assertEqual(len(state["tasks"]["task"]["reviews"]), 2)
+
+    def test_a_second_attempt_that_could_not_start_with_no_time_for_the_record_is_not_left_untold(self):
+        """The host runs a failed attempt once more by itself, with no command of the
+        driver's to answer. When that second attempt cannot start and the record runs
+        out of time, the review is on record as failed twice and the task is blocked,
+        as for any review that failed twice; nothing is left begun for a `continue`
+        that nobody was told to send."""
+        self.reach_review()
+        self.spawn.failure = OSError("no such program")
+        calls = []
+        with self.out_of_time_at_the_record(calls):
+            state = self.end_review("I looked and it seems fine.\n")
+        task, last = state["tasks"]["task"], state["last_review"]
+        self.assertEqual((state["review"], state["mode"], state["active"], task["stage"]), (None, "active", None, "blocked"))
+        self.assertEqual((last["outcome"], last["receipt"], len(task["reviews"][0]["attempts"])), ("FAILED", None, 2))
+        self.assertIn("review failed twice", task["reason"])
+        self.assertIn("no such program", task["reason"])
+        self.spawn.failure = None
+        result = self.action("brief", task_id="next", kind="defect", brief=self.artifact("briefs/task.md"),
+                             next_owner="builder")
+        self.assertEqual(result["status"], "recorded", result)
 
     def test_the_repository_is_untouched_by_the_host_making_a_review_directory(self):
         before = subprocess.check_output(["git", "-C", str(self.target), "status", "--porcelain"], timeout=5)

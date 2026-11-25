@@ -7,7 +7,7 @@ import stat
 import time
 
 from .layout import Refused
-from .receipts import session, encoded, digest
+from .receipts import Changed, session, encoded, digest
 from .receipt_schema import decode
 from .report_metrics import timestamp
 
@@ -104,11 +104,15 @@ def locked(shift, name, seconds=10, *, authorize=None, local_only=False):
 
 def poll_bytes(shift, request_path, response_path, handler, last, write_seconds=lambda: 5, read_seconds=lambda: 10):
     """Process one immutable reading. Never infer which overwrite the producer intended.
-    The caller says how long the reading and the writing of the answer may take."""
+    The caller says how long the reading and the writing of the answer may take.
+
+    The producer replaces its request whenever it likes. A read that cut across is made
+    again; a request that changed under every read of this pass is no reading, so nothing
+    is answered and the next pass reads it."""
     with session(shift, read_seconds()) as view:
         try:
-            raw = view.read(request_path)
-        except FileNotFoundError:
+            raw = view.settled(request_path)
+        except (FileNotFoundError, Changed):
             return last
         sha = digest(raw)
         if sha == last:

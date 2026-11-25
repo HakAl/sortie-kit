@@ -23,7 +23,7 @@ from sortie_kit.lifecycle import Driver
 from sortie_kit.layout import Refused
 from sortie_kit.receipt_schema import asset, decode
 import test_receipts
-from support import Clock, FakeSpawn
+from support import Clock, FakeSpawn, replaced_while_read
 
 
 class LifecycleFixture(test_receipts.ReceiptTests):
@@ -309,6 +309,25 @@ class LifecycleTests(LifecycleFixture):
         self.assertEqual((self.task_state()['stage'], self.task_state()['candidate']),
                          ('review', {'kind': 'commit', 'commit': self.candidate}))
 
+    def test_each_recorded_command_keeps_the_hosts_time_and_a_state_without_one_still_loads(self):
+        self.clock.sleep(61.7)
+        self.begin()
+        record = self.state()["commands"]["command-1"]
+        self.assertEqual(sorted(record), ["at", "digest", "response"])
+        self.assertEqual(record["at"], "2030-01-01T00:01:01+00:00")
+        # A state kept by a host from before the time was recorded has none.
+        state = self.state()
+        del state["commands"]["command-1"]["at"]
+        (self.shift / "driver-state.json").write_bytes(receipts.encoded(state))
+        self.assertEqual(self.action("note", kind="decision", text="went on")["status"], "recorded")
+        self.assertEqual(sorted(self.state()["commands"]["command-1"]), ["digest", "response"])
+        for bad in (7, "", "yesterday", "2030-01-01T00:01:01", "9999-12-31T23:59:59-23:59", "2" * 41):
+            with self.subTest(bad=bad):
+                state["commands"]["command-1"]["at"] = bad
+                (self.shift / "driver-state.json").write_bytes(receipts.encoded(state))
+                answer = self.action("note", kind="decision", text="went on again")
+                self.assertEqual((answer["status"], answer["detail"]), ("invalid", "invalid command record"))
+
     def test_pending_intent_and_command_replay_fail_closed(self):
         command=dict(version=1,id='stable',op='brief',task_id='task',kind='feature',brief=self.artifact('briefs/task.md'),next_owner='builder')
         self.assertEqual(self.driver.apply(command)['status'], 'recorded')
@@ -587,6 +606,34 @@ class LifecycleTests(LifecycleFixture):
                 self.assertIn('withdrawn', why)
                 self.assertTrue((self.shift / 'report.md').exists())
                 self.assertEqual(self.spawn.started, [])
+
+    def test_a_command_file_replaced_while_the_host_reads_it_is_read_again_and_answered(self):
+        command = dict(version=1, id="first", op="brief", task_id="task", kind="defect",
+                       brief=self.artifact("briefs/task.md"), next_owner="builder")
+        (self.shift / "driver-command.json").write_bytes(receipts.encoded(command))
+        with replaced_while_read(self.shift / "driver-command.json") as done:
+            self.driver.poll()
+        self.assertEqual(done, [1])
+        answer = decode((self.shift / "driver-response.json").read_bytes())
+        self.assertEqual((answer["id"], answer["status"]), ("first", "recorded"))
+
+    def test_a_command_file_that_never_holds_still_does_not_end_the_shift(self):
+        """The driver writes its command file whenever it likes. A reading of it that is cut
+        across every time is no reading: nothing is answered, the pass ends, and the next
+        pass reads again. Before, the first such reading ended the shift with code 3."""
+        command = dict(version=1, id="first", op="finish", reason="done", next_owner="developer")
+        (self.shift / "driver-command.json").write_bytes(receipts.encoded(command))
+        with replaced_while_read(self.shift / "driver-command.json", times=None) as done:
+            code, why = run_shift(self.admission, self.spawn, seconds=0.5, wind_down=0.2, poll=0.1,
+                                  sleep=self.clock.sleep)
+            self.assertEqual((code, why), (0, "working time over: stopped before the signed deadline"))
+            del done[:]
+            self.driver.poll()
+            self.assertEqual(len(done), receipts.SETTLE_TRIES)
+            # Nor when the time for the reading runs out while it is made again.
+            self.driver.live_seconds = lambda: 0.05
+            self.driver.poll()
+        self.assertFalse((self.shift / "driver-response.json").exists())
 
     def test_poll_partial_input_and_host_wind_down(self):
         (self.shift/'driver-command.json').write_text('{')
@@ -1689,6 +1736,23 @@ class BuilderTests(LifecycleFixture):
         self.assertIn("nothing was executed", reply["detail"])
         self.assertFalse((self.shift / "builder-check-state.json").exists())
         self.assertFalse((self.shift / "scratch/check-reproduce-F1-baseline").exists())
+
+    def test_a_check_request_replaced_while_the_host_reads_it_and_an_answer_replaced_while_the_builder_reads_it(self):
+        spec = self.fixture_check()
+        (self.shift / "briefs/check.json").write_bytes(receipts.encoded(spec))
+        self.assertEqual(queue_check(self.shift, "briefs/check.json")["status"], "queued")
+        host = BuilderHost(self.admission, self.driver, enabled=False)
+        with replaced_while_read(self.shift / "builder-check.json") as done:
+            host.poll()
+        self.assertEqual(done, [1])
+        self.assertEqual(decode((self.shift / "builder-check-response.json").read_bytes())["status"], "blocked")
+        second = copy.deepcopy(spec)
+        second["id"] = "second"
+        (self.shift / "briefs/second.json").write_bytes(receipts.encoded(second))
+        # The builder asks again while the host writes its answer to the first request.
+        with replaced_while_read(self.shift / "builder-check-response.json") as done:
+            self.assertEqual(queue_check(self.shift, "briefs/second.json")["status"], "queued")
+        self.assertEqual(done, [1])
 
     def test_missing_reviewer_request_and_partial_queue_do_not_execute(self):
         spec=self.fixture_check();spec['review_request']['path']='logs/missing'

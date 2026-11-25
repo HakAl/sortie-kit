@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 import math
 import os
+import re
+import select
 import signal
 import termios
 import threading
@@ -138,6 +140,92 @@ def own_terminal():
                   "output do not give one (redirected, or opened through /dev/tty); run it directly in a terminal")
 
 
+# Written to the terminal once the driver is gone. A full-screen program turns these
+# modes on and turns them off as it leaves; one that the host stops with a signal may
+# not, and the developer's shell then prints a line of bytes for every movement of the
+# mouse and every key. In order: mouse reporting (press, drag, any motion, the SGR
+# encoding), focus reporting, bracketed paste, the cursor shown. Each is the state a
+# shell has while a command of its runs, so writing it takes nothing from the caller.
+# A terminal that does not know one of these ignores it.
+TERMINAL_MODES_OFF = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?25h"
+
+# Two things a full-screen program changes can be the caller's as well: an entry on the
+# kitty keyboard stack and the alternate screen with the cursor saved for it. A pop
+# written blind takes the caller's entry when the driver left none. So the host asks:
+# whether the alternate screen is on, the keyboard flags now in force, and last what
+# kind of terminal this is, which every terminal answers and which ends the reading.
+TERMINAL_ASKED = b"\x1b[?1049$p\x1b[?u\x1b[c"
+ALTERNATE_OFF = b"\x1b[?1049l"
+KEYBOARD_POP = b"\x1b[<u"
+ASK_SECONDS = 0.5
+KEYBOARD_ENTRIES = 8  # more pops than this are not written
+_ANSWERED = re.compile(rb"\x1b\[\?[0-9;]*c")
+_ALTERNATE = re.compile(rb"\x1b\[\?1049;([0-4])\$y")
+_KEYBOARD = re.compile(rb"\x1b\[\?([0-9]+)u")
+
+
+def put(fd, data):
+    """Write to the terminal without waiting on one that takes no output now (held
+    with Ctrl-S): that is an error to the caller, and nothing waits."""
+    os.set_blocking(fd, False)
+    try:
+        if os.write(fd, data) != len(data):
+            raise BlockingIOError("the terminal took only part of what was written to it")
+    finally:
+        os.set_blocking(fd, True)
+
+
+def ask(fd, saved, seconds=ASK_SECONDS, *, clock=time.monotonic):
+    """What the terminal says it holds: (alternate screen on, keyboard flags), each
+    None where it gave no answer, or None when it answered nothing in the time.
+
+    Read with echo and line editing off and the settings put back after. Whatever
+    else arrives in that time, a key typed ahead, is read with the answers and dropped.
+    """
+    quiet = [*saved[:6], list(saved[6])]
+    quiet[0] &= ~(termios.ICRNL | termios.INLCR | termios.IGNCR | termios.ISTRIP | termios.IXON)
+    quiet[3] &= ~(termios.ECHO | termios.ICANON)
+    quiet[6][termios.VMIN], quiet[6][termios.VTIME] = 0, 0
+    termios.tcsetattr(fd, termios.TCSANOW, quiet)
+    try:
+        put(fd, TERMINAL_ASKED)
+        data, end = b"", clock() + seconds
+        while not _ANSWERED.search(data):
+            left = end - clock()
+            if left <= 0 or not select.select([fd], [], [], left)[0]:
+                return None
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                return None  # hung up: readable for ever and nothing to read
+            data += chunk
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, saved)
+    alternate, keyboard = _ALTERNATE.search(data), _KEYBOARD.search(data)
+    told = (None if alternate is None or alternate.group(1) in b"0" else alternate.group(1) in b"13",
+            None if keyboard is None else int(keyboard.group(1)))
+    return None if told == (None, None) else told  # it said what it is and nothing of what it holds
+
+
+def take_back(fd, saved, before):
+    """Put back what differs from `before`, the terminal's answer from before the
+    driver, and nothing else. Leaves an alternate screen that was not on then, once,
+    which also restores the cursor saved on entering it; then pops the keyboard stack,
+    KEYBOARD_ENTRIES times at most, while the flags in force are not the ones from
+    then. Each write is followed by asking again, so nothing is written on a guess
+    and the answer after the last write is the one returned on. Returns whether the
+    terminal now says what it said before; one that stops answering does not."""
+    now = ask(fd, saved)
+    if now is not None and now[0] and before[0] is False:
+        put(fd, ALTERNATE_OFF)
+        now = ask(fd, saved)
+    for _ in range(KEYBOARD_ENTRIES):
+        if now is None or now[0] != before[0] or None in (now[1], before[1]) or now[1] == before[1]:
+            break
+        put(fd, KEYBOARD_POP)
+        now = ask(fd, saved)
+    return now == before
+
+
 class ForegroundSeat:
     """The interactive driver: an owned process group in the foreground of the
     developer's terminal.
@@ -145,7 +233,9 @@ class ForegroundSeat:
     The driver gets its own group, so a terminal Ctrl-C reaches it and not the
     host, and the host's stop reaches it and nothing else. The host hands the
     terminal over, writes nothing to it while the driver runs, and in close()
-    stops the group, takes the terminal back and restores its settings. A driver
+    stops the group, takes the terminal back, restores its settings and turns
+    off the modes a full-screen program turns on (TERMINAL_MODES_OFF, and by
+    take_back() what the terminal says differs from before the driver). A driver
     suspended from the terminal (Ctrl-Z) counts as ended: the host cannot resume
     an interactive program on the developer's behalf.
     """
@@ -160,6 +250,10 @@ class ForegroundSeat:
             if os.tcgetpgrp(self.tty) != os.getpgrp():
                 raise Refused("starting the driver requires the foreground terminal")
             self.saved = termios.tcgetattr(self.tty)
+            try:
+                self.before = ask(self.tty, self.saved)
+            except (OSError, termios.error):
+                self.before = None  # nothing is known, so nothing of it is touched after
             # A background group that touches the terminal is stopped by these
             # signals; the host is in the background while the driver runs.
             for sig in (signal.SIGTTOU, signal.SIGTTIN):
@@ -240,6 +334,22 @@ class ForegroundSeat:
                 os.tcsetpgrp(self.tty, os.getpgrp())
                 if self.saved is not None:
                     termios.tcsetattr(self.tty, termios.TCSANOW, self.saved)
+                if self.child is not None and os.isatty(self.tty):
+                    # Only to the terminal the driver was lent, by its own descriptor and
+                    # never by standard output, so that nothing of this reaches a pipe or
+                    # a file. Not waited for: a terminal that takes no output now (held
+                    # with Ctrl-S) is said to be not restored, and the stop goes on.
+                    put(self.tty, TERMINAL_MODES_OFF)
+                    # A terminal that said nothing before the driver is not asked after
+                    # it: with nothing to compare, nothing more would be written.
+                    if self.before is not None and self.saved is not None:
+                        # What is still unread was sent to the driver, an answer to a
+                        # question of its own among it; read as an answer to the host's
+                        # it would be taken for what the terminal holds now.
+                        termios.tcflush(self.tty, termios.TCIFLUSH)
+                        if not take_back(self.tty, self.saved, self.before):
+                            self.unrestored = True
+                            self.outcome += "; terminal not restored"
             except (OSError, termios.error):
                 # A hung-up terminal is gone and cannot be restored; say that it was not.
                 self.unrestored = True
@@ -269,6 +379,7 @@ class ForegroundSeat:
         return self.outcome
 
     unrestored = False  # whether close() failed to give the terminal back as it was
+    before = None  # what the terminal said it held before the driver; None when it said nothing
     confirmed = None  # after close(): whether the process and its group were seen gone
 
     @property

@@ -91,7 +91,9 @@ class Reader:
             if path not in self.cache:
                 if len(self.cache) >= MAX_FILES:
                     raise Refused('report input count limit reached')
-                raw = self.view.read(path, limit)
+                # The ledger is replaced under a lock of its own, which this report does not
+                # hold, by a receipt check that records. Everything else is read once.
+                raw = (self.view.settled if path == 'receipts/.consumed.json' else self.view.read)(path, limit)
                 self.cache[path] = raw
                 self.inputs[path] = dict(path=path, sha256=receipts.digest(raw), bytes=len(raw))
             return self.cache[path]
@@ -316,7 +318,7 @@ def extract(view, *, previous=None, reader=None):
     reader = reader or Reader(view)
     result = dict(schema=SCHEMA, shift_id=view.shift.name, repo=str(view.repo), status='partial',
                   grant=None, actual_window=unknown('no retained host closeout'), tasks=[], actions=[],
-                  direction=None, blockers=[], next_owner='developer', not_started=None, driver_notes=None, metrics={}, delta={}, inputs=[], issues=[],
+                  direction=None, blockers=[], next_owner='developer', not_started=None, driver_notes=None, last_activity=None, metrics={}, delta={}, inputs=[], issues=[],
                   limits=['Only what the kept files claim, and whether those files are intact. No signature, commit, '
                           'test or code quality was checked again.',
                           'Writing this report ran no command, agent or network call. Nothing is assumed to have been '
@@ -371,6 +373,7 @@ def extract(view, *, previous=None, reader=None):
                 raise Refused('direction missing or changed')
             result['next_owner'] = state.get('next_owner') or 'developer'
             result['reason'] = state.get('reason')
+            result['last_activity'] = reader.retain(last_activity(state), 'driver-state.json')
             try:
                 # The driver's own list of what the direction held and it never briefed.
                 # None: no list was given, or what is kept is not one.
@@ -481,6 +484,103 @@ def extract(view, *, previous=None, reader=None):
                             'prior/current coverage unavailable' if eligible else 'no eligible prior shift report; first-shift delta unavailable')
     result['prior'] = dict(path=previous, eligible=bool(eligible), provenance='retained comparison only')
     return result
+
+
+IDLE = 300  # seconds at the end of a shift with no command recorded and nothing run that the Outcome names
+
+
+def last_activity(state):
+    """The host's own stamps of what it last did for the driver: `command`, when the last
+    driver command was recorded; `work`, when a builder turn or a review attempt the host
+    ran last ended; `running`, whether one is recorded as started with no end; `commands`,
+    how many are on record. A time is None when there is none, and `command` also when a
+    record has no time or an unreadable one, as in a state kept by a host from before the
+    time was recorded: which command was the last is then not known. `work_known` is
+    False when the kept state does not tell when everything the host ran ended: a turn
+    or an attempt with no readable end, a turn or a review kept as lost, a review with
+    no attempt, or something that is not a list where the turns or reviews belong."""
+    def latest(stamps):
+        stamps = list(stamps)
+        times = [timestamp(stamp) for stamp in stamps]
+        return max(zip(times, stamps))[1] if times and all(times) else None
+    known, ended = [True], []
+
+    def rows(value):  # a kept state may hold anything where a list belongs
+        if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+            known[0] = False
+        return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+    def end(row):
+        if timestamp(row.get('ended')) is None or row.get('outcome') == 'lost':
+            known[0] = False
+        else:
+            ended.append(row['ended'])
+    commands = [get(record, 'at') for record in state['commands'].values()]
+    for task in state['tasks'].values():
+        if not isinstance(task, dict):
+            known[0] = False
+            continue
+        # A task kept by a host from before turns or reviews were recorded has no such key.
+        for row in rows(task.get('turns', [])):
+            end(row)
+        for review in rows(task.get('reviews', [])):
+            attempts = rows(review.get('attempts'))
+            if not attempts or review.get('outcome') == 'lost':
+                known[0] = False  # what ran last for it has no recorded end
+            for item in attempts:
+                end(item)
+    return dict(command=latest(commands), commands=len(commands), work=latest(ended), work_known=known[0],
+                running=bool(state.get('turn') or get(state.get('review'), 'running')))
+
+
+def idle_words(seen, window):
+    """The Outcome line for a shift that ended IDLE seconds or more after its last driver
+    command and after the last end of a builder turn or review the host ran: when the
+    command was recorded and how long before the end. It gives the two stamps and what
+    is on record between them. It gives no reason, because the host knows none: a driver
+    that gave up, one that waited for a person, and one whose process hung all look like
+    this. The stamps are of the wall clock, so a machine that slept is said. Nothing is
+    said when a time is not known."""
+    end = timestamp(get(window, 'end'))
+    if not isinstance(seen, dict) or not end or seen.get('running') is not False:
+        return []
+    command, work = timestamp(seen.get('command')), timestamp(seen.get('work'))
+    known = seen.get('work_known') is True
+    # The seconds the host counted, on a clock that stands still while the machine sleeps:
+    # a shift that ran for less than IDLE had no such time, whatever its two stamps say.
+    counted = window.get('elapsed_seconds')
+    if type(counted) is not int or counted < IDLE or (command is None and seen.get('commands') != 0):
+        return []
+    not_known = 'When the last builder turn or review the host ran ended is not known from the kept state.'
+    if command is None:
+        # An end on record is the earliest the host stopped working, also when another
+        # end is not known: that one can only be later.
+        if work and int((end - work).total_seconds()) < IDLE:
+            return []
+        line = '- **No driver command was recorded in the ' + seconds_words(counted) + ' this shift ran'
+        return [line + ('.** ' + not_known if not known
+                        else '.** The last builder turn or review the host ran ended at ' + plain(seen['work'], 40) + '.' if work
+                        else '**, and no builder turn and no review is on record.') + ' The host does not know why.']
+    # A command is stamped in whole seconds and the end of a turn or a review is not.
+    work = work.replace(microsecond=0) if work else None
+    since = int((end - command).total_seconds())
+    idle = int((end - max(filter(None, (command, work)))).total_seconds())
+    if idle < IDLE:
+        return []
+    line = ('- **Last driver command: recorded at ' + plain(seen['command'], 40) + ', ' + seconds_words(since)
+            + ' before the end.** ')
+    line += (not_known if not known
+             else 'The last builder turn or review the host ran ended at ' + plain(seen['work'], 40) + '; in the '
+                  + seconds_words(idle) + ' after that no command was recorded and no turn or review ended.'
+             if work and work > command else 'No builder turn and no review ended in that time.')
+    began = timestamp(get(window, 'start'))
+    slept = (end - began).total_seconds() - counted if began else 0
+    if slept > SLEPT:  # the same comparison as the "Ran for" line makes
+        slept = int((end - began).total_seconds()) - counted
+        line += (' Both times are of the wall clock, and for ' + seconds_words(slept) + ' of this shift the machine '
+                 'was asleep or its clock was changed: how much of the ' + seconds_words(idle if known else since)
+                 + ' the host was running is not known.')
+    return [line + ' The host does not know why no command followed.']
 
 
 SLEPT = 60  # seconds the two stamps of a closeout may be further apart than the time the host counted
@@ -1456,6 +1556,7 @@ def markdown(doc, sha):
             apart = int((ended - began).total_seconds())
             out[-1] += (' **Those two times are ' + seconds_words(apart) + ' apart: for the other '
                         + seconds_words(apart - counted) + ' the machine was asleep or its clock was changed.**')
+        out += idle_words(doc.get('last_activity'), window)
     else:
         out.append('- How long it ran is unknown: the host recorded no closeout.')
     if grant.get('until'):
@@ -1607,7 +1708,7 @@ def write(view, *, previous=None):
                    metrics={k: unknown('output limit') for k in doc['metrics']},
                    delta={k: unknown('output limit') for k in doc['delta']})
         doc.pop('reason', None)
-        doc['not_started'] = doc['driver_notes'] = None
+        doc['not_started'] = doc['driver_notes'] = doc['last_activity'] = None
         if doc.get('open_findings') is not None:
             doc['open_findings'] = dict(OPEN_UNKNOWN, items=[])  # the tasks are dropped, and a list of their findings with them
         raw = receipts.encoded(doc)
