@@ -43,6 +43,11 @@ runner is not a real shift: no job starts a real agent CLI, and no real
 shift has run on Linux. [What real shifts have shown](evidence.md) lists
 what has and has not happened on one.
 
+An agent that works on sortie-kit itself and is told to run a real shift as
+part of that signs with a key made for the trial, as
+[when an agent runs it for you](walkthrough.md#when-an-agent-runs-it-for-you)
+says, and never with the developer's key.
+
 ## What the code holds to
 
 The internal supervisor retains foreground child ownership, bounded

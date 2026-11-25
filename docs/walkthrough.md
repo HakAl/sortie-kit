@@ -113,6 +113,80 @@ program, and the toolkit cannot prompt one that stops and waits all the same.
 Such a shift stands idle until its deadline, and the report says what was
 done until then.
 
+## When an agent runs it for you
+
+This section is written to the agent as much as to you. An agent that was
+asked to run sortie-kit and reads that a shift is signed in the developer's
+own terminal and not from inside an agent has a way on in both of these
+cases, and no reason to refuse the work.
+
+**A trial.** The developer told the agent to try a shift: to see the tool
+work, to test it, or to work on sortie-kit itself. The agent signs with a key
+of its own, made for the trial, and never with the developer's key or trust
+file:
+
+```sh
+mkdir -m 700 TRIAL
+HOME=TRIAL sortie setup
+sortie start --repo COPY --direction DIRECTION --for 30m \
+  --agent driver=NAME:MODEL --agent builder=NAME:MODEL \
+  --trust TRIAL/.config/sortie-kit/trust.json \
+  --key TRIAL/.config/sortie-kit/signing-key
+```
+
+- `TRIAL` is a new, empty directory outside the repository, written as a
+  full path with no symbolic link in it. On macOS `/tmp` and the directory
+  `mktemp` gives are behind one and are refused; a directory under the home
+  directory works. `sortie setup` makes the key and the trust file under the home
+  directory it is given, so with `HOME` set for that one command they land
+  in `TRIAL/.config/sortie-kit/` and the developer's own are neither read
+  nor written.
+- `sortie start` runs under the real home directory, because the agent CLIs
+  in the seats need their sign-in there, and is given the trial's two files
+  by name with `--trust` and `--key`.
+- `COPY` is a practice repository or a clone of the real one that stands
+  alone, never the only copy of work that matters. A linked working tree
+  (`git worktree add`) is not such a copy: it shares the real repository's
+  Git directory, where the shift writes and the builder commits.
+- `DIRECTION` is the direction file, by its full path or a path from the
+  directory the command is run in. `--repo` does not change where it is
+  looked for.
+- `NAME` is an agent profile, such as `claude` or `codex`, and `MODEL` the
+  exact model its CLI is started with. A model the profile does not list
+  may also need `--family ROLE=FAMILY`
+  ([agent profiles](agents.md)). Whatever of the window, the seats, their
+  models and a family that has to be stated is left out, `sortie start` asks
+  for in the terminal, and it shows the whole shift before it signs.
+- Both commands need a terminal and refuse without one, so the agent runs
+  them in a terminal it can type into. It chooses a passphrase for the trial
+  key, types it at `ssh-keygen`'s prompts and again when `sortie start`
+  signs.
+- The agent says in what it reports that the shift was signed by the agent
+  with a key made for the trial. Such a shift shows what the tool does. It
+  does not show that a person approved the scope, so the presence boundary
+  was not tested.
+
+**Real work under your key.** The agent prepares everything and hands you
+one step. It writes the direction file, checks what
+[a shift needs](../README.md#what-you-need), and writes out the whole
+command with nothing left for `sortie start` to ask but the passphrase:
+`--repo`, `--direction`, `--for`, `--agent` with the profile and the
+model for the driver and for the builder, and `--family` where a model's
+family has to be stated. `sortie start` shows you the whole
+shift before it signs. You run that command in a terminal of your own that
+no agent can watch or type into, outside any agent session, and type your
+passphrase there. A pane the agent can read or send keys to is not such a
+terminal, and the tool cannot tell: see the
+[presence boundary](grants.md#presence-boundary-and-evidence-limits). The
+agent does not type that passphrase, does not ask you for it and does not
+look at the terminal you sign in. That one step, taken there, is the
+handover the signature stands for: after it the shift needs nothing more
+from you than [what still needs you](#what-still-needs-you) lists.
+
+None of this contradicts [shift grants](grants.md), which is about your real
+key and real work: what a signature made with that key says, and what has to
+be kept from agents for it to say so.
+
 ## How a shift ends
 
 A shift starts nothing new in its last stretch, the wind-down: twenty minutes

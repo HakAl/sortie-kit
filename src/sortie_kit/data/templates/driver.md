@@ -300,7 +300,9 @@ Record the builder seat's own stop receipt:
 
 Record a decision you made on your own, or a question you could not settle.
 `kind` is `decision` or `question`; `text` is yours, 1000 characters at most;
-`task_id` is optional and names a task briefed in this shift. There is no
+`task_id` is optional and names a task briefed in this shift; a note about a
+task you have not briefed yet leaves `task_id` out, or is sent after the
+brief. There is no
 `request_id`. It is served whenever commands are, also in wind-down and while a turn or
 a review runs, changes nothing else, and gets no answer in the shift.
 The host answers it `recorded` at once, but the wait after it returns as

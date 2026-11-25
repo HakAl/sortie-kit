@@ -97,7 +97,9 @@ what it does not claim.
    sortie start --repo PATH --direction direction.md
    ```
 
-   `PATH` is the top directory of the Git repository.
+   `PATH` is the top directory of the Git repository. An agent you asked to
+   run a shift for you, or to try one, reads
+   [when an agent runs it for you](docs/walkthrough.md#when-an-agent-runs-it-for-you).
 
 ## What you will see
 
