@@ -11,7 +11,19 @@ from sortie_kit.layout import Refused
 from sortie_kit.receipt_schema import decode
 
 
-class HostReviewTests(test_lifecycle.LifecycleFixture):
+class ReviewFixture(test_lifecycle.LifecycleFixture):
+    """The lifecycle fixture with the time under every lock counted by the fixture's clock."""
+    def setUp(self):
+        super().setUp()
+        # A further attempt at a review is prepared only with room left under the lock, and
+        # the receipt check is given what that room leaves. On the machine's clock a loaded
+        # machine decided which of the two a test saw; here the room is what the test left.
+        patched = self.session_time_by_the_clock()
+        patched.start()
+        self.addCleanup(patched.stop)
+
+
+class HostReviewTests(ReviewFixture):
     def review_receipt(self, state=None):
         last = (state or self.state())["last_review"]
         return decode((self.shift / last["receipt"]["path"]).read_bytes())
@@ -706,8 +718,8 @@ class HostReviewTests(test_lifecycle.LifecycleFixture):
         self.assertEqual(self.consume_phase()["status"], "advanced")
         self.spawn.failure = OSError("no such program")
         # Only the room a further attempt needs is taken away. The lock itself keeps its
-        # time: the record of the failure is written on a real clock, and with half a
-        # second of room it was given 50 ms, which a loaded machine does not always meet.
+        # time for the record of the failure: with half a second of room that record was
+        # given 50 ms, which on the machine's clock a loaded machine did not always meet.
         with mock.patch("sortie_kit.lifecycle.PREPARE_ROOM", 10 ** 6):
             _, path = self.phase_receipt(target={"kind": "commit", "commit": self.candidate})
             self.action("consume", receipt=path, target={"kind": "commit", "commit": self.candidate})
@@ -822,7 +834,7 @@ class PackagedTests(unittest.TestCase):
         self.assertGreater(seen, 40)  # the modules, templates and schemas were really walked
 
 
-class HostReviewReportTests(test_lifecycle.LifecycleFixture):
+class HostReviewReportTests(ReviewFixture):
     """What the report of a shift says about the reviews the host ran."""
     def report(self, reason="the fixture ends the shift"):
         self.driver.finish(reason)
@@ -1012,7 +1024,7 @@ class HostReviewReportTests(test_lifecycle.LifecycleFixture):
                       + state["last_review"]["receipt"]["path"] + " is missing, changed, could not be read or was too large to repeat.", text)
 
 
-class OpenFindingsTests(test_lifecycle.LifecycleFixture):
+class OpenFindingsTests(ReviewFixture):
     """Findings of a review that ended in ACCEPT: nobody is asked to act on them, so the
     report lists them."""
     HEAD = "## Findings left open on accepted work"

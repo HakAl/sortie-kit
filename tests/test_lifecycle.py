@@ -20,7 +20,7 @@ from sortie_kit.bounds import Budget, Sources
 from sortie_kit.builder_verification import BuilderHost, queue_check, run_command
 from sortie_kit.host import run_shift
 from sortie_kit.lifecycle import Driver
-from sortie_kit.layout import Refused
+from sortie_kit.layout import Elapsed, Refused
 from sortie_kit.receipt_schema import asset, decode
 import test_receipts
 from support import Clock, FakeSpawn, replaced_while_read
@@ -52,6 +52,14 @@ class LifecycleFixture(test_receipts.ReceiptTests):
         self.spawn = FakeSpawn()
         self.driver = Driver(self.admission, self.spawn, seconds=1000, wind_down=10)
         self.counter = 0
+
+    def session_time_by_the_clock(self):
+        """While the block runs, the time of every session and lock is counted by the
+        fixture's clock, which moves only when the test moves it. Without this a lock has
+        its seconds on the machine's clock, and what a test sees then depends on how long
+        the machine took. Not for a test in which a lock is held by someone else: the wait
+        for it would not end."""
+        return patch("sortie_kit.receipts.Budget", lambda seconds: Budget(seconds, clock=self.clock.now))
 
     def state(self):
         return decode((self.shift / "driver-state.json").read_bytes())
@@ -623,24 +631,73 @@ class LifecycleTests(LifecycleFixture):
         pass reads again. Before, the first such reading ended the shift with code 3."""
         command = dict(version=1, id="first", op="finish", reason="done", next_owner="developer")
         (self.shift / "driver-command.json").write_bytes(receipts.encoded(command))
+        # The host's clock is the fixture's and moves only by the host's own sleep. Each
+        # reading has its time on the machine's clock, so the steps are whole seconds:
+        # the last pass still has ten of them, and none rests on a fraction of one.
         with replaced_while_read(self.shift / "driver-command.json", times=None) as done:
-            code, why = run_shift(self.admission, self.spawn, seconds=0.5, wind_down=0.2, poll=0.1,
+            code, why = run_shift(self.admission, self.spawn, seconds=40, wind_down=20, poll=10,
                                   sleep=self.clock.sleep)
             self.assertEqual((code, why), (0, "working time over: stopped before the signed deadline"))
+            self.assertEqual(len(done), 3 * receipts.SETTLE_TRIES)  # three passes, each read to the end
             del done[:]
             self.driver.poll()
             self.assertEqual(len(done), receipts.SETTLE_TRIES)
-            # Nor when the time for the reading runs out while it is made again.
-            self.driver.live_seconds = lambda: 0.05
-            self.driver.poll()
+            # Nor when the time for the reading runs out while it is made again: it runs
+            # out at the pause before the second read, whatever the machine's clock says.
+            del done[:]
+            real_guard, real_sleep, out = receipts.Evidence.guard, time.sleep, []
+            def guard(view):
+                if out:
+                    raise Elapsed("duration elapsed")
+                real_guard(view)
+            def sleep(seconds):
+                if seconds == receipts.SETTLE_PAUSE:  # the pause before the file is read again
+                    out.append(seconds)
+                else:
+                    real_sleep(seconds)
+            with patch.object(receipts.Evidence, "guard", guard), patch("sortie_kit.receipts.time.sleep", sleep):
+                self.driver.poll()
+            self.assertEqual((done, len(out)), ([1], 1))
         self.assertFalse((self.shift / "driver-response.json").exists())
+
+    def reading_out_of_time(self, passed, **window):
+        """The shift's end when the host's first reading of the command file takes `passed`
+        seconds by the clock that the host and, here, the reading are both counted by; and
+        the time that reading had been given."""
+        command = dict(version=1, id="first", op="finish", reason="done", next_owner="developer")
+        (self.shift / "driver-command.json").write_bytes(receipts.encoded(command))
+        read, given = receipts.Evidence.read, []
+        def slow(view, path, *args, **kwargs):
+            if path == "driver-command.json" and not given:
+                given.append(view.budget.remaining())
+                self.clock.sleep(passed)
+            return read(view, path, *args, **kwargs)
+        with self.session_time_by_the_clock(), patch.object(receipts.Evidence, "read", slow):
+            result = run_shift(self.admission, self.spawn, poll=10, sleep=self.clock.sleep, **window)
+        self.assertFalse((self.shift / "driver-response.json").exists())  # the command was not read
+        self.assertTrue((self.shift / "report.md").exists())
+        return result, given
+
+    def test_a_reading_of_the_command_file_that_runs_out_as_the_working_time_does_is_the_ordinary_end(self):
+        """A reading that ran out of its time before anything had changed under it is not
+        taken as no reading: it leaves the host's loop. It is given no more than the working
+        time left, so when it has used that up the shift ends as it would have anyway."""
+        result, given = self.reading_out_of_time(8, seconds=14, wind_down=12)  # 14 s less the 6 s of the stop
+        self.assertEqual((result, given), ((0, "working time over: stopped before the signed deadline"), [8]))
+
+    def test_a_reading_of_the_command_file_that_runs_out_with_working_time_left_ends_the_shift_with_code_3(self):
+        """With working time left a reading has ten seconds. One that used them up is a
+        file system or a Git that does not answer, and that is no ordinary end."""
+        result, given = self.reading_out_of_time(10, seconds=40, wind_down=20)
+        self.assertEqual((result, given), ((3, "duration elapsed"), [10]))
 
     def test_poll_partial_input_and_host_wind_down(self):
         (self.shift/'driver-command.json').write_text('{')
         self.driver.poll()
         self.assertEqual(decode((self.shift/'driver-response.json').read_bytes())['status'],'invalid')
         self.assertEqual(self.state()['tasks'],{})  # initial state is published before any answer
-        code,why=run_shift(self.admission,self.spawn,seconds=2,wind_down=1,poll=0.1,sleep=self.clock.sleep)
+        # Whole seconds by the fixture's clock: no pass is given a fraction of one on the machine's.
+        code,why=run_shift(self.admission,self.spawn,seconds=40,wind_down=20,poll=10,sleep=self.clock.sleep)
         self.assertEqual(code,0)
         self.assertIn('working time over',why)
         self.assertEqual(self.spawn.started,[])
@@ -819,7 +876,8 @@ class TurnTests(LifecycleFixture):
             calls.append(seconds)
             return {}
         # Under half a second is left to write the turn's end: no listing competes with it.
-        with patch.object(lifecycle, "receipt_marks", listing), \
+        # The lock's time is counted by the fixture's clock, so it is 0.4 s however long the write takes.
+        with patch.object(lifecycle, "receipt_marks", listing), self.session_time_by_the_clock(), \
                 patch.object(self.driver, "final_seconds", lambda: 0.4):
             self.driver.poll_turn()
         self.assertEqual(calls, [])
@@ -828,7 +886,7 @@ class TurnTests(LifecycleFixture):
         # With time to spare the listing gets only what is left above that reserve.
         self.assertEqual(self.action("continue")["status"], "recorded")
         self.spawn.child.code = 0
-        with patch.object(lifecycle, "receipt_marks", listing), \
+        with patch.object(lifecycle, "receipt_marks", listing), self.session_time_by_the_clock(), \
                 patch.object(self.driver, "final_seconds", lambda: 0.6):
             self.driver.poll_turn()
         self.assertEqual(len(calls), 1)
@@ -1776,7 +1834,7 @@ class BuilderTests(LifecycleFixture):
 
     def test_execution_timeout_output_bound_and_withdrawal_cleanup(self):
         env=dict(os.environ,HOME=str(self.root),TMPDIR=str(self.root),TMP=str(self.root),TEMP=str(self.root))
-        code,raw,reason=run_command([sys.executable,'-c','import time; print("start",flush=True); time.sleep(5)'],str(self.root),env,seconds=.1,guard=lambda:'')
+        code,raw,reason=run_command([sys.executable,'-c','import time; print("start",flush=True); time.sleep(30)'],str(self.root),env,seconds=2,guard=lambda:'')  # two seconds for an interpreter to start and print
         self.assertIn(b'start',raw)
         self.assertEqual(reason,'duration elapsed')
         code,raw,reason=run_command([sys.executable,'-c','print("x"*10000)'],str(self.root),env,seconds=2,guard=lambda:'',output_limit=100)
@@ -1795,7 +1853,7 @@ class BuilderTests(LifecycleFixture):
             return original(owner)
         env = dict(os.environ, HOME=str(self.root), TMPDIR=str(self.root), TMP=str(self.root), TEMP=str(self.root))
         with patch.object(Supervisor, 'stop_child', transient):
-            _, _, reason = run_command([sys.executable, '-c', 'import time; time.sleep(.3)'],
+            _, _, reason = run_command([sys.executable, '-c', 'import time; time.sleep(30)'],  # never over by itself
                                         str(self.root), env, seconds=.05, guard=lambda: '')
         self.assertEqual(reason, 'duration elapsed')
         self.assertEqual(len(calls), 2)

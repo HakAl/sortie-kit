@@ -82,7 +82,7 @@ class WaitTests(LifecycleFixture):
     def test_a_turn_that_left_no_receipt_is_named_and_one_that_left_one_is_not(self):
         self.brief()
         self.driver.poll()
-        self.assertNotIn("note", self.wait(0.1))  # a running turn has not failed to write anything
+        self.assertNotIn("note", self.wait(2))  # a running turn has not failed to write anything
         self.end_turn(0)
         result = self.wait()
         self.assertEqual((result["status"], result["last_turn"]["receipts_changed"]), ("ready", False))
