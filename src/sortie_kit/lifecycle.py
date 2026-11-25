@@ -65,6 +65,7 @@ COMMANDS = {
     "progress": ({"task_id", "request_id", "evidence"}, set()),
     "continue": ({"task_id", "request_id"}, {"turn_seconds", "again"}),
     "close": ({"task_id", "request_id"}, set()),
+    "set-aside": ({"task_id", "request_id", "reason", "next_owner"}, set()),
     "stop-evidence": ({"task_id", "request_id", "receipt"}, set()),
     "finish": ({"reason", "next_owner"}, {"not_started"}),
     "note": ({"kind", "text"}, {"task_id"}),
@@ -1490,9 +1491,9 @@ class Driver:
                 self.shift, "Read current-context.json and continue task " + task["id"] + " at stage "
                 + task["stage"] + " round " + str(task["round"])
                 + ". Do not restart the task or reset its repair count."), self.turn_limit(command))
-        if state["turn"] is not None and op in ("consume", "repair", "close"):
+        if state["turn"] is not None and op in ("consume", "repair", "close", "set-aside"):
             return "blocked", "a builder turn is running; wait for it to end"
-        if state["review"] is not None and op in ("consume", "repair", "close"):
+        if state["review"] is not None and op in ("consume", "repair", "close", "set-aside"):
             return "blocked", ("a review is running; wait for it to end" if state["review"]["running"] is not None
                                else "a review was begun and is not finished; send continue to run it on")
         if op in ("consume", "stop-evidence"):
@@ -1515,6 +1516,28 @@ class Driver:
             if restart == "plan":
                 task["plan"] = None
             return "advanced", "repair round " + str(task["round"])
+        if op == "set-aside":
+            # The driver leaves a task that cannot go on, at any stage and before any
+            # repair round is used, so that the next can be briefed. No turn and no review
+            # is open here (see above): the command stops no seat. The task is not accepted,
+            # keeps its identity, which cannot be briefed again, and the host judges no reason.
+            with asked():
+                if task["stage"] == "accepted":
+                    raise Refused("the task is accepted and is not set aside; send close")
+                reason, owner = channels.text(command["reason"]), channels.text(command["next_owner"], 200)
+            left = task["stage"]
+            # A review stage with no review open: the work was handed in and the host
+            # started or finished no review of it. Once the stage is `blocked` only the
+            # reason says so.
+            held = ", with the work handed in and not reviewed" if left in REVIEW else ""
+            task.update(stage="blocked", next_owner=owner, reason=(
+                "set aside by the driver at " + left + ", repair round " + str(task["round"]) + held + ": "
+                + reason)[:2000])
+            state["active"] = None
+            return "recorded", ("task " + task["id"] + " is set aside and not accepted; it cannot be briefed again "
+                                "in this shift. " + ("The next task can be briefed" if self.active_seconds() > 0 else
+                                                     "wind-down: no new brief is taken. Send finish with what is "
+                                                     "left and who is next"))
         if op == "progress":
             with asked():
                 view.artifact(command["evidence"])

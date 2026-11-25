@@ -1912,6 +1912,179 @@ class BuilderTests(LifecycleFixture):
         self.assertEqual(without_repository_block(packaged),packaged)
 
 
+class SetAsideTests(LifecycleFixture):
+    """A driver leaves a task that cannot go on and briefs the next, before any repair
+    round is used."""
+    def aside(self, **data):
+        return self.action("set-aside", **dict(dict(reason="its tests need a service this machine lacks",
+                                                    next_owner="developer"), **data))
+
+    def aside_at_build(self):
+        """The reason recorded for a task set aside while its build is still open."""
+        self.setUp()
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.assertEqual(self.aside()["status"], "recorded")
+        return self.state()["tasks"]["task"]["reason"]
+
+    def brief(self, name):
+        return self.action("brief", task_id=name, kind="defect", brief=self.artifact("briefs/" + name + ".md"),
+                           next_owner="builder")
+
+    def test_a_task_set_aside_before_any_repair_frees_the_next_brief_and_cannot_be_reopened(self):
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.assertEqual((self.task_state()["stage"], self.task_state()["round"]), ("build", 0))
+        result = self.aside()
+        self.assertEqual((result["status"], result["state"]), ("recorded", None), result)
+        self.assertIn("set aside", result["detail"])
+        state = self.state()
+        task = state["tasks"]["task"]
+        self.assertEqual((state["active"], state["mode"], task["stage"], task["round"], task["next_owner"]),
+                         (None, "active", "blocked", 0, "developer"))
+        self.assertEqual(task["reason"], "set aside by the driver at build, repair round 0: "
+                         "its tests need a service this machine lacks")
+        started = len(self.spawn.started)
+        # The same identity is not briefed again, and nothing is started for it.
+        self.assertEqual(self.brief("task")["status"], "invalid")
+        self.assertEqual(len(self.spawn.started), started)
+        # The next task is, with a builder turn of its own.
+        self.assertEqual(self.brief("next")["status"], "recorded")
+        self.assertEqual((self.state()["active"], len(self.spawn.started)), ("next", started + 1))
+        self.assertEqual(self.state()["tasks"]["task"]["stage"], "blocked")
+
+    def test_a_task_is_set_aside_at_every_stage_that_has_no_turn_and_no_review(self):
+        for kind, steps, stage in (("feature", 0, "ack"), ("feature", 1, "plan"), ("defect", 1, "build")):
+            with self.subTest(stage=stage):
+                self.setUp()
+                self.begin(kind)
+                for _ in range(steps):
+                    self.assertEqual(self.consume_phase()["status"], "advanced")
+                self.assertEqual(self.task_state()["stage"], stage)
+                self.assertEqual(self.aside()["status"], "recorded")
+                self.assertIn(" at " + stage + ",", self.state()["tasks"]["task"]["reason"])
+        with self.subTest(stage="repair_needed"):
+            self.setUp()
+            self.reach_review()
+            self.end_review(changes=True)
+            self.assertEqual(self.task_state()["stage"], "repair_needed")
+            self.assertEqual(self.aside()["status"], "recorded")
+            task = self.state()["tasks"]["task"]
+            self.assertEqual((task["stage"], task["round"], self.state()["active"]), ("blocked", 0, None))
+            self.assertIn(" at repair_needed,", task["reason"])
+
+    def test_a_task_is_set_aside_in_a_later_repair_round_and_at_a_review_the_host_held_back(self):
+        from sortie_kit.lifecycle import HELD
+        from sortie_kit import shift_wait
+        self.reach_review()
+        self.end_review(changes=True)
+        self.assertEqual(self.action("repair", reason="Address N1", next_owner="builder")["status"], "advanced")
+        self.assertEqual((self.task_state()["stage"], self.task_state()["round"]), ("build", 1))
+        self.assertEqual(self.aside()["status"], "recorded")
+        task = self.state()["tasks"]["task"]
+        self.assertEqual((task["stage"], task["round"], self.state()["active"]), ("blocked", 1, None))
+        self.assertIn("set aside by the driver at build, repair round 1: ", task["reason"])
+        # What a driver's wait reads then: ready for the next command, with no stage and no turn.
+        seen = shift_wait.observe(self.shift)[0]
+        self.assertEqual((seen["status"], seen["stage"], seen["last_turn"]), ("ready", None, None))
+        self.setUp()
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(992)  # in wind-down the review's limit no longer fits, and none is started
+        held = self.consume_phase()
+        self.assertEqual(held["status"], "advanced", held)
+        self.assertIn(HELD.strip(), held["detail"])
+        self.assertEqual((self.task_state()["stage"], self.state()["review"]), ("review", None))
+        self.assertEqual(self.aside()["status"], "recorded")
+        task = self.state()["tasks"]["task"]
+        self.assertEqual((task["stage"], self.state()["active"]), ("blocked", None))
+        # The work was handed in and the host held its review back: the reason, which is
+        # what the report has for a task that is no longer at a review stage, says so.
+        self.assertIn("set aside by the driver at review, repair round 0, with the work handed in and not "
+                      "reviewed: its tests need", task["reason"])
+        self.driver.finish("the fixture ends the shift")
+        doc = decode((self.shift / "report.json").read_bytes())
+        self.assertEqual([b["task"] for b in doc["blockers"]], ["task"])
+        self.assertIn("with the work handed in and not reviewed", (self.shift / "report.md").read_text())
+        self.assertNotIn("not reviewed", self.aside_at_build())
+
+    def test_a_running_turn_or_an_open_review_is_not_set_aside_and_is_not_stopped(self):
+        self.begin(running=True)
+        before = self.state()
+        result = self.aside()
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("turn is running", result["detail"])
+        self.assertEqual((self.state()["tasks"], self.state()["active"], self.state()["turn"]),
+                         (before["tasks"], "task", before["turn"]))
+        self.assertIsNone(self.spawn.child.code)  # the builder was not stopped
+        self.end_turn()
+        self.assertEqual(self.aside()["status"], "recorded")
+        self.setUp()
+        self.reach_review()
+        before = self.state()
+        result = self.aside()
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("review is running", result["detail"])
+        self.assertEqual((self.state()["tasks"], self.state()["active"], self.state()["review"]),
+                         (before["tasks"], "task", before["review"]))
+
+    def test_an_accepted_task_is_closed_and_not_set_aside(self):
+        self.reach_review()
+        self.end_review()
+        self.assertEqual(self.task_state()["stage"], "accepted")
+        result = self.aside()
+        self.assertEqual(result["status"], "invalid", result)
+        self.assertIn("close", result["detail"])
+        self.assertEqual((self.task_state()["stage"], self.state()["active"]), ("accepted", "task"))
+        self.assertEqual(self.action("close")["status"], "closed")
+
+    def test_a_set_aside_names_the_open_request_and_gives_a_reason_and_an_owner(self):
+        self.begin("defect")
+        task = self.task_state()
+        for said, data in (("another request", dict(request_id="0" * 32)), ("another task", dict(task_id="other")),
+                           ("an empty reason", dict(reason="")), ("an owner that is no text", dict(next_owner=7)),
+                           ("a field it does not have", dict(receipt="receipts/x.json"))):
+            with self.subTest(said):
+                self.assertEqual(self.aside(**data)["status"], "invalid")
+                self.assertEqual((self.task_state(), self.state()["active"]), (task, "task"))
+        self.counter += 1
+        missing = dict(version=1, id="command-" + str(self.counter), op="set-aside", task_id="task",
+                       request_id=task["request_id"], next_owner="developer")
+        self.assertEqual(self.driver.apply(missing)["status"], "invalid")
+        self.assertEqual((self.task_state(), self.state()["active"]), (task, "task"))
+
+    def test_a_task_is_set_aside_in_wind_down_where_no_brief_is_taken(self):
+        self.begin("defect")
+        self.clock.sleep(992)
+        result = self.aside()
+        self.assertEqual(result["status"], "recorded")
+        self.assertIsNone(self.state()["active"])
+        # The answer does not offer a brief that wind-down refuses.
+        self.assertNotIn("can be briefed", result["detail"])
+        self.assertIn("wind-down: no new brief is taken", result["detail"])
+        result = self.brief("next")
+        self.assertEqual(result["status"], "blocked", result)
+        self.assertIn("wind-down", result["detail"])
+
+    def test_the_report_has_a_task_set_aside_under_not_done_with_the_reason_and_counts_it_not_accepted(self):
+        self.begin("defect")
+        self.assertEqual(self.aside(next_owner="the developer's team")["status"], "recorded")
+        self.assertEqual(self.brief("next")["status"], "recorded")
+        self.end_turn()
+        self.driver.finish("the fixture ends the shift")
+        text = (self.shift / "report.md").read_text()
+        doc = decode((self.shift / "report.json").read_bytes())
+        self.assertIn("- Tasks: 0 accepted locally of 2 briefed", text)
+        undone = text.split("## Not done", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("Task task: not accepted.", undone)
+        self.assertIn("set aside by the driver at ack, repair round 0: its tests need a service this machine lacks",
+                      undone)
+        self.assertIn("the developer's team", undone)
+        self.assertIn("### task (defect): not accepted", text)
+        blocker = [b for b in doc["blockers"] if b["task"] == "task"][0]
+        self.assertEqual((blocker["stage"], blocker["next_owner"]), ("blocked", "the developer's team"))
+
+
 def real_ledger_entries(shift):
     """The entries of the shift's receipt ledger as they are on file; none when there is no file."""
     try:

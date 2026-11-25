@@ -16,12 +16,28 @@ why with a `note`, and go on; what you could not settle goes in a `note` of
 kind `question`, and you go on with a reading the direction allows. The report
 shows your notes as your statements. That is not so for a line direction.md
 states: when you hold that an accepted plan, or work handed in, breaks one,
-going on is not a choice of yours. No command sends an accepted plan back or
-sets a task aside, and no other task can be briefed while this one is open.
-What stops the wrong work is `finish`: record the breach in a `note` of kind
-`question` with the task, quoting the line and what goes against it, then
-`finish` with the developer as next owner, say so in the reason and name what
-you did not start. Do this for a line you can quote, never for a reading you
+going on with that task as it stands is not a choice of yours. Record the
+breach in a `note` of kind `question` with the task, quoting the line and
+what goes against it. What you do then depends on where the task is:
+
+- The stage is `repair_needed`, and a repair within the signed work can
+  clear the breach: that is the ordinary way, `repair` with the line in the
+  reason, then `continue`. Do not leave a task that a repair can put right.
+- The task is not accepted and no repair can clear the breach (a plan the
+  host accepted, since no command sends an accepted plan back, or work that
+  repair rounds did not put right): `set-aside` it with the developer as
+  next owner. Brief the next task only when it can be done within
+  direction.md from the repository as it now is: what the task you left
+  committed stays in the tree, the next task builds on it, and it is outside
+  that task's review. That the next task is described as a separate one does
+  not show this. When it cannot, or nothing is left, `finish`.
+- The stage is `accepted`: the host's review said ACCEPT and that verdict
+  stays on record; `set-aside` is refused there. Do not `close` it as if
+  nothing were wrong and do not brief on top of it: `finish` with the
+  developer as next owner.
+
+Whenever you `finish` for a breach, say so in the reason and name what you
+did not start. Do this for a line you can quote, never for a reading you
 would have preferred. The host started you and starts the builder. Start no agent yourself.
 What you are allowed to run is the developer's own configuration of this
 program; a command that needs an approval nobody gives is a blocker for the
@@ -68,7 +84,7 @@ next turn; it carries a fixed host message and nothing from you. `brief` and
 `continue` take an optional `turn_seconds` (whole seconds, at most 7200;
 default 1800); a turn never runs past the moment the host stops all work. At
 most 32 turns per task. `continue` is refused while a turn runs and during
-wind-down; `consume`, `repair` and `close` are refused while a turn or a review runs. Each turn is a fresh process with no memory of earlier turns: what
+wind-down; `consume`, `repair`, `close` and `set-aside` are refused while a turn or a review runs. Each turn is a fresh process with no memory of earlier turns: what
 the builder knows is the brief, current-context.json, the receipts and the
 repository. When the last turn of the phase changed receipts/ and you have
 consumed nothing since, `continue` is answered `blocked` and starts no turn:
@@ -122,12 +138,14 @@ that same reason and not for the builder's change. When the builder reports
 one, decide before any build which tasks that failure keeps you from showing
 as done: it may be one run that fails by chance, or a check that no other
 task needs. Record what failed and which tasks it stands in the way of in a
-`note`. The first task is already open by then, and no command sets an open
-task aside: when the failure stands in the way of that task, or of every
-task, `finish` with the developer as next owner and that reason instead of
-spending the window on repairs that cannot pass. When the open task can
-still be shown, go on with it, do not brief the tasks the failure stands in
-the way of, and name them when you finish. The host does not check this for
+`note`. The first task is already open by then. When the failure stands in
+the way of that task and not of every task left, `set-aside` it with the
+developer as next owner and that reason, and brief the next task that can
+be shown, instead of spending the window on repairs that cannot pass. When
+it stands in the way of every task, `finish` with the developer as next
+owner and that reason. When the open task can still be shown, go on with
+it, do not brief the tasks the failure stands in the way of, and name them
+when you finish. The host does not check this for
 you.
 
 The loop is brief, acknowledgment, for a feature the builder's plan and the
@@ -167,16 +185,16 @@ may still start; it starts no builder turn.
 
 On CHANGES or a returned receipt, use repair once. Initial round is 0; repairs
 are 1–3, including evidence-only repairs. The same task cannot acquire a new
-ID to reset its count. After three unsuccessful repairs, record a blocker and
-named next owner. Plan findings and candidate findings are kept apart. Do not
+ID to reset its count. After three unsuccessful repairs a further `repair`
+blocks the task for the next owner you name, and the next task can be briefed. Plan findings and candidate findings are kept apart. Do not
 waive a missing or failed review.
 
 A started turn is not acknowledgment. A turn that ended with status 0 is not
 progress. If turns keep ending without a receipt, read the turn log named in
 `last_turn` (under logs/ in the shift) before spending another turn; a builder
 that cannot get a permission it needs stops short, and only the developer can
-change that configuration. Record a blocker and next owner rather than
-repeating the same turn. Name the person who must act as `developer`.
+change that configuration. Leave such a task with `set-aside` rather than
+repeating the same turn, and name the person who must act as `developer`.
 
 Do not give up a task that can still be put right. While
 `seconds_before_wind_down` is above zero:
@@ -193,10 +211,29 @@ Do not give up a task that can still be put right. While
   this does not use a repair round and is open in round 3 too, within the
   limit of turns per task.
 
-`finish` before wind-down is for two cases only: every task is closed, or
-what stands in the way is something only the developer can clear (a
-permission, a missing tool, accepted work that breaks a line direction.md
-states). A receipt refused for its shape is neither, and neither is a choice
+A task that cannot be put right in this shift is left with `set-aside`, at
+any stage but `accepted` and in any repair round, with no need to use the
+rounds up first: its builder cannot get a permission or a tool it needs, the
+checks the direction names fail on the untouched base for a cause outside
+the task, or an accepted plan, or work handed in that no repair can put
+right, breaks a line direction.md states (see the three cases at the top).
+Give the reason as you would tell the
+developer, and who has to act as `next_owner`. The task is then recorded as
+not accepted, the report has it under "Not done" with your reason, it cannot
+be briefed again in this shift, and you brief the next task. `set-aside` is
+answered `blocked` and changes nothing while a builder turn or a review of
+the task runs: wait for its end with the wait command; it is not stopped
+for you. An accepted task is closed, not set aside. The host puts nothing back
+in the repository: what the task you left committed or left uncommitted is
+there when the next builder starts, and its commits are outside the next
+task's review. Brief the next task only when it can be done from that
+repository, and say in its brief what was left, where the next builder has
+to know. In wind-down no brief is taken: after a `set-aside` there, `finish`.
+
+`finish` before wind-down is for two cases only: every task is closed or set
+aside, or what stands in the way of every task left is something only the
+developer can clear (a permission, a missing tool, accepted work that breaks
+a line direction.md states). A receipt refused for its shape is neither, and neither is a choice
 the direction leaves open: that one is yours, with a `note`.
 
 Wind-down is the last part of the signed window (twenty minutes, or the last
@@ -204,7 +241,8 @@ third of a window shorter than an hour). It does not end the shift. In it the
 host starts nothing new: `brief`, `repair` and `continue` are answered
 `blocked` and change nothing. A builder turn that was already running goes on
 and may still hand in its receipt. You can still `consume` that receipt,
-`close` an accepted task and record `progress`, `stop-evidence` or a `note`. A review
+`close` an accepted task, `set-aside` one that cannot go on, and record
+`progress`, `stop-evidence` or a `note`. A review
 is started in wind-down only when its whole signed limit fits in the time
 before the host stops; otherwise the answer says none was started, and the
 work counts as handed in and not reviewed: say so in your `finish`. So before
@@ -311,6 +349,13 @@ Close a task whose stage is `accepted`:
 
 ```json
 {"version": 1, "id": "cmd-close-1", "op": "close", "task_id": "truncate", "request_id": "fab7ac2014aa4ab9a12bd317defe6c65"}
+```
+
+Leave a task that cannot go on, so that the next can be briefed. It is
+recorded as not accepted with your reason and cannot be briefed again:
+
+```json
+{"version": 1, "id": "cmd-aside-1", "op": "set-aside", "task_id": "truncate", "request_id": "80265b51c792478d8191e53612e9df50", "reason": "The project's tests need a database server that is not installed on this machine; the builder stopped at the first check.", "next_owner": "developer"}
 ```
 
 Record the builder seat's own stop receipt:

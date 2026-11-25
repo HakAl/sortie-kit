@@ -452,6 +452,7 @@ name `task_id` and the current phase `request_id` from `current-context.json`.
 | `progress` | `evidence` | Record a new artifact; never acceptance. |
 | `continue` | optional `turn_seconds`, optional `again` (only `true`) | At a review stage: start the review that was held back, or run on one that was begun and has no run in progress. Otherwise: start the task's next builder turn with a fixed host message. Blocked while a turn runs, in wind-down, when no builder phase is open, and after 32 turns. Also blocked, with no turn started, when the last turn of the same phase changed `receipts/` and nothing was consumed since: the builder would have nothing to do. `"again": true` starts the turn all the same, for a turn that wrote something other than the phase's receipt. In wind-down `brief` and `repair` are blocked too. |
 | `close` | none | Close only a locally accepted candidate. |
+| `set-aside` | `reason`, `next_owner` | Leave the open task so that the next can be briefed, at any stage but `accepted` and in any repair round, with no need to use the rounds up first. The task's stage becomes `blocked` with the reason "set aside by the driver at STAGE, repair round N:" and the driver's words, and with the owner given. Answered `recorded`. See "Leaving a task" below. |
 | `stop-evidence` | `receipt` | Record builder-seat cessation separately. |
 | `finish` | `reason`, `next_owner`, optional `not_started`; no task/request required | Close the local handoff. `not_started` is the driver's list of what the direction held and it never briefed: at most 32 items, each `{"name": text up to 200, "reason": text up to 500}` and nothing else; `[]` says the direction held no more. A list of another shape is answered `invalid` and nothing changes. The host keeps it as the driver's statement and checks only its shape. |
 | `note` | `kind` (`decision` or `question`), `text` up to 1000 characters, optional `task_id` of a task briefed in this shift; no request | Keep the driver's own statement for the report and change nothing else: what it calls a decision it made on its own, or a question it could not settle before it went on. Answered `recorded`. Served whenever commands are, also while a builder turn or a review runs and in wind-down. At most 32 are kept; a further one is answered `blocked`. The host checks the shape and nothing of what the text says, also not whether a decision was within the direction. A note has no answer: the command gives back only that it was kept. |
@@ -459,8 +460,8 @@ name `task_id` and the current phase `request_id` from `current-context.json`.
 `turn_seconds` is a whole number from 1 to 7200 (default 1800) and is clipped
 to the time left until the host stops all work, so a turn started before
 wind-down may run on through it; any other value is `invalid` and changes
-nothing. `consume`, `repair` and `close` are `blocked` while a turn or a
-review runs. A
+nothing. `consume`, `repair`, `close` and `set-aside` are `blocked` while a
+turn or a review runs. A
 turn that could not be started is `blocked`, recorded on the task, and leaves
 the lifecycle open. `repair` starts no turn; follow it with `continue`.
 
@@ -507,6 +508,56 @@ is replaced before its directory is synced, so the command may have taken
 effect in part or in whole, and its intent may or may not be on file. The
 driver sends nothing again and the developer has to look. `driver.md` shows one exact
 example of every command.
+
+### Leaving a task
+
+One task is open at a time, and a second `brief` is refused while it is. A
+task stops being the open one in four ways. `close` takes an accepted task.
+A `repair` sent after three repair rounds were used blocks the task. A review
+that failed twice, or whose receipt the host could not write, blocks it by the
+host's own doing. And `set-aside` leaves it on the driver's word.
+
+Until `set-aside` there was no way out before the repair rounds were used up,
+and none at all for a task at `ack`, `plan` or `build` whose builder could not
+hand in a receipt, since `repair` needs a receipt or a review that came back.
+A shift whose first task met a wall outside the task ended there with every
+other task unstarted.
+
+`set-aside` names the open task and its current `request_id` and gives a
+reason and a next owner. The task is recorded with the stage `blocked`, the
+stage and repair round it was left at and the driver's reason; it is not
+accepted, and the report has it under "Not done" with that reason and that
+owner. Its identity stays taken, so it cannot be briefed again in the shift.
+The next `brief` is free. Nothing the builder committed for the task is
+undone: what is in the repository stays there, and the review of the next
+task is of the change from where the repository is at its `brief`.
+
+The command stops no seat. While a builder turn of the task runs, or a review
+of it is running or was begun and is not finished, it is answered `blocked`
+and changes nothing, as `consume`, `repair` and `close` are; the driver waits
+for the end, or sends `continue` to run a begun review on. An accepted task
+is answered `invalid`: it is closed, not set aside. In wind-down the command
+is served, since it starts nothing, and its answer says that no brief is
+taken any more. A task left at a review stage, where the host had started or
+finished no review of what was handed in, has "with the work handed in and
+not reviewed" in its reason, which is where the report then has it.
+
+`driver.md` tells a driver when to use it. A task that a repair can put
+right is repaired. A task is set aside when it cannot be put right in the
+shift, and the next is briefed only when it can be done from the repository
+as it then is. A candidate the host accepted and the driver holds to break a
+line of the direction is neither closed nor set aside: the driver finishes
+with the developer as next owner.
+
+Limits. The host does not judge the reason. The host puts nothing back: a
+commit the builder made for the task is in the history the next task builds
+on and is outside that task's review, and what the builder left uncommitted
+is still in the working tree when the next builder starts. That is so for
+every task that ends not accepted, and the report's part on the repository
+shows what was left at the end. A builder's stop receipt cannot
+be recorded with `stop-evidence` for a task that was set aside, as for any
+task that is no longer the open one. A turn that runs has to end first, which
+can take as long as the `turn_seconds` it was started with.
 
 ### The time a command has
 
@@ -751,7 +802,7 @@ and the same test is made for its second attempt. When it does not fit, none
 is started, the receipt that was handed in stays taken, and the report says
 the work was handed in and not reviewed. With the default limit of ten
 minutes that is every review in the wind-down of a shift of thirty minutes or
-less. `consume`, `close`, `progress`,
+less. `consume`, `close`, `set-aside`, `progress`,
 `stop-evidence`, `note` and `finish` are served as before, so the driver can take what
 that turn hands in and write its last statement. The host begins to stop all
 work a short closing margin before the signed deadline: ten seconds, or half

@@ -784,9 +784,20 @@ class ReceiptTests(LocalTest):
         for part in ("a question you ask in the terminal may never be answered, so never wait for one",
                      "Where direction.md leaves a choice open, the decision is yours within the signed scope",
                      # A line the direction states is not such a choice, and the way out is one that exists.
-                     "going on is not a choice of yours",
-                     "No command sends an accepted plan back or sets a task aside",
-                     "What stops the wrong work is `finish`",
+                     "going on with that task as it stands is not a choice of yours",
+                     # One rule for each place the task can be at: repair what a repair can clear,
+                     # leave what it cannot, and never close or build on an accepted breach.
+                     "a repair within the signed work can clear the breach: that is the ordinary way, `repair`",
+                     "Do not leave a task that a repair can put right",
+                     "no command sends an accepted plan back",
+                     "`set-aside` it with the developer as next owner. Brief the next task only when it can be done "
+                     "within direction.md from the repository as it now is",
+                     "it is outside that task's review",
+                     "The stage is `accepted`: the host's review said ACCEPT and that verdict stays on record; "
+                     "`set-aside` is refused there. Do not `close` it as if nothing were wrong and do not brief on "
+                     "top of it: `finish` with the developer as next owner",
+                     # The same at a baseline that fails for the first task alone.
+                     "`set-aside` it with the developer as next owner and that reason, and brief the next task",
                      "accepted work that breaks a line direction.md states"):
             self.assertIn(part, text)
         # The example of a note is a choice the direction leaves open, not a mismatch with it.
