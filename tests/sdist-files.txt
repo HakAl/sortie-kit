@@ -70,6 +70,7 @@ src/sortie_kit/shift_wait.py
 src/sortie_kit/signing.py
 src/sortie_kit/tick_supervise.py
 src/sortie_kit/trust_init.py
+src/sortie_kit/turn_temp.py
 src/sortie_kit/wake.py
 tests/check_install.py
 tests/check_sdist.py
@@ -105,4 +106,6 @@ tests/test_shift_wait.py
 tests/test_start_live.py
 tests/test_supervisor_signals.py
 tests/test_trust_init.py
+tests/test_turn_temp.py
+tests/test_turn_temp_host.py
 tests/test_wake.py

@@ -258,12 +258,16 @@ grants keep valid signatures: `sortie verify` still checks them under the
 rules they were signed with and says they cannot be admitted. Sign a fresh
 shift.
 
-Signing shows a plain-words summary of the grant (repository, window and working time, each seat's agent, model and full command, how the reviewer was chosen and the limit of one run, what the builder may do, what the reviewer can reach), then the exact bytes being signed, and invokes `ssh-keygen -Y sign` in the developer's
+Signing shows a plain-words summary of the grant (repository, window and working time, each seat's agent, model and full command, how the reviewer was chosen and the limit of one run, what the builder may do, what the reviewer can reach), then, for a start that runs the shift, lines marked as not part of what is signed (whether the host keeps the machine awake, and where, as things are at signing, it would make [the temporary directory of builder turns and reviews](lifecycle.md#the-temporary-directory-of-builder-turns-and-reviews)), then the exact bytes being signed, and invokes `ssh-keygen -Y sign` in the developer's
 foreground controlling terminal. Python never reads the password. Signing
 requires unredirected terminal streams, explicitly disables/checks terminal
 echo, uses the encrypted private key directly, and removes inherited agent,
 askpass, provider and preload environment paths. No agent is started by
-this command. Signing consumes the requested finite duration; expiry, signal
+this command. The grant holds no environment of any seat and never did: the
+temporary directory of builder turns, which used to follow from the signed
+repository and shift, is now a directory outside the repository whose path
+does not exist at signing, and is said in those unsigned lines and in the
+report. Signing consumes the requested finite duration; expiry, signal
 interruption, or source/trust/key change stops the signer. Terminal settings and
 signal handlers are restored on exit. There is no password flag or fallback to
 piped input. If the environment cannot control terminal echo, signing refuses.

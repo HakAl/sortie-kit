@@ -26,7 +26,7 @@ def end_look(final_seconds):
 
 
 def run_shift(admission, spawn=None, *, seconds, wind_down=None, poll=0.1, sleep=time.sleep, driver_seat=None,
-              checks=False, interrupted=None, status=None, wake=None):
+              checks=False, interrupted=None, status=None, wake=None, temp=None):
     """Serve both seats' file channels until the shift ends.
 
     `driver_seat` is the foreground driver process when the host started one; its
@@ -40,6 +40,10 @@ def run_shift(admission, spawn=None, *, seconds, wind_down=None, poll=0.1, sleep
     the launcher took at admission, or None: this loop renews it on every pass
     that goes on, never on the one that stops and never during the stop, the
     closeout records it, and it is let go once the final report is written.
+    `temp` makes the directory for the temporary files of builder turns and
+    reviews (`turn_temp.make`), or is None for a host that keeps them in the
+    shift's scratch/: this loop calls it once, the closeout records what it gave,
+    and the directory is removed after both seats were stopped.
     """
     if not 0 < poll <= 10:
         raise Refused("host poll interval must be finite and bounded")
@@ -65,6 +69,15 @@ def run_shift(admission, spawn=None, *, seconds, wind_down=None, poll=0.1, sleep
         if threading.current_thread() is threading.main_thread():
             for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
                 previous[sig] = signal.signal(sig, lambda signum, frame: interrupted.append(signum))
+        if temp is not None and repo is not None:
+            # Inside the block whose cleanup removes it: nothing that fails from here on
+            # leaves the directory or its handles behind unsaid.
+            driver.temp = temp(repo)
+            made = driver.temp.record()
+            from .launcher import host_log  # at the call: the launcher imports this module
+            host_log(admission.shift, "temporary directory of builder turns and reviews: " + (
+                made["path"] + " (" + str(made["bytes"]) + " bytes)" if made["path"] is not None
+                else "not made, the shift's scratch/ is used: " + str(made["why"])))
         while True:
             if why := driver.guard():
                 reason, code = why, 3
@@ -153,6 +166,29 @@ def run_shift(admission, spawn=None, *, seconds, wind_down=None, poll=0.1, sleep
                 driver.record_turn()
             except (OSError, ValueError):
                 pass  # the end that was seen is kept and goes into the state with the final report
+            if driver.temp is not None:
+                # After both seats' processes were stopped and the turn's end was worked out,
+                # which is where a stop that was not seen is known. Before the look at the
+                # repository, so that a slow look cannot leave the directory behind; one
+                # second at most, never out of the time kept for the report, and not at all
+                # while something that may still write there was not seen to stop: a builder
+                # turn or a review, or the driver, which runs as the same user and can read
+                # the path in the host's log. What cannot go is said in the closeout; it is
+                # no shutdown problem by itself.
+                unseen = lambda: any(word in str(driver.processes.get("driver", ""))
+                                     for word in ("not observed", "not confirmed"))
+                if unseen() and later is not None:
+                    # A driver still exiting when its stop ran out of time is usually gone by
+                    # now. One look, no wait and no signal, as before the report below.
+                    try:
+                        driver.processes["driver"] = later()
+                    except (OSError, ValueError):
+                        pass  # what close() saw stands
+                driver.temp.remove(driver.final_seconds() - REPORT_RESERVE, running=(
+                    "a builder turn or a review was not seen to stop and may still write there"
+                    if driver.unconfirmed or driver.child is not None else
+                    "the driver process was not seen to stop and may still write there"
+                    if unseen() else None))
             if repo is not None:
                 # After both seats' processes were stopped, before the report: what is
                 # uncommitted now, so that half a change left behind is named.
@@ -213,6 +249,8 @@ def run_shift(admission, spawn=None, *, seconds, wind_down=None, poll=0.1, sleep
             if status is not None:
                 status["published"] = driver.published
         finally:
+            if driver.temp is not None:
+                driver.temp.close()  # the handles, also when the removal above was never reached
             if wake is not None:
                 wake.release()  # after the closeout and the report, whether or not they were written
             for sig, handler in previous.items():

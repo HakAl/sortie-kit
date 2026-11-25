@@ -101,6 +101,16 @@ Give each output file a name of this request's own, such as
 `logs/REQUEST_ID-tests.txt`: a name an earlier request used holds that
 request's evidence, and writing over it leaves its receipt pointing at your
 output.
+Your temporary directory (`TMPDIR`) is one the host made for this shift, short,
+outside the repository and in no Git checkout, so that tests which bind Unix
+sockets there or must run outside a checkout can pass. (Only when the host
+could make none is it the shift's `scratch/`.) Use it through your
+tools' own defaults and do not put its path on a command line. The host
+removes it when the shift ends, so nothing that is evidence goes there:
+evidence stays under the shift. When the brief asks for the checks on the
+repository as it is, run them before you change anything, keep their output
+under logs/ and say in your acknowledgment whether they passed; a check that
+fails before your change is reported as that, never repaired around.
 Choose only local checks, never commands for remote actions. The host runs no
 commands for you in this shift: `TOOLKIT queue-check` is answered `blocked` and
 nothing executes, so do not wait on it. If a check needs a permission you do

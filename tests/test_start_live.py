@@ -33,6 +33,22 @@ if sys.argv[1] == "run":
     # The builder uses only what its prompt gave it: the toolkit command and the shift.
     import shlex, shutil
     seen = dict(facts(), stdin=os.read(0, 10).decode(), sortie=shutil.which("sortie"), toolkit=told("toolkit: "))
+    # What a project's tests do: a Unix socket under the temporary directory, reached through
+    # tempfile alone with no path on any command line, and a look for a checkout around it.
+    import socket, tempfile
+    where = tempfile.gettempdir()
+    name = os.path.join(where, "s" * 48)  # a tail of 49 bytes with its separator
+    try:
+        bound = socket.socket(socket.AF_UNIX)
+        bound.bind(name)
+        bound.close()
+        os.unlink(name)
+        seen["socket"] = "bound"
+    except OSError as exc:
+        seen["socket"] = "failed: " + str(exc)
+    os.mkdir(os.path.join(where, "left-by-the-builder"))
+    seen.update(temp=where, temp_mode=os.stat(where).st_mode & 0o777, toplevel=subprocess.run(
+        ["git", "-C", where, "rev-parse", "--show-toplevel"], capture_output=True, text=True).returncode)
     if told("toolkit: ") and told("shift: "):
         tool, shift = shlex.split(told("toolkit: ")[0]), Path(told("shift: ")[0])
         def toolkit(*args):
@@ -400,12 +416,26 @@ class LiveStartTests(test_grants.GrantTests):
         self.assertIn("briefs/task.md", builder["argv"][5])
         self.assertEqual((builder["cwd"], builder["tty"], builder["stdin"]),
                          (os.path.realpath(self.repo_path), [False] * 3, ""))
-        self.assertEqual(builder["env"], dict(HOME=str(self.protected), TMPDIR=str(shift / "scratch"),
-                                              SSH_AUTH_SOCK=None, SSH_ASKPASS=None, GIT_DIR=None,
-                                              GIT_TERMINAL_PROMPT="0"))
-
         report = decode((shift / "report.json").read_bytes())
         window = report["actual_window"]
+        # The builder's temporary directory is the one the host made for this shift in the
+        # system's short location: outside the repository and any checkout, short enough
+        # for a Unix socket with a tail of 49 bytes, the developer's alone, and gone at the end.
+        from sortie_kit import turn_temp
+        self.assertTrue(turn_temp.BASES, "no short system location is named in turn_temp.BASES")
+        temp = window["temp"]
+        self.assertEqual((temp["state"], temp["entries"], temp["removed_entries"]), ("removed", 1, 1), temp)
+        self.assertEqual(os.path.dirname(temp["path"]), os.path.realpath(turn_temp.BASES[0]))
+        self.assertLessEqual(temp["bytes"], 28)
+        self.assertEqual(builder["env"], dict(HOME=str(self.protected), TMPDIR=temp["path"],
+                                              SSH_AUTH_SOCK=None, SSH_ASKPASS=None, GIT_DIR=None,
+                                              GIT_TERMINAL_PROMPT="0"))
+        self.assertEqual((builder["temp"], builder["temp_mode"], builder["socket"]), (temp["path"], 0o700, "bound"))
+        self.assertNotEqual(builder["toplevel"], 0)  # Git finds no checkout there
+        self.assertFalse(os.path.lexists(temp["path"]))
+        self.assertIn("- Temporary directory of builder turns and reviews: " + report_words.plain(temp["path"], 400)
+                      + " (" + str(temp["bytes"]) + " bytes), outside the repository. The host removed it at the "
+                      "end, with 1 entry in it.\n", (shift / "report.md").read_text())
         self.assertEqual((window["reason"], window["processes"]["driver"]),
                          ("driver exited", "exited on its own with status 0"))
         turn, = report["tasks"][0]["turns"]
@@ -419,6 +449,12 @@ class LiveStartTests(test_grants.GrantTests):
         # host's own power assertion was held for these seconds and let go.
         shown = text.replace("\r", "")
         self.assertLess(shown.index("\nNot part of what is signed:\n  Keep awake: "), shown.index("\nExact bytes being signed:\n"))
+        # Where the temporary files will be is said to the signer too, and is not signed either.
+        aside = shown.split("\nNot part of what is signed:\n")[1].split("\nExact bytes being signed:\n")[0]
+        self.assertIn("\n  Temporary files: builder turns and reviews get a directory the host makes when the shift "
+                      "starts, outside the repository and open to your user alone. As things are now that would be "
+                      "under " + os.path.dirname(temp["path"]) + "; the place is looked at again then", aside)
+        self.assertNotIn("Temporary files", shown.split("\nExact bytes being signed:\n")[1].split("\n")[0])
         self.assertTrue(window["wake"]["asked"])
         if sys.platform == "darwin":
             self.assertEqual((window["wake"]["whole"], window["wake"]["refusals"], window["wake"]["gaps"]), (True, [], []))
@@ -587,6 +623,25 @@ class LiveStartTests(test_grants.GrantTests):
         launcher.run(self.shift, self.trust, self.seats, 60, launch=Seat, serve=serve, wake=held)
         self.assertIs(got["wake"], held)
         self.assertEqual((held.calls[0], held.calls.count("release")), ("acquire", 1))
+
+    def test_the_maker_of_the_temporary_directory_is_handed_to_the_host_loop_and_makes_nothing_before_it(self):
+        from sortie_kit import launcher
+        got, made = {}, []
+
+        class Seat:
+            def __init__(self, argv, *, cwd, env):
+                pass
+
+            def close(self):
+                return "stopped by the host"
+
+        def serve(admission, **options):
+            got.update(options)
+            return 0, "served"
+        maker = lambda repo: made.append(repo)
+        launcher.run(self.shift, self.trust, self.seats, 60, launch=Seat, serve=serve, temp=maker)
+        self.assertIs(got["temp"], maker)
+        self.assertEqual(made, [])  # the host loop makes it, and this stand-in loop made none
 
     def test_child_setup_failure_still_gets_the_start_failed_report(self):
         def launch(argv, *, cwd, env):

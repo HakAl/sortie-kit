@@ -118,6 +118,118 @@ not part of the signed grant: it gives no seat anything, and it is a fact
 about the host process that runs the shift. The signer sees it in a line
 under the summary, marked as not signed.
 
+### The temporary directory of builder turns and reviews
+
+A builder turn and a run of the reviewer get `TMPDIR`, `TMP` and `TEMP` set to
+one directory that the host of a live `sortie start` makes for the shift
+(`turn_temp.py`). It is outside the repository and short, because a project's
+own tests may need both: a Unix socket's path is limited to 103 bytes on
+macOS and 107 on Linux, so tests that bind sockets under the temporary
+directory fail when it is long, and some tests must run outside any Git
+checkout. The shift's `scratch/`, where these files went before, is inside the
+repository and adds 53 bytes to the repository's own path. In the first shift
+a developer signed in person, 76 of a project's tests failed for that alone,
+on the untouched base as on the candidate.
+
+- Where: the host tries `/tmp` by its real path (`/private/tmp` on macOS) and
+  then the directories its environment names in `TMPDIR`, `TEMP` and `TMP`.
+  It only reads those names and probes nothing: looking for a base writes no
+  file anywhere, also not when the signer's line is made. A base is taken
+  only when it is a
+  directory your user can write, is not the repository or under it,
+  neither it nor a directory above it holds a `.git` entry, no other
+  user can rename or remove what you make in it (it is root's and sticky, as
+  `/tmp` is), and no other user can turn the path to it elsewhere: every
+  directory above it is root's and is writable by its owner alone or sticky.
+  A directory of your own is not taken as a base, however its mode reads:
+  where a directory can carry an access list, as on macOS, the list can let
+  another user rename what is in it, the host does not read such lists, and
+  only root can put one on what is root's. So the per-user temporary
+  directory of macOS is passed over, and a name in your environment helps
+  only when it points at a place like `/var/tmp`. In the first base
+  that passes, the host makes `sortie-` and eight random characters,
+  mode 700, through the base's open handle, and takes it only when the path
+  it hands out names the directory it holds. Under `/tmp` the longest path is
+  28 bytes on macOS (`/private/tmp/sortie-XXXXXXXX`) and 20 on Linux. Only
+  when `/tmp` is refused is it another base plus 16 bytes, and such a path
+  can be too long for a project's sockets; the
+  closeout records the length and the report says it.
+- When: the host's loop makes it as it starts, after admission, and the one
+  directory serves every builder turn and every review of the shift. They run
+  one at a time and share the repository and the shift anyway.
+- No base passes: nothing is made, turns and reviews keep their temporary
+  files in `scratch/` as before, and the report says so in bold with what
+  that can break. The shift runs.
+- At the end, after both seats' processes were stopped and before the look
+  at the repository and the report, the host removes the directory with
+  everything in it. It does that through the handles it has held since it
+  made the directory, of the directory and of its base: it follows no link,
+  goes into no directory on another file system and no deeper than 64
+  directories, and removes the name only when it still is that directory. It
+  is given one second at most and never the time kept for the report: the
+  removal runs beside the host's own work, which waits for it no longer than
+  that, so one call into a file system that does not answer cannot hold up
+  the closeout and the report. A removal not seen to finish is told to stop
+  and is recorded as left, with what it counted and took not known: the work
+  asks before every change whether it was told to stop, so a call that comes
+  back late is followed by no further change, though a change already under
+  way when the host stopped waiting can still land. What cannot go in that
+  time or cannot be removed is left, and a
+  directory is left untouched when a builder turn, a review or the driver
+  was not seen to stop: each runs as your user and can still write there. A
+  host that dies removes nothing.
+  The path is in `logs/host.log` from the moment it is made.
+- A directory that was left is named in the report by the path the host made
+  it at. On most of the ways it comes to be left the host did not look at
+  what that path names at the end, so the report tells nobody to remove it
+  and says to look first.
+- A path that no longer names the directory the host made is recorded as
+  that (`replaced`): when the name is gone or is something else by the time
+  of the removal, or when the host finds after removing the name that its own
+  directory still exists, so that an empty directory which had taken the name
+  went in its place. The report then says so and tells nobody to remove what
+  is at the path. No system call removes a directory by its identity, so the
+  last case is found after the fact and not prevented. It is found by
+  reading only: Linux counts no link to a removed directory, and macOS gives
+  the path a held directory is at. On a system that offers neither, the
+  record says `unverified: true` beside `removed`. The making and the
+  removal are held against other users of the machine; a process of your own
+  user, which the builder is, can do to the directory whatever you can.
+- A directory that could not be opened after it was made, or was not what
+  was asked for, is taken out again only when its name is seen to be what was
+  opened and only when it is empty; otherwise it stays in the base and the reason names it.
+- The closeout's `temp` entry is `{path, bytes, state}` (for `not made`,
+  `path` is `null` and there is no `bytes`) with `state` one of
+  `in use` (a report written while the shift ran), `removed`, `left` and `not
+  made`; `removed` and `left` add `entries`, the number of entries that lay
+  directly in the directory (`null` when they were not counted), and
+  `removed_entries` (`null` when a removal was given up on and what it took
+  is not known); `removed` adds `unverified: true` when the system gave no
+  way to see afterwards that what went was the host's directory; `left` and `not made` add `why`, and `left` adds
+  `replaced: true` when the path was seen not to name the directory. A removal that fails is
+  said in the report and changes neither the exit status nor what the report
+  says of the shutdown.
+- Nothing of the shift points into it. Check checkouts and whatever a receipt
+  names stay under `scratch/`, and builder.md tells the builder to keep
+  evidence under the shift.
+- It is not part of the signed grant, which holds no environment at all. The
+  path does not exist when you sign, and its random name is what keeps
+  another user of the machine from preparing it. The signer sees where it
+  would be made as things are at signing in a line under the summary, marked
+  as not signed; the place is looked at again when the shift starts.
+
+The toolkit's own tests run no real agent CLI. Seen in three real shifts on
+macOS, one with a `claude` builder and two with a `codex` builder (codex-cli
+0.172.0): the directory was made with a path of 28 bytes, the builder's
+checks ran in it, and the host removed it at the end with no `unverified`.
+Under another configuration of yours this may differ. With a `codex` builder
+and the network off, a test that binds a Unix socket there is still refused
+by Codex's own sandbox; see
+[the built-in seats](agents.md#what-the-built-in-seats-can-reach) and
+`--builder-network`. A hook of
+your own that keeps an agent inside the project is in
+[your hooks](machine.md#your-hooks).
+
 ## The processes
 
 The driver is interactive. The host starts the signed driver argv
@@ -178,7 +290,9 @@ the rest counted as dropped), and a time limit. That log holds what the
 builder's CLI printed, which for some CLIs, `agy` among them, is only its
 final message; the same goes for a reviewer's logs. sortie-kit does not record what a seat ran. Its environment is the
 developer's with `GIT_*`, SSH agent and askpass variables removed,
-`GIT_TERMINAL_PROMPT=0`, and temporary directories under the shift's `scratch/`;
+`GIT_TERMINAL_PROMPT=0`, and `TMPDIR`, `TMP` and `TEMP` set to
+[the directory the host made for the shift](#the-temporary-directory-of-builder-turns-and-reviews),
+short and outside the repository, or to the shift's `scratch/` when none could be made;
 HOME is unchanged because the agent CLI needs its own sign-in. `PATH` is the
 developer's, unchanged, and need not hold `sortie`: the prompt of every turn
 carries a `shift:` line and a `toolkit:` line, the same command the driver is

@@ -91,6 +91,19 @@ clickable. If the readable part cannot be built from what was kept, a short
   known, when a turn or review is recorded as still running, when the host
   counted less than five minutes for the whole shift, or when the report was
   cut to the short form.
+- `actual_window.temp`: the closeout's `temp`, the directory the host made
+  for the temporary files of builder turns and reviews (see
+  [the lifecycle](lifecycle.md#the-temporary-directory-of-builder-turns-and-reviews)),
+  or no such entry for an earlier shift. `report.md` has one line for it under
+  Outcome: the path, its length in bytes and that the host removed it with so
+  many entries in it, with a sentence more when it could not be seen
+  afterwards that what went was the host's directory; or, in bold, that it was left, where the host made it,
+  why, how many of its entries went, and to look before removing anything; or, in bold, that the path was replaced, which tells
+  nobody to remove what is there now; or, in bold, that none was made, why, and that turns
+  and reviews kept their temporary files in the shift's `scratch/`, where
+  tests that bind Unix sockets or must run outside a Git checkout can fail
+  for that alone. A report written while the shift ran says the directory is
+  in use. An entry that cannot be read is said as not known.
 - `actual_window.wake`: the closeout's `wake`, the host's hold against idle
   sleep (see [the lifecycle](lifecycle.md#keeping-the-machine-awake)), or no
   such entry for an earlier shift. `report.md` says under Outcome whether the

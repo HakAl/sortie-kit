@@ -767,6 +767,50 @@ def wake_words(window):
     return [line + ' While it was not held ' + sleep]
 
 
+def temp_words(window):
+    """The Outcome line on the directory the host made for the temporary files of
+    builder turns and reviews, from the closeout's `temp`; no line for a closeout
+    without one (an earlier shift, or a host that was given none to make)."""
+    if 'temp' not in window:
+        return []
+    kept = window.get('temp')
+    states = ('in use', 'removed', 'left', 'not made')
+    if not isinstance(kept, dict) or kept.get('state') not in states or (
+            kept['state'] != 'not made' and not (isinstance(kept.get('path'), str) and type(kept.get('bytes')) is int)):
+        return ["- Temporary directory of builder turns and reviews: not known; the closeout's entry on it "
+                'could not be read.']
+    why = plain(kept['why'], 300) if isinstance(kept.get('why'), str) else 'no reason was recorded'
+    if kept['state'] == 'not made':
+        return ['- **Temporary directory of builder turns and reviews: not made** (' + why + "). They kept their "
+                "temporary files in the shift's scratch/, inside the repository: tests that bind Unix sockets under "
+                'the temporary directory, or that must run outside a Git checkout, can fail for that alone.']
+    where = plain(kept['path'], 400) + ' (' + str(kept['bytes']) + ' bytes), outside the repository'
+    count = lambda name: kept.get(name) if type(kept.get(name)) is int and kept.get(name) >= 0 else None
+    entries, gone = count('entries'), count('removed_entries')
+    held = lambda number: '1 entry' if number == 1 else str(number) + ' entries'
+    if kept['state'] == 'in use':
+        return ['- Temporary directory of builder turns and reviews: ' + where + '. The host removes it at its end.']
+    if kept['state'] == 'removed':
+        return ['- Temporary directory of builder turns and reviews: ' + where + '. The host removed it at the end'
+                + ('.' if entries is None else ', with ' + held(entries) + ' in it.')
+                + (' It was removed by its name, and this system gave no way to see afterwards that what went '
+                   'was the directory the host made.' if kept.get('unverified') is True else '')]
+    counted = ('How many entries it held was not counted' if entries is None else
+               (str(gone) if gone is not None else 'An unknown number') + ' of ' + held(entries)
+               + ' in it ' + ('was' if gone == 1 else 'were') + ' removed') + '. '
+    if kept.get('replaced') is True:
+        # The path is stale: nothing here may read as leave to remove what is there now.
+        return ['- **Temporary directory of builder turns and reviews: REPLACED.** The host made it at ' + where
+                + ', and that path was then seen not to name it: ' + why + '. ' + counted
+                + 'Whatever is at that path now is not what the host made and the host did not look into it; '
+                'this report is no reason to remove it.']
+    # The path is where the host made it. What it names now was not looked at on every way
+    # here, so no line tells anybody to remove what is there.
+    return ['- **Temporary directory of builder turns and reviews: LEFT.** The host made it at ' + where + ': '
+            + why + '. ' + counted + 'Nothing of the shift points into it. The host may not have checked that the '
+            'path still names that directory, so look at what is there before you remove anything.']
+
+
 ACCEPTED = 'local acceptance recorded; retained review matches candidate'
 UNBACKED = 'local acceptance recorded but uncorroborated'
 UNSIGNED = 'retained grant without a signature file; not shown to be signed'
@@ -1566,6 +1610,7 @@ def markdown(doc, sha):
     elif grant:
         out.append('- No signed grant: this shift was prepared and never signed.')
     out += wake_words(window)
+    out += temp_words(window)
     left_open, open_section = open_words(doc.get('open_findings'))
     out += [left_open] if left_open else []
     noted, notes_section = notes_words(doc.get('driver_notes'))

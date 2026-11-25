@@ -136,7 +136,9 @@ configuration, which later run as you, and it can read anything your user
 can read. The toolkit asks Codex for its workspace-write sandbox, which runs
 the builder's commands without the network unless you start with
 `--builder-network` or your own Codex configuration turns it on; Codex
-itself still reaches its model. A `claude` builder gets no such option and
+itself still reaches its model. A project whose tests bind sockets, Unix
+sockets included, needs `--builder-network` with a Codex builder (seen on
+macOS with codex-cli 0.172.0, not checked on Linux). A `claude` builder gets no such option and
 can do only what your Claude settings allow without asking. The built-in
 `agy` builder gets none either and can do whatever your own agy
 configuration allows without asking. Read

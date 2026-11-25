@@ -66,7 +66,7 @@ steps before it.
   the review said, which findings accepted work was left with, what was not
   done and why, and who is next.
 
-Everything a shift writes for itself (briefs, receipts, logs, the report) is
+Everything a shift keeps (briefs, receipts, logs, the report) is
 under `.sortie/` in the repository, which Git is told to ignore through the
 repository's own `.git/info/exclude`. Your `.gitignore` is not touched. The
 builder commits its work in the repository itself. The toolkit never pushes.
@@ -78,6 +78,13 @@ For its checks the builder may add Git working trees under the shift's
 worktree list` in your repository goes on showing them; the report names
 them. When you no longer need a shift's evidence, remove `.sortie/` and run
 `git worktree prune` in the repository to clear those entries.
+
+The one thing a shift puts outside the repository is the temporary directory
+of the builder's turns and of reviews: the host makes it in the system's
+short temporary location, so that tests which bind Unix sockets or must run
+outside a Git checkout can pass, and tries to remove it when the shift ends.
+The signing summary says where it would be made as things are when you sign,
+and the report says where it was and what became of it.
 
 ## What still needs you
 

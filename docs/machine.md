@@ -21,7 +21,14 @@ It is not given the network: Codex's workspace-write sandbox runs the
 builder's commands without it unless your own Codex configuration turns it
 on. A builder without the network cannot install a package from a remote index,
 fetch a page, or clone or pull from a remote; Codex itself still reaches its
-model. When the
+model. The same setting decides one thing that is not the network as most
+people mean it: in a real shift on macOS with codex-cli 0.172.0, a test that
+binds a Unix socket in the temporary directory failed in the builder's
+sandbox with `PermissionError: [Errno 1] Operation not permitted`, and the
+same test passed in a shift started with `--builder-network`. So a project
+whose tests bind sockets, Unix sockets included, needs `--builder-network`
+with a Codex builder. That refusal is the Codex CLI's sandbox, not the
+toolkit's, and it has not been checked on Linux. When the
 work needs the network, start with `--builder-network`: the builder's
 arguments then carry `-c sandbox_workspace_write.network_access=true`, which
 you see and sign, and the summary and the report say the builder can use the
@@ -93,3 +100,23 @@ under a temporary directory. What that looks like: the driver says in your
 terminal that its command was blocked or denied, no builder turn starts, and
 the shift runs out with no task accepted. If you see it, end the shift with
 `sortie stop`, move the repository or change the hook, and start again.
+
+A hook that keeps an agent inside the project meets one more thing. The
+builder's temporary files go to
+[a directory the host makes for the shift](lifecycle.md#the-temporary-directory-of-builder-turns-and-reviews)
+under `/tmp`, outside the repository. A test run reaches it through `TMPDIR`
+and names no path on its command line, so a hook that reads command lines has
+nothing to refuse, and the toolkit's own tests run a builder's check that
+way. A command that names the directory can be refused by such a hook, and
+builder.md tells the builder not to name it. If you want your agent to be
+able to, allow paths that begin with `/tmp/sortie-` and, on macOS,
+`/private/tmp/sortie-` in your own hook's configuration; the signing summary
+shows the base and the report the full path. The toolkit reads and changes no
+hook. In the first shift a developer signed in person the temporary files
+were still inside the repository, the project's tests could not pass there,
+and the builder, kept inside the project by such a hook, rightly did not go
+round it.
+
+The host tries to remove that directory at the end of the shift. When it
+could not, the report says where the host made it and why it was left, under
+Outcome, and to look at what is there before removing anything.

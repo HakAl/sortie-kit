@@ -351,6 +351,9 @@ def main(argv=None):
             # this host runs and gives no seat anything.
             from .wake import Wake
             held["wake"] = Wake(not args.no_wake)
+            # Made by the host loop once the shift is admitted, and not signed either.
+            from . import turn_temp
+            held["temp"] = turn_temp.make
         shift = start(request, prepare_only=args.prepare_only, sign_only=args.sign_only,
                       trust_path=args.trust, key=args.key, choices=choices,
                       same_family=args.allow_same_family_review, review_seconds=args.review_limit,

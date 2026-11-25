@@ -143,7 +143,7 @@ def all_seats(repo, choices, *, same_family=False, builder_network=False, home=N
 
 def start(request: Request, *, prepare_only=False, sign_only=False, trust_path=None,
           key=None, choices=None, same_family=False, review_seconds=None, builder_network=False,
-          home=None, search=None, wake=None):
+          home=None, search=None, wake=None, temp=None):
     """--prepare-only and --sign-only return the shift. With neither, run the whole
     shift and return (shift,) with what `run` returns.
 
@@ -153,7 +153,10 @@ def start(request: Request, *, prepare_only=False, sign_only=False, trust_path=N
     `builder_network` signs the builder's form with the network on, and is refused
     for a builder profile that has none and for a preparation, which signs nothing.
     `wake` is the hold against idle sleep for a shift that runs (`wake.Wake`), or
-    None for no hold; it is said to the signer and is no part of the grant."""
+    None for no hold; it is said to the signer and is no part of the grant.
+    `temp` makes the directory for the temporary files of builder turns and
+    reviews when the shift runs (`turn_temp.make`), or is None for none; where
+    it will be is said to the signer and is no part of the grant either."""
     if prepare_only and not sign_only:
         if builder_network:
             raise Refused("--builder-network applies only when signing; a preparation names no seat")
@@ -185,11 +188,15 @@ def start(request: Request, *, prepare_only=False, sign_only=False, trust_path=N
     policy = review_policy(seats["builder"]["model"], seats["builder"]["family"],
                            seats["reviewer"]["model"], seats["reviewer"]["family"], choice)
     raw = make_grant(shift, trust, seats, request.seconds, policy=policy, review_seconds=review_seconds)
-    sign(shift, trust, key, raw, seconds=request.seconds, sources=sources,
-         note=None if sign_only or wake is None else wake.plan())
+    notes = []
+    if not sign_only:
+        from . import turn_temp
+        notes += [] if wake is None else [wake.plan()]
+        notes += [] if temp is None else [turn_temp.words(repo)]
+    sign(shift, trust, key, raw, seconds=request.seconds, sources=sources, note=notes or None)
     if sign_only:
         return shift
-    return (shift,) + run(shift, trust, seats, request.seconds, sources=sources, wake=wake)  # see run for the rest
+    return (shift,) + run(shift, trust, seats, request.seconds, sources=sources, wake=wake, temp=temp)  # see run for the rest
 
 
 def driver_prompt(shift, value):
@@ -328,7 +335,7 @@ def report_read(shift):
     return ("final", raw) if final else ("preliminary", None)
 
 
-def run(shift, trust, seats, seconds, *, sources=None, poll=0.5, launch=None, serve=None, wake=None):
+def run(shift, trust, seats, seconds, *, sources=None, poll=0.5, launch=None, serve=None, wake=None, temp=None):
     """Admit the signed shift, start the interactive driver in this terminal and
     serve the seats until the shift ends. Returns (code, reason, driver process,
     whether the host published its final report, what the host saw of its own
@@ -336,7 +343,8 @@ def run(shift, trust, seats, seconds, *, sources=None, poll=0.5, launch=None, se
 
     `wake`, when given, is held from admission on: taken here before the driver is
     started, renewed and let go by the host loop once its report is written, and
-    let go here when the start fails before that loop."""
+    let go here when the start fails before that loop. `temp` is handed to the
+    host loop, which makes and removes the directory; nothing is made before it."""
     from .grants import Admission, moment
     from .host import run_shift
     from .tick_supervise import ForegroundSeat
@@ -378,7 +386,8 @@ def run(shift, trust, seats, seconds, *, sources=None, poll=0.5, launch=None, se
 
             def host(remaining):
                 return serve(admission, seconds=remaining, poll=poll, driver_seat=seat[0], interrupted=interrupted,
-                             status=status, **({} if wake is None else {"wake": wake}))
+                             status=status, **({} if wake is None else {"wake": wake}),
+                             **({} if temp is None else {"temp": temp}))
 
             try:
                 code, reason = admitted_start(shift, admission, seconds=seconds, until=moment(value["until"]),

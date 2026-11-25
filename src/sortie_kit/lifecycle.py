@@ -77,13 +77,15 @@ def builder_prompt(shift, task_words):
             "none may be on your PATH, and one that is may be another version.")
 
 
-def builder_env(shift, base=None):
+def builder_env(shift, base=None, *, temp=None):
     """The user's environment and real HOME (the CLI needs its own sign-in), without
-    Git overrides or SSH agent and askpass variables, with scratch under the shift."""
+    Git overrides or SSH agent and askpass variables. `temp` is the directory the
+    host made for this shift's temporary files (see turn_temp.py): short and
+    outside the repository. Without one they go to scratch under the shift."""
     env = {k: v for k, v in (os.environ if base is None else base).items()
            if not any(k == name or (name.endswith("_") and k.startswith(name)) for name in DROPPED)}
-    scratch = str(shift / "scratch")
-    env.update(TMPDIR=scratch, TMP=scratch, TEMP=scratch, GIT_TERMINAL_PROMPT="0")
+    where = str(shift / "scratch") if temp is None else str(temp)
+    env.update(TMPDIR=where, TMP=where, TEMP=where, GIT_TERMINAL_PROMPT="0")
     return env
 
 
@@ -217,6 +219,12 @@ class Driver:
         self.ending = None  # (stop, reaped, errors) of a turn whose group was signaled and not yet drained
         self.processes = {}  # what the host saw of its own child processes, for the closeout
         self.wake = None  # the host's hold against idle sleep: a call that gives its record, for the closeout
+        # The directory the host made for the temporary files of turns and reviews
+        # (turn_temp.TurnTemp), or None when this host was given none to make.
+        self.temp = None
+
+    def temp_path(self):
+        return None if self.temp is None else self.temp.path
 
     def guard(self):
         return (self.budget.guard() or self.sources.guard() or self.admission.guard()
@@ -464,7 +472,7 @@ class Driver:
             with view.parent(log) as (parent, leaf):
                 fd = os.open(leaf, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o600, dir_fd=parent)
-            cwd, env = str(self.admission.trust.repo), builder_env(self.shift)
+            cwd, env = str(self.admission.trust.repo), builder_env(self.shift, temp=self.temp_path())
             # An observation only, bounded, and taken before the start's own checks so
             # that nothing slow stands between those checks and the spawn.
             marks = receipt_marks(view)
@@ -596,7 +604,7 @@ class Driver:
             # which another seat can write to while the review runs.
             self.reviewing = dict(argv=[str(item) for item in argv], before=before, marks=marks, instructions=sha,
                                   printed=dict(stdout=bytearray(), stderr=bytearray()))
-            self.child = self.spawn_review(argv, cwd=cwd, env=builder_env(self.shift))
+            self.child = self.spawn_review(argv, cwd=cwd, env=builder_env(self.shift, temp=self.temp_path()))
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
             for fd in opened:
                 os.close(fd)
@@ -1521,6 +1529,7 @@ class Driver:
                            "listed per task. Process exit is not a seat's own stop statement."),
             seats="unknown unless retained stop receipts establish reported cessation",
             **({"repo": self.repo} if self.repo else {}),
+            **({"temp": self.temp.record()} if self.temp is not None else {}),
             **({"wake": self.wake()} if self.wake is not None and final else {}))), replace=True)
         report.write(view)
 

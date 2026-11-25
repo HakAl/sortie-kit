@@ -1561,7 +1561,7 @@ class TurnTests(LifecycleFixture):
 
     def test_the_stop_latch_is_asked_after_everything_the_spawn_needs_is_prepared(self):
         noted = []
-        def env(shift):
+        def env(shift, **how):
             noted.append(15)  # a stop signal arrives while the environment is put together
             return {}
         self.driver.halt = lambda: bool(noted)

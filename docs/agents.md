@@ -146,7 +146,9 @@ to start a newly signed shift, which pins the program as it then is.
 ## What the built-in seats can reach
 
 A builder has to write: receipts and logs in the shift, the source it changes,
-commits, and checkouts under the shift's `scratch/`. It does not start or call
+commits, checkouts under the shift's `scratch/`, and temporary files in
+[the directory the host makes for the shift](lifecycle.md#the-temporary-directory-of-builder-turns-and-reviews),
+which is outside the repository. It does not start or call
 the reviewer; the host does.
 
 - **`codex` as builder** is started as
@@ -164,7 +166,8 @@ the reviewer; the host does.
   from Codex and your Codex configuration, not from the toolkit. Each addition
   was checked with codex 0.171.0 in a throwaway repository on one machine:
   - `--sandbox workspace-write` lets it write inside the repository (which
-    holds the shift) and its temporary directory. Without the next one it
+    holds the shift) and its temporary directory, which was then the shift's
+    `scratch/`. Without the next one it
     still cannot commit, and without the last it cannot reach the network.
   - `--add-dir .git` makes the repository's own `.git` writable, which the
     sandbox otherwise keeps read-only even inside the workspace. Commits and
@@ -180,7 +183,13 @@ the reviewer; the host does.
     package from a remote index, fetch a page, or clone or pull from a
     remote, unless your own
     Codex configuration turns the network on; Codex itself still reaches its
-    model. The signing summary and the report say which it is, as what the
+    model. Without it the builder's commands also cannot bind a socket, a
+    Unix socket in the temporary directory included: in a real shift on
+    macOS with codex-cli 0.172.0 a test that does so failed there with
+    `PermissionError: [Errno 1] Operation not permitted` and passed in a
+    shift started with `--builder-network`. A project whose tests bind
+    sockets needs the flag with a Codex builder. Not checked on Linux.
+    The signing summary and the report say which it is, as what the
     option asks of Codex and not as something the toolkit enforces. The flag
     is asked in no question, and it is refused before anything is prepared
     for a builder whose profile has no such form.
@@ -191,7 +200,14 @@ the reviewer; the host does.
   reads nor limits that. In the check above, with that machine's
   configuration, a write to the home directory was still refused. Codex
   reported the writable places as the repository, `/tmp`, the
-  turn's temporary directory (the shift's `scratch/`) and that `.git`. Reading is not confined: the builder can read whatever your user
+  turn's temporary directory (then the shift's `scratch/`) and that `.git`. The
+  directory the host now makes for a shift's temporary files is the turn's
+  `TMPDIR` and, unless `/tmp` could not be used, under `/tmp`, so it is on
+  that list, usually twice over; the toolkit's own tests
+  run no real agent CLI, and what was seen is three real shifts on macOS,
+  two with a Codex builder (codex-cli 0.172.0) and one with a Claude
+  builder, in which the builder's checks ran in that directory and the host
+  removed it at the end. Reading is not confined: the builder can read whatever your user
   can, and with the network on that is a way for file contents to leave the
   machine. Approvals stay as Codex sets them for `exec` (nobody is asked;
   what the sandbox refuses fails). No built-in profile uses an option that

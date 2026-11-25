@@ -109,6 +109,22 @@ running, the toolkit will start no other, and only the developer can look.
 If you end your own turn without a command outstanding, nothing wakes you; the
 toolkit cannot prompt an interactive driver. When you exit, the shift ends.
 
+In the brief of your first task, ask the builder to run the checks direction.md
+names on the repository as it is, before it changes anything, and to say the
+result first in its acknowledgment. A check that already fails there, for a
+reason the direction does not name as the work, may fail on a candidate for
+that same reason and not for the builder's change. When the builder reports
+one, decide before any build which tasks that failure keeps you from showing
+as done: it may be one run that fails by chance, or a check that no other
+task needs. Record what failed and which tasks it stands in the way of in a
+`note`. The first task is already open by then, and no command sets an open
+task aside: when the failure stands in the way of that task, or of every
+task, `finish` with the developer as next owner and that reason instead of
+spending the window on repairs that cannot pass. When the open task can
+still be shown, go on with it, do not brief the tasks the failure stands in
+the way of, and name them when you finish. The host does not check this for
+you.
+
 The loop is brief, acknowledgment, for a feature the builder's plan and the
 host's review of it, build/test/commit, the host's review of the candidate,
 then repair or close. A defect follows the builder's reproduction/root

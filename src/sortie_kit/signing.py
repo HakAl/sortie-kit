@@ -155,9 +155,10 @@ def summary(value):
 def sign(shift, trust, key, raw, *, seconds, sources=None, note=None):
     """Sign exact public scope through ssh-keygen's direct terminal prompt.
 
-    `note` is one line about this run that the grant does not hold (whether the
-    host will keep the machine awake). It is shown after the summary, under words
-    that say it is not signed.
+    `note` is one line, or a list of lines, about this run that the grant does not
+    hold (whether the host will keep the machine awake, where the temporary files
+    of builder turns will be). They are shown after the summary, under words that
+    say they are not signed.
 
     No password parameter, input buffer, capture pipe, env secret, askpass or
     agent socket exists. Only ssh-keygen reads the secret from the terminal.
@@ -192,7 +193,8 @@ def sign(shift, trust, key, raw, *, seconds, sources=None, note=None):
         # JSON escapes controls in arbitrary direction/seat values, in the summary
         # and in the bytes; no terminal control sequences or password content
         # are interpolated here.
-        aside = "" if note is None else "\nNot part of what is signed:\n  " + shown(note) + "\n"
+        lines = [] if note is None else [note] if isinstance(note, str) else list(note)
+        aside = "" if not lines else "\nNot part of what is signed:\n" + "".join("  " + shown(line) + "\n" for line in lines)
         os.write(tty, (summary(value) + aside).encode("ascii") + b"\nExact bytes being signed:\n" + raw)
         os.write(tty, b"Enter the key passphrase only at ssh-keygen's prompt in your own terminal.\n")
         publish(shift / "grant.json", raw)
