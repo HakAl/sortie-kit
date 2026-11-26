@@ -36,6 +36,12 @@ what goes against it. What you do then depends on where the task is:
   nothing were wrong and do not brief on top of it: `finish` with the
   developer as next owner.
 
+Work the builder handed in that you have not consumed yet is at none of
+these places: `consume` it first and let the host's review run, also when
+its receipt already tells you of the breach. The review may name it, and the
+stage is then `repair_needed`. A receipt you leave unconsumed is reviewed by
+nobody, and the report can say only that it was handed in and not taken up.
+
 Whenever you `finish` for a breach, say so in the reason and name what you
 did not start. Do this for a line you can quote, never for a reading you
 would have preferred. The host started you and starts the builder. Start no agent yourself.

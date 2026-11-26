@@ -1278,7 +1278,7 @@ class HostReviewReportTests(ReviewFixture):
 class OpenFindingsTests(ReviewFixture):
     """Findings of a review that ended in ACCEPT: nobody is asked to act on them, so the
     report lists them."""
-    HEAD = "## Findings left open on accepted work"
+    HEAD = "## Findings left open by reviews that ended in ACCEPT"
 
     def report(self):
         self.driver.finish("the fixture ends the shift")
@@ -1301,9 +1301,9 @@ class OpenFindingsTests(ReviewFixture):
         self.assertEqual((found["count"], found["more"], found["unread"]), (2, 0, 0))
         self.assertEqual(found["items"][0], dict(
             task="task", review=number, stage="review", round=0, receipt=doc["tasks"][0]["reviews"][-1]["receipt"]["path"],
-            id="F1", severity="minor", location="source.txt:1", claim="wrong word", earlier=False))
+            id="F1", severity="minor", location="source.txt:1", claim="wrong word", earlier=False, task_accepted=True))
         outcome = text.split("## Outcome")[1].split("## What was asked")[0]
-        self.assertIn("- Findings left open on accepted work: 2. They are listed under that heading below.\n", outcome)
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: 2. They are listed under that heading below.\n", outcome)
         section = text.split(self.HEAD)[1].split("\n## ")[0]
         self.assertIn("- task, review " + str(number) + " of the candidate (round 0), F1 (minor) at source.txt:1: wrong word",
                       section)
@@ -1319,8 +1319,8 @@ class OpenFindingsTests(ReviewFixture):
         self.assertEqual(self.consume_phase()["status"], "advanced")
         self.accept()
         text, doc = self.report()
-        self.assertEqual(doc["open_findings"], dict(count=0, items=[], more=0, unread=0))
-        self.assertIn("- Findings left open on accepted work: none.\n", text)
+        self.assertEqual(doc["open_findings"], dict(count=0, items=[], more=0, unread=0, unaccepted=0))
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: none.\n", text)
         self.assertIn(self.HEAD + "\n\nNone: no review that ended in ACCEPT left a finding open.\n", text)
 
     def test_a_finding_of_an_accepted_plan_is_listed_beside_those_of_the_commit(self):
@@ -1338,6 +1338,53 @@ class OpenFindingsTests(ReviewFixture):
         self.assertIn(" of the plan (round 0), F1 (minor)", section)
         self.assertIn(" of the candidate (round 0), F1 (minor)", section)
 
+    def test_a_finding_of_an_accepted_plan_of_a_task_never_accepted_is_not_said_to_be_on_accepted_work(self):
+        # A shift stopped after the plan review: 0 accepted of 1 briefed, and the same Outcome
+        # counted the minors of that review as left open "on accepted work".
+        self.begin("feature")
+        while self.task_state()["stage"] != "plan_review":
+            self.assertEqual(self.consume_phase()["status"], "advanced")
+        if self.state()["review"] is None:
+            self.assertEqual(self.action("continue")["status"], "recorded")
+        self.accept(self.finding("F1", "minor"), self.finding("F2", "minor"))
+        text, doc = self.report()
+        found = doc["open_findings"]
+        self.assertEqual((found["count"], found["unaccepted"]), (2, 2))
+        self.assertEqual([item["task_accepted"] for item in found["items"]], [False, False])
+        outcome = text.split("## Outcome")[1].split("## What was asked")[0]
+        self.assertIn("- Tasks: 0 accepted locally of 1 briefed", outcome)
+        self.assertNotIn("on accepted work", text)
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: 2. They are listed under that heading "
+                      "below. Of these, 2 are on a task that was not accepted locally.\n", outcome)
+        section = text.split(self.HEAD)[1].split("\n## ")[0]
+        self.assertIn("An ACCEPT here is the verdict of one review, of a plan or of a candidate, and not the acceptance "
+                      "of a task", section)
+        self.assertIn("- task (task not accepted), review 1 of the plan (round 0), F1 (minor)", section)
+
+    def test_a_report_kept_from_before_tasks_were_told_apart_is_not_said_to_mark_them(self):
+        from sortie_kit import report
+        item = dict(task="task", review=1, stage="plan_review", round=0, receipt="receipts/r.json", id="F1",
+                    severity="minor", location="a.py:1", claim="c", earlier=False)
+        line, section = report.open_words(dict(count=1, items=[item], more=0, unread=0))
+        text = "\n".join(section)
+        self.assertEqual(line, "- Findings left open by reviews that ended in ACCEPT: 1. They are listed under that heading below.")
+        self.assertIn("not the acceptance of a task", text)
+        self.assertIn("This report does not say which of the findings below are on a task that was not accepted", text)
+        self.assertNotIn("is marked", text)
+        self.assertIn("- task, review 1 of the plan", text)
+        line, section = report.open_words(dict(count=1, items=[dict(item, task_accepted=False)], more=0, unread=0, unaccepted=1))
+        self.assertIn("and a finding on a task that was not is marked", "\n".join(section))
+
+    def test_findings_on_an_accepted_task_are_not_marked_and_the_outcome_adds_nothing(self):
+        self.reach_review()
+        self.accept(self.finding("F1", "minor"))
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        self.assertEqual((doc["open_findings"]["count"], doc["open_findings"]["unaccepted"]), (1, 0))
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: 1. They are listed under that heading below.\n", text)
+        self.assertNotIn("not accepted locally", text.split("## Outcome")[1].split("## What was asked")[0])
+        self.assertNotIn("(task not accepted)", text)
+
     def test_an_accepted_review_whose_receipt_cannot_be_read_is_counted_as_not_known(self):
         self.reach_review()
         self.accept(self.finding("F1", "minor"))
@@ -1348,8 +1395,8 @@ class OpenFindingsTests(ReviewFixture):
         from sortie_kit import report
         doc = report.finalize(self.shift, 3)
         text = (self.shift / "report.md").read_text()
-        self.assertEqual(doc["open_findings"], dict(count=0, items=[], more=0, unread=1))
-        self.assertIn("- Findings left open on accepted work: not known for 1 accepted review, whose receipt could not "
+        self.assertEqual(doc["open_findings"], dict(count=0, items=[], more=0, unread=1, unaccepted=0))
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: not known for 1 accepted review, whose receipt could not "
                       "be read; none in the others.", text)
 
     def test_an_earlier_minor_finding_that_the_accepting_review_left_unresolved_is_listed(self):
@@ -1370,8 +1417,9 @@ class OpenFindingsTests(ReviewFixture):
         self.assertEqual((found["count"], found["more"]), (1, 0))
         self.assertEqual(found["items"], [dict(
             task="task", review=last["review"], stage="review", round=1, receipt=last["receipt"]["path"],
-            id="F2", severity="minor", location="tests/test_x.py:9", claim="tests less than it says", earlier=True)])
-        self.assertIn("- Findings left open on accepted work: 1. ", text)
+            id="F2", severity="minor", location="tests/test_x.py:9", claim="tests less than it says", earlier=True,
+            task_accepted=True)])
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: 1. ", text)
         section = text.split(self.HEAD)[1].split("\n## ")[0]
         self.assertIn("F2 (minor, raised by an earlier review and not resolved in this one) at tests/test_x.py:9: "
                       "tests less than it says", section)
@@ -1386,8 +1434,8 @@ class OpenFindingsTests(ReviewFixture):
         from sortie_kit import report
         doc = report.finalize(self.shift, 3)
         text = (self.shift / "report.md").read_text()
-        self.assertEqual(doc["open_findings"], dict(count=None, items=[], more=0, unread=0))
-        self.assertIn("- Findings left open on accepted work: not known, because the tasks could not be read in "
+        self.assertEqual(doc["open_findings"], dict(count=None, items=[], more=0, unread=0, unaccepted=0))
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: not known, because the tasks could not be read in "
                       "full or were left out of this report.\n", text)
         section = text.split(self.HEAD)[1].split("\n## ")[0]
         self.assertIn("Not known", section)
@@ -1403,8 +1451,8 @@ class OpenFindingsTests(ReviewFixture):
         with patch.object(receipts, "DOCUMENT_LIMIT", size - 1):  # the bound on each output, not on reading
             doc = report.finalize(self.shift, 3)
         self.assertIn("output limit", doc["issues"][0]["reason"])
-        self.assertEqual(doc["open_findings"], dict(count=None, items=[], more=0, unread=0))
-        self.assertIn("- Findings left open on accepted work: not known", (self.shift / "report.md").read_text())
+        self.assertEqual(doc["open_findings"], dict(count=None, items=[], more=0, unread=0, unaccepted=0))
+        self.assertIn("- Findings left open by reviews that ended in ACCEPT: not known", (self.shift / "report.md").read_text())
 
     def test_which_later_review_marks_one_resolved_and_which_review_lists_it(self):
         from sortie_kit import report
@@ -1470,7 +1518,7 @@ class OpenFindingsTests(ReviewFixture):
             entry = dict(dict(asked=True, means="a fixture", held=True, whole=True, refusals=[], gaps=[]), **odd)
             self.assertIn("NOT for the whole shift", report.wake_words(dict(wake=entry))[0], odd)
         # What is not a number is said as not known.
-        line, section = report.open_words(dict(count=None, items=[], more=0, unread=0))
+        line, section = report.open_words(dict(count=None, items=[], more=0, unread=0, unaccepted=0))
         self.assertIn("not known", line)
         self.assertNotIn("None:", "\n".join(section))
 

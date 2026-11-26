@@ -336,11 +336,138 @@ def task_summary(reader, task, shift_id, ledger, host_reviews=False):
     return result
 
 
+STOP_OTHER = 'a STOP marker that is not the one `sortie stop` writes; it withdraws the shift all the same; see input hash'
+REFUSED = 'admitted scope unavailable, changed, or withdrawn'  # the host's one reason for three causes
+
+
+def stop_marker(raw):
+    """True when the bytes of a STOP file are the bytes `sortie stop` writes (grants.stop).
+    A document that only reads as equal (`true` or `1.0` for the version, other spacing or
+    order) is not known to be that command's."""
+    return raw == grants.encoded({'version': 1, 'reason': 'developer stop'})
+
+
+def withdrawn_words(stop, reason):
+    """What "How it ended" adds for a shift with the marker of `sortie stop`: who withdrew
+    it. The host gives one reason for a changed source, a lost file and a withdrawal, so
+    with that reason the marker is what tells them apart as far as the files can; beside
+    any other reason the marker is named and not called the cause, since the command may
+    have been run after the host had ended."""
+    if get(stop, 'by') != 'developer':
+        return ''
+    marker = 'the marker that command writes is in the shift folder.'
+    if reason == REFUSED:
+        return (' The developer withdrew the shift with `sortie stop`: ' + marker + ' The reason the host gave names '
+                'three causes and does not say which it saw.')
+    return ' `sortie stop` was also run on this shift: ' + marker
+
+
+def untaken(reader, state, shift_id, ledger):
+    """For each task that is not accepted and stands at a stage that waits for a receipt
+    of the builder: the receipts in receipts/ that no task record names and that are, as
+    the files are now, a receipt of this shift, that task, its open request, its round and
+    the phase the stage waits for, at the path a receipt of that id has. The driver never
+    consumed such a one, so the host checked nothing of it; without this the report says
+    the task waited for what was handed in. One the consumed ledger holds is not named:
+    the host did check that one, whatever the driver's record says. Returns
+    {task id: [dict(path, sha256, stage, round, data)]}.
+
+    Nothing here is evidence of the shift, and a seat can write what it likes into
+    receipts/. So a file that cannot be read, or is no such receipt, is passed over and
+    is no problem; what is read is counted against none of the bounds on the shift's own
+    files (their number, their bytes), and against a bound of its own; only a receipt
+    that is named is listed among the inputs; and one whose data does not fit the bound
+    on details is named without it (`data` None), with no problem recorded. The caller
+    runs this after everything of the shift was read. The listing is the bounded one the
+    host uses for a turn; when it cannot be made, nothing is named."""
+    waiting = {'ack': 'acknowledgment', 'plan': 'plan', 'build': 'build'}
+    tasks = {identity: task for identity, task in state['tasks'].items()
+             if isinstance(task, dict) and task.get('id') == identity and isinstance(task.get('stage'), str)
+             and task['stage'] in waiting and not task.get('accepted') and isinstance(task.get('request_id'), str)
+             and type(task.get('round')) is int}
+    if not tasks:
+        return {}
+    from .lifecycle import receipt_marks
+    names = receipt_marks(reader.view)
+    if names is None:
+        return {}
+    named = {get(ref, 'path') for task in state['tasks'].values() if isinstance(task, dict)
+             for ref in (task.get('receipts') if isinstance(task.get('receipts'), list) else [])
+             if isinstance(get(ref, 'path'), str)}
+    recorded = {get(entry, 'receipt_id') for entry in ledger if isinstance(get(entry, 'receipt_id'), str)}
+    found, read, total = {}, 0, 0
+    for name in sorted(names):
+        path = 'receipts/' + name
+        if path in named or not name.endswith('.json'):
+            continue
+        read += 1
+        if read > UNTAKEN_READ or total > UNTAKEN_BYTES:
+            break
+        try:
+            reader.guard()
+            raw = reader.view.read(path, receipts.DOCUMENT_LIMIT, charge=False)
+            total += len(raw)
+            value = decode(raw)
+            validate_shape(value, 'receipt', versions=(1, 2, 3))
+            task = tasks.get(value['task_id'])
+            if (task is None or value['shift_id'] != shift_id or value['role'] != 'builder'
+                    or value['request_id'] != task['request_id'] or value['round'] != task['round']
+                    or value['phase'] != waiting[task['stage']] or value['brief'] != task.get('brief')
+                    or path != 'receipts/' + value['receipt_id'] + '.json' or value['receipt_id'] in recorded):
+                continue
+            kept = found.setdefault(task['id'], [])
+            if len(kept) >= UNTAKEN_KEPT:
+                continue
+            size = len(receipts.encoded(value['data']))
+            fits = reader.details + size <= reader.limit
+            reader.details += size if fits else 0
+            sha = receipts.digest(raw)
+            reader.inputs[path] = dict(path=path, sha256=sha, bytes=len(raw))
+            kept.append(dict(path=path, sha256=sha, stage=task['stage'], round=value['round'],
+                             data=value['data'] if fits else None))
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            continue
+    return found
+
+
+UNTAKEN_READ = 64  # files of receipts/ that no task record names, read to look for a receipt not taken up
+UNTAKEN_BYTES = 4 * 1024 * 1024  # bytes of such files after which no further one is read
+UNTAKEN_KEPT = 4  # of those, kept for one task
+
+
+def head_unaccepted(seen, tasks, moments):
+    """When the repository's HEAD moved during the shift and is, at the end, not the
+    candidate of a task accepted locally: dict(head, accepted, last). `accepted` is how
+    many tasks were accepted locally, and `last` the task and commit of the one the
+    driver's record last moved, or None when none was accepted or which was the last is
+    not known. None when HEAD did not move, a look failed, or it is an accepted commit.
+
+    `tasks` are all the task summaries; the caller gives none when they could not all be
+    read. `moments` gives for a task id the whole second its record last moved
+    (`last_progress`). The record keeps its tasks by name and not in the order they were
+    worked, and one task is open at a time, so the accepted task that moved last is the
+    one accepted last; two that moved in the same second are not told apart."""
+    start, end = (get(seen, key) for key in ('start', 'end'))
+    if not all(isinstance(look, dict) and 'error' not in look for look in (start, end)):
+        return None
+    head = end.get('head')
+    if not isinstance(head, str) or not head or head == start.get('head'):
+        return None
+    done = [dict(task=t.get('id'), commit=get(t, 'candidate', 'commit')) for t in tasks
+            if t.get('acceptance') == ACCEPTED and isinstance(get(t, 'candidate', 'commit'), str)]
+    if any(row['commit'] == head for row in done):
+        return None
+    at = [moments.get(row['task']) for row in done]
+    known = done and all(type(moment) is int for moment in at) and at.count(max(at)) == 1
+    return dict(head=head, accepted=len(done), last=done[at.index(max(at))] if known else None)
+
+
 def extract(view, *, previous=None, reader=None):
     reader = reader or Reader(view)
     result = dict(schema=SCHEMA, shift_id=view.shift.name, repo=str(view.repo), status='partial',
                   grant=None, actual_window=unknown('no retained host closeout'), tasks=[], actions=[],
-                  direction=None, blockers=[], next_owner='developer', not_started=None, driver_notes=None, last_activity=None, metrics={}, delta={}, inputs=[], issues=[],
+                  direction=None, blockers=[], next_owner='developer', not_started=None, driver_notes=None, last_activity=None,
+                  stop=None, head_unaccepted=None, metrics={}, delta={}, inputs=[], issues=[],
                   limits=['Only what the kept files claim, and whether those files are intact. No signature, commit, '
                           'test or code quality was checked again.',
                           'Writing this report ran no command, agent or network call. Nothing is assumed to have been '
@@ -349,7 +476,7 @@ def extract(view, *, previous=None, reader=None):
                           'where they were kept.',
                           "A seat's log holds what that seat's CLI printed, which for some CLIs is only its final "
                           'message. sortie-kit does not record what a seat ran.'])
-    state, prior, closed, summarized = None, None, None, False
+    state, prior, closed, summarized, ledger = None, None, None, False, []
     try:
         grant_raw = reader.read('grant.json', optional=True)
         grant = reader.document('grant.json', optional=True) if grant_raw is not None else reader.document('grant.draft.json')
@@ -453,13 +580,28 @@ def extract(view, *, previous=None, reader=None):
             if get(state.get('review'), 'running'):
                 reader.issue('driver-state.json', 'a review is recorded as started with no recorded end; '
                                                   'whether its process still runs is unknown')
-        for name in ('preparation-error.txt', 'STOP'):
-            if reader.read(name, optional=True) is not None:
-                reader.issue(name, 'retained failure/withdrawal evidence; see input hash')
+        if reader.read('preparation-error.txt', optional=True) is not None:
+            reader.issue('preparation-error.txt', 'retained failure/withdrawal evidence; see input hash')
+        marker = reader.read('STOP', optional=True)
+        if marker is not None:
+            # `sortie stop` is the one writer of this file, and what it writes is whole evidence
+            # of a withdrawal by the developer: not damage, and nothing is missing for it. Any
+            # other content withdraws the shift as well and is not known to be that command's.
+            if stop_marker(marker):
+                result['stop'] = dict(by='developer')
+            else:
+                reader.issue('STOP', STOP_OTHER)
         if previous:
             if previous in ('report.json', 'closeout.json', 'driver-state.json'):
                 raise Refused('prior report must be a distinct retained input')
             prior = reader.document(previous)
+        if summarized:
+            # Last, when everything of the shift was read: what lies in receipts/ unconsumed
+            # is not the shift's evidence and takes nothing from the bounds on it.
+            for identity, rows in untaken(reader, state, view.shift.name, ledger).items():
+                for summary in result['tasks']:
+                    if summary['id'] == identity:
+                        summary['untaken'] = rows
     except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
         reader.issue('report extraction', exc)
     # What the host saw of the repository at its start and end (closeout `repo`):
@@ -493,8 +635,13 @@ def extract(view, *, previous=None, reader=None):
     result['inputs'] = list(reader.inputs.values())
     result['status'] = 'partial' if reader.issues else 'evidence summarized'
     result['blockers'] = [dict(task=t['id'], stage=t.get('stage'), reason=t.get('reason') or t['acceptance'],
-                               next_owner=t.get('next_owner') or 'developer')
+                               next_owner=t.get('next_owner') or 'developer',
+                               **(dict(untaken=[row['path'] for row in t['untaken']]) if t.get('untaken') else {}))
                           for t in result['tasks'] if t['acceptance'] != ACCEPTED]
+    if summarized and seen is not None and result['actual_window'].get('repo') is not None:
+        # Only from a closeout the report took, as for what was left uncommitted.
+        result['head_unaccepted'] = head_unaccepted(seen, result['tasks'], {
+            identity: get(task, 'last_progress') for identity, task in state['tasks'].items()})
     if reader.issues:
         result['blockers'].append(dict(task=None, next_owner='developer', reason=LIMIT_BLOCKER if only_limits(reader.issues)
                                        else 'missing/damaged/incomplete evidence; inspect issues'))
@@ -613,7 +760,7 @@ SLEPT = 60  # seconds the two stamps of a closeout may be further apart than the
 OPEN_KEPT = 256  # findings left open that the report lists; the rest are counted
 
 
-OPEN_UNKNOWN = dict(count=None, items=[], more=0, unread=0)  # the tasks could not be read in full
+OPEN_UNKNOWN = dict(count=None, items=[], more=0, unread=0, unaccepted=0)  # the tasks could not be read in full
 
 
 def open_findings(tasks):
@@ -638,9 +785,13 @@ def open_findings(tasks):
 
     `tasks` are the task summaries of `extract`. Returns `count`: how many there
     are, `items`: those listed (at most OPEN_KEPT), `more`: how many the receipts
-    hold beyond the listed, and `unread`: accepted reviews whose receipt could
-    not be read, so that their findings are not known."""
-    items, total, unread = [], 0, 0
+    hold beyond the listed, `unread`: accepted reviews whose receipt could
+    not be read, so that their findings are not known, and `unaccepted`: how
+    many of the count are on a task that was not accepted locally. A review
+    that ended in ACCEPT is not an accepted task: the review of a plan accepts
+    a plan, and a task whose candidate was accepted may be kept without the
+    evidence that backs it. Each item says which with `task_accepted`."""
+    items, total, unread, unaccepted = [], 0, 0, 0
     listed = lambda node, name: [x for x in get(node, name) or [] if isinstance(x, dict)] if isinstance(get(node, name), list) else []
     readable = lambda row: row.get('integrity') == 'matched' and isinstance(row.get('data'), dict)
 
@@ -678,6 +829,7 @@ def open_findings(tasks):
                 and (r.get('role') == 'reviewer' or not readable(r))]
         numbers = {get(r, 'receipt', 'path'): get(r, 'review')
                    for r in (task.get('reviews') if isinstance(task.get('reviews'), list) else []) if isinstance(r, dict)}
+        task_accepted = task.get('acceptance') == ACCEPTED
         for at, row in enumerate(rows):
             ref = row['reference']
             if not readable(row):
@@ -703,10 +855,16 @@ def open_findings(tasks):
                                       claim=get(was, 'claim') if was else reason, earlier=True))
             count = last.get('findings_count') if type(last.get('findings_count')) is int else 0
             # What the receipt holds beyond the findings the report keeps of one review.
-            total += len(found) + max(0, count - len(listed(last, 'findings')))
+            here = len(found) + max(0, count - len(listed(last, 'findings')))
+            total += here
+            unaccepted += 0 if task_accepted else here
             items += [dict(task=task.get('id'), review=numbers.get(ref.get('path')), stage=ref.get('stage'),
-                           round=ref.get('round'), receipt=ref.get('path'), **f) for f in found]
-    return dict(count=total, items=items[:OPEN_KEPT], more=total - min(len(items), OPEN_KEPT), unread=int(unread))
+                           round=ref.get('round'), receipt=ref.get('path'), **f, task_accepted=task_accepted) for f in found]
+    return dict(count=total, items=items[:OPEN_KEPT], more=total - min(len(items), OPEN_KEPT), unread=int(unread),
+                unaccepted=unaccepted)
+
+
+OPEN_HEAD = 'Findings left open by reviews that ended in ACCEPT'  # the heading, and the Outcome line
 
 
 def open_words(found):
@@ -714,8 +872,8 @@ def open_words(found):
     shift whose reviews were not the host's."""
     if not isinstance(found, dict):
         return None, []
-    head = ['## Findings left open on accepted work', '']
-    line = '- Findings left open on accepted work: '
+    head = ['## ' + OPEN_HEAD, '']
+    line = '- ' + OPEN_HEAD + ': '
     if type(found.get('count')) is not int:
         return (line + "not known, because the tasks could not be read in full or were left out of this report.",
                 head + ["Not known: the driver's record of the tasks could not be read in full, or the tasks were "
@@ -726,18 +884,28 @@ def open_words(found):
     more, unread = number('more'), number('unread')
     total = len(items) + more
     lost = (count_words(unread, 'accepted review') + ', whose receipt could not be read') if unread else ''
+    # Of a kept report from before this number existed, nothing is said: not known is not none.
+    apart = min(number('unaccepted'), total)
     if total:
         line += str(total) + '. They are listed under that heading below.' + (' Not known for ' + lost + '.' if lost else '')
+        line += (' Of these, ' + str(apart) + (' is' if apart == 1 else ' are') + ' on a task that was not accepted locally.'
+                 if apart else '')
     else:
         line += 'not known for ' + lost + '; none in the others.' if lost else 'none.'
     out = head
+    told = 'unaccepted' in found or any(type(f.get('task_accepted')) is bool for f in items)
     if total:
         out += ['Each is a finding that a review which ended in ACCEPT left open, and that no later review marked '
-                'resolved. The task went on all the same, and nobody was asked to act on it.', '']
+                'resolved. The task went on all the same, and nobody was asked to act on it. An ACCEPT here is the '
+                'verdict of one review, of a plan or of a candidate, and not the acceptance of a task: which tasks '
+                'were accepted is the "Tasks" line under Outcome'
+                # A report kept from before the findings were told apart by task says so, and marks none.
+                + (', and a finding on a task that was not is marked.' if told else '. This report does not say which '
+                   'of the findings below are on a task that was not accepted.'), '']
     stage = {'plan_review': 'of the plan', 'review': 'of the candidate'}
     carried = lambda f: ', raised by an earlier review and not resolved in this one' if f.get('earlier') is True else ''
-    out += ['- ' + plain(f.get('task'), 60) + ', ' + ('review ' + plain(f.get('review')) if f.get('review') is not None
-                                                     else 'a review') + ' '
+    out += ['- ' + plain(f.get('task'), 60) + (' (task not accepted)' if f.get('task_accepted') is False else '') + ', '
+            + ('review ' + plain(f.get('review')) if f.get('review') is not None else 'a review') + ' '
             + stage.get(f.get('stage'), plain(f.get('stage'))) + ' (round ' + plain(f.get('round')) + '), '
             + plain(f.get('id'), 40) + ' (' + plain(f.get('severity'), 20) + carried(f) + ')'
             + (' at ' + plain(f.get('location'), 200) if f.get('location') is not None else '') + ': '
@@ -1025,6 +1193,41 @@ STAGE_WORDS = {
     'accepted': 'accepted but not closed', 'closed': 'accepted and closed', 'blocked': 'blocked'}
 PHASE_WORDS = {'ack': 'acknowledgment', 'plan': 'plan', 'plan_review': 'review of the plan',
                'build': 'build', 'review': 'review of the candidate', 'stop': 'seat stop'}
+
+
+# A stage that waits for a receipt, when one for the open request lies in receipts/ unconsumed.
+UNTAKEN_WORDS = {'ack': "the builder's acknowledgment was handed in and not taken up",
+                 'plan': 'a plan was handed in and not taken up', 'build': 'a build was handed in and not taken up'}
+
+
+def stage_words(stage, paths):
+    """Where a task stopped. `paths`: the receipts handed in for its open request and
+    never consumed; with any, the stage is not said to be waiting for one."""
+    paths = [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else []
+    if not isinstance(stage, str):
+        return plain(stage)  # a kept stage of another type is no key
+    if paths and stage in UNTAKEN_WORDS:
+        return UNTAKEN_WORDS[stage] + ' (' + ', '.join(plain(p, PATH) for p in paths) + ')'
+    return STAGE_WORDS.get(stage, plain(stage))
+
+
+def untaken_words(task):
+    """The lines of a task for receipts handed in and never consumed, or []."""
+    rows = [r for r in task.get('untaken') or [] if isinstance(r, dict)] if isinstance(task.get('untaken'), list) else []
+    if not rows:
+        return []
+    lines = ['- Handed in and not taken up: a receipt for the open request is in receipts/ and the driver never '
+             'consumed it, so the host checked nothing of it and no review of it was started. What it says is '
+             "the builder's own report, read from the file as it is now:"]
+    for row in rows:
+        stage, data = row.get('stage'), row.get('data')
+        stage = stage if isinstance(stage, str) else plain(stage)
+        said = ('commit ' + plain(get(data, 'commit')) if stage == 'build' else plain(get(data, 'plan', 'path'), PATH)
+                if stage == 'plan' else plain(get(data, 'status')))
+        lines.append('  - ' + plain(row.get('path'), PATH) + ': ' + PHASE_WORDS.get(stage, plain(stage)) + ', round '
+                     + plain(row.get('round')) + (': ' + said + '.' if isinstance(data, dict)
+                                                  else '; what it says is left out of this report at its size limit.'))
+    return lines
 
 
 def plain(value, limit=TEXT_SHOWN):
@@ -1420,7 +1623,8 @@ def task_words(task, headless=False, policy=None):
                      + ' Treat it as not accepted until someone has looked.')
     else:
         lines.append('- Result: not accepted (' + plain(task.get('acceptance')) + '). It stopped at: '
-                     + STAGE_WORDS.get(stage, plain(stage)) + '.')
+                     + stage_words(stage, [get(row, 'path') for row in task.get('untaken') or []]
+                                   if isinstance(task.get('untaken'), list) else None) + '.')
         if task.get('candidate') is not None:
             lines.append('- Last candidate: ' + target_words(task.get('candidate')) + '.')
     if get(task, 'plan', 'artifact', 'path'):
@@ -1438,6 +1642,7 @@ def task_words(task, headless=False, policy=None):
         lines += ['  - ' + receipt_words(item, receipts_kept) for item in handed]
     else:
         lines.append('- The builder handed in nothing the driver consumed.')
+    lines += untaken_words(task)
     if host_reviews:
         waiting = unreviewed_words(task)
         if waiting:
@@ -1486,7 +1691,7 @@ def undone_words(blocker):
     stage = get(blocker, 'stage')
     line = 'Task ' + plain(task) + ': not accepted.'
     if stage is not None:
-        line += ' It stopped at: ' + STAGE_WORDS.get(stage, plain(stage)) + '.'
+        line += ' It stopped at: ' + stage_words(stage, get(blocker, 'untaken')) + '.'
     if reason and reason != 'acceptance missing':
         line += ' Last recorded reason: ' + plain(reason, 1000).rstrip('.') + '.'
     return line
@@ -1794,7 +1999,9 @@ def markdown(doc, sha):
               else 'partial. Some evidence is missing or damaged; see "Problems with the evidence"') + '.'
     out.append('- Status: ' + (unclear + '; see the line above. ' + status[:1].upper() + status[1:] if unclear else status))
     reason = window.get('reason') or doc.get('reason')
-    out.append('- How it ended: ' + (plain(reason, 2000) if reason else 'not recorded.'))
+    stopped = withdrawn_words(doc.get('stop'), reason)
+    out.append('- How it ended: ' + ((plain(reason, 2000).rstrip('.') + '.' if stopped else plain(reason, 2000)) if reason
+                                     else 'not recorded.') + stopped)
     if 'elapsed_seconds' in window:
         out.append('- Ran for ' + seconds_words(window.get('elapsed_seconds')) + ', from ' + plain(window.get('start'))
                    + ' to ' + plain(window.get('end')) + '.')
@@ -1825,6 +2032,16 @@ def markdown(doc, sha):
     noted, notes_section = notes_words(doc.get('driver_notes'))
     out.append(noted)
     out += head_words(window.get('repo'))
+    moved = doc.get('head_unaccepted')
+    if isinstance(moved, dict):
+        last, count = moved.get('last'), moved.get('accepted')
+        out.append('- **HEAD when the shift ended is not a commit this shift accepted**: '
+                   + ('the last commit accepted in this shift is ' + plain(get(last, 'commit'), 64) + ' (task '
+                      + plain(get(last, 'task'), 60) + ').'
+                      if isinstance(get(last, 'commit'), str) and isinstance(get(last, 'task'), str)
+                      else 'no commit was accepted in this shift.' if type(count) is int and count == 0
+                      else 'it is none of the commits accepted in this shift (see "Tasks" above); which of them was '
+                           'accepted last is not known from the kept state.'))
     out += unclean_words(window.get('repo'))
     out.append('- Next: ' + plain(doc.get('next_owner')) + '.')
     out += ['', '## What was asked', '']
@@ -1963,6 +2180,7 @@ def write(view, *, previous=None):
                    delta={k: unknown('output limit') for k in doc['delta']})
         doc.pop('reason', None)
         doc['not_started'] = doc['driver_notes'] = doc['last_activity'] = None
+        doc['head_unaccepted'] = doc['stop'] = None  # of tasks and of an ending this form no longer holds
         if doc.get('open_findings') is not None:
             doc['open_findings'] = dict(OPEN_UNKNOWN, items=[])  # the tasks are dropped, and a list of their findings with them
         if doc.get('requirements_unchecked') is not None:

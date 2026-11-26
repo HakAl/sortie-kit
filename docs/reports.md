@@ -118,10 +118,14 @@ clickable. If the readable part cannot be built from what was kept, a short
 - `open_findings`: the findings that a review which ended in ACCEPT left
   open and that no later review marked resolved: `count` (how many there
   are), `items` (those listed, at most 256, each with `task`, `review`,
-  `stage`, `round`, `receipt`, `id`, `severity`, `location`, `claim` and
-  `earlier`), `more` (how many of the count are not listed: the report keeps
-  16 findings of one review) and `unread` (accepted reviews whose receipt
-  could not be read). There are two kinds. The accepting review's own
+  `stage`, `round`, `receipt`, `id`, `severity`, `location`, `claim`,
+  `earlier` and `task_accepted`), `more` (how many of the count are not
+  listed: the report keeps 16 findings of one review), `unread` (accepted
+  reviews whose receipt could not be read) and `unaccepted` (how many of the
+  count are on a task that was not accepted locally). A review that ended in
+  ACCEPT is not an accepted task: the review of a plan accepts a plan, and
+  the shift may end before the task is built. `task_accepted` is true only
+  for a task the report counts as accepted locally. There are two kinds. The accepting review's own
   findings have `earlier` false. An earlier finding that the accepting
   review was asked about and answered as not resolved, which an ACCEPT may
   do for a minor one, has `earlier` true; its `location` and `claim` are
@@ -129,7 +133,9 @@ clickable. If the readable part cannot be built from what was kept, a short
   it, and when that receipt cannot be read or the report did not keep that
   finding of it, `location` is `null` and `claim` is the reviewer's reason. An ACCEPT moves the task on whatever was left
   open and nobody is asked to act on it, so `report.md` gives the number
-  under Outcome and lists each under "Findings left open on accepted work".
+  under Outcome and lists each under "Findings left open by reviews that
+  ended in ACCEPT"; the Outcome line says how many are on a task that was
+  not accepted, and each of those is marked "(task not accepted)".
   A finding counts as resolved when any later review of the same task and
   stage, whose last attempt completed, was asked about it and answered that
   it is; the host hands on no finding of an ACCEPT today, so each one is
@@ -201,6 +207,33 @@ clickable. If the readable part cannot be built from what was kept, a short
   failed, or it was not finished (`complete` false: the look at the start
   was cut, or the Git command was). Commits on a branch that HEAD is not on
   at the end are not looked at.
+- `head_unaccepted`: `null`, or `{head, accepted, last}` when HEAD moved
+  during the shift and is, at the end, not the candidate of a task accepted
+  locally. `accepted` is how many tasks were accepted locally. `last` is the
+  task and commit of the accepted task whose record moved last
+  (`last_progress` in `driver-state.json`, in whole seconds; one task is
+  open at a time, so that is the one accepted last), or `null` when none
+  was accepted or two moved in the same second. `report.md` then has one
+  more Outcome line, "HEAD when the shift ended is not a commit this shift
+  accepted", with that commit, or saying that none was accepted, or that
+  which was the last is not known: a builder's commit that no review accepted is on top, as when a
+  shift ends in a repair round. It is `null` when HEAD did not move, when a
+  look failed, when the report did not take the closeout, and when not
+  every task of the driver's record could be read. Only the commit at HEAD is compared; whether it holds an accepted
+  commit in its history is not looked at.
+- `stop`: `{by: "developer"}` when the shift folder holds the `STOP` marker
+  with the very bytes `sortie stop` writes, else `null`. That marker is whole
+  evidence of a withdrawal and no problem with the evidence: it is not
+  listed under "Problems with the evidence" and does not make the status
+  partial. "How it ended" keeps the host's reason and adds who withdrew the
+  shift. The host has one reason for a withdrawal, a changed source and a
+  file it could not read (`admitted scope unavailable, changed, or
+  withdrawn`); beside that reason the line says that the developer withdrew
+  the shift and that the reason does not say which of the three the host
+  saw. Beside any other reason it says only that `sortie stop` was also
+  run, since the command may have been run after the host had ended. A
+  `STOP` file with any other content withdraws the shift as well; whose it
+  is is not known, and it stays listed as a problem.
 - `leftovers`, present when the closeout has `repo`: `new` holds the `end`
   rows that `start` did not have, `before` counts the `end` rows that were
   already there, and `known` is false when the look at the end failed or was
@@ -281,7 +314,26 @@ clickable. If the readable part cannot be built from what was kept, a short
   `cessation` in `report.json` is unchanged;
   input SHA256/byte counts, damaged or missing evidence, blockers and next owner. A blocker row carries the `stage` at which its
   task stopped; `report.md` names that first and any reason still recorded
-  second. A repair reason is cleared when a later receipt advances the task,
+  second. A task that is not accepted and stands at a stage that waits for
+  a receipt of the builder (`ack`, `plan`, `build`) may have `untaken`: the
+  receipts in `receipts/` that no task record names and that are, as the
+  files are now, a builder's receipt of this shift, this task, its open
+  request, its round and that phase, at the path a receipt of its id has
+  (`receipts/ID.json`) and with no entry in the consumed ledger (at most 4,
+  each with `path`, `sha256`, `stage`, `round` and `data`). The report looks
+  for them last, when everything of the shift was read: at most 64 unnamed
+  files, none over 1 MiB, and no further one once more than 4 MiB of them
+  were read, so 5 MiB at most, counted against none of the bounds on the
+  shift's own files. Only a receipt that is named is listed among the inputs, and one
+  whose `data` does not fit the bound on details is named with `data` null.
+  The builder wrote such a receipt and the driver never consumed it, so the
+  host checked nothing of it and no review of it ran. `report.md` then says
+  the task stopped at "a build was handed in and not taken up" with the
+  path, where it would have said "waiting for the build", lists the receipt
+  under "Handed in and not taken up" as the builder's own report, and the
+  blocker row carries the paths as `untaken`. A file there that cannot be
+  read as such a receipt is passed over and is no problem of the evidence:
+  nothing of the shift rests on it. A repair reason is cleared when a later receipt advances the task,
   so an old one is not read as the cause. A receipt the driver returned (a
   CHANGES review, for example) is kept in the consumed ledger with
   `satisfies_phase` false, which reserves its phase slot. The report's

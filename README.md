@@ -34,7 +34,7 @@ what it does not claim.
 [...]
 - Ran for 9m 18s, from 2026-11-24T04:13:06.500076+00:00 to 2026-11-24T04:22:24.664376+00:00.
 [...]
-- Findings left open on accepted work: 4. They are listed under that heading below.
+- Findings left open by reviews that ended in ACCEPT: 4. They are listed under that heading below.
 [...]
 ### version-flag (feature): accepted locally
 - Result: accepted locally. The host's review of commit 6a125673c15f0b4df2f812f362b9bb06f19cfa7e ended in ACCEPT, and the review receipt the host wrote for it is kept, intact and in the consumed ledger. Nothing here shows it was pushed or merged.

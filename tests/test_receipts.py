@@ -840,5 +840,10 @@ class ReceiptTests(LocalTest):
                      "`set-aside` it with the developer as next owner and that reason, and brief the next task",
                      "accepted work that breaks a line direction.md states"):
             self.assertIn(part, text)
+        # Work handed in and not consumed is at none of the three places: it is consumed and
+        # reviewed first. A driver once left such a receipt and finished, and nobody reviewed it.
+        self.assertIn("Work the builder handed in that you have not consumed yet is at none of these places: "
+                      "`consume` it first and let the host's review run, also when its receipt already tells you "
+                      "of the breach", text)
         # The example of a note is a choice the direction leaves open, not a mismatch with it.
         self.assertNotIn("I went on with the plan as accepted", text)

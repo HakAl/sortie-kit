@@ -919,6 +919,266 @@ class ReportTests(LocalTest):
         undone=self.text().split('## Not done',1)[1].split('## ',1)[0]
         self.assertIn('Task task: not accepted. It stopped at: waiting for the build. While the shift ran, the task was recorded as waiting on',undone)
 
+    def handed_in(self,name='late-build',phase='build',**changes):
+        """A receipt in receipts/ that no task record names: written, never consumed."""
+        value=decode(kept_v2(phase+'-v2.json'))
+        value.update(receipt_id=name,shift_id='current',task_id='task',request_id=self.task['request_id'],role='builder',
+                     round=self.task['round'],brief=self.brief)
+        if phase=='build':
+            value['data']['commit']='b'*40;value['data']['checks'][0]['output']=self.artifact('logs/late.txt','reported pass')
+        value.update(changes)
+        raw=receipts.encoded(value);path='receipts/'+name+'.json';(self.shift/path).write_bytes(raw)
+        return dict(path=path,sha256=receipts.digest(raw),stage=phase,round=value['round'],data=value['data'])
+
+    def test_a_receipt_handed_in_for_the_open_request_and_never_consumed_is_named_and_not_called_waiting(self):
+        # As on a real shift: the builder wrote its round 2 build receipt, the driver finished
+        # without consuming it, and the report said the task was waiting for the build.
+        self.task.update(stage='build',accepted=None,round=2,reason='Address F1'); self.store()
+        late=self.handed_in()
+        doc=self.generate(); text=(self.shift/'report.md').read_text()
+        self.assertEqual(doc['tasks'][0]['untaken'],[late])
+        self.assertEqual(doc['blockers'][0]['untaken'],[late['path']])
+        self.assertEqual([i for i in doc['issues'] if 'late' in i['path']],[])
+        self.assertIn(late['path'],[i['path'] for i in doc['inputs']])
+        stopped='It stopped at: a build was handed in and not taken up (receipts/late-build.json).'
+        self.assertIn('- Result: not accepted (acceptance missing). '+stopped,text)
+        self.assertIn('Task task: not accepted. '+stopped+' Last recorded reason: Address F1.',
+                      text.split('## Not done',1)[1].split('## ',1)[0])
+        self.assertNotIn('waiting for the build',text)
+        self.assertIn('- Handed in and not taken up: a receipt for the open request is in receipts/ and the driver never '
+                      'consumed it, so the host checked nothing of it and no review of it was started. What it says is '
+                      "the builder's own report, read from the file as it is now:\n"
+                      '  - receipts/late-build.json: build, round 2: commit '+'b'*40+'.',text)
+
+    def test_only_a_receipt_of_the_open_request_round_and_phase_is_named_as_handed_in_and_not_taken_up(self):
+        self.task.update(stage='build',accepted=None,round=2,reason=''); self.store()
+        for name,changes in (('other-request',dict(request_id='0'*32)),('other-round',dict(round=1)),
+                             ('other-task',dict(task_id='another')),('other-shift',dict(shift_id='earlier')),
+                             ('not-the-builder',dict(role='reviewer'))):
+            self.handed_in(name,**changes)
+        self.handed_in('a-stop','stop')
+        (self.shift/'receipts/not-json.json').write_text('{')
+        (self.shift/'receipts/notes.txt').write_text('not a receipt')
+        doc=self.generate(); text=(self.shift/'report.md').read_text()
+        self.assertNotIn('untaken',doc['tasks'][0])
+        self.assertNotIn('untaken',doc['blockers'][0])
+        self.assertIn('It stopped at: waiting for the build.',text)
+        self.assertNotIn('not taken up',text)
+        # What nobody consumed is no evidence of the shift: a file that cannot be read as a receipt is no problem of it.
+        self.assertEqual(doc['issues'],[])
+        # A task that is accepted waits for nothing, whatever lies in receipts/.
+        self.task.update(stage='closed',round=0,accepted=dict(candidate=self.task['candidate'],receipt=self.task['receipts'][1]))
+        self.store(); self.handed_in()
+        doc=self.generate()
+        self.assertEqual((doc['tasks'][0]['acceptance'],doc['tasks'][0].get('untaken')),(report.ACCEPTED,None))
+
+    def test_a_plan_or_an_acknowledgment_handed_in_and_not_taken_up_is_named_at_its_stage(self):
+        self.task.update(stage='repair_needed',accepted=None); self.store()  # not a stage that waits for a receipt
+        self.handed_in('late-stop','stop')
+        self.assertNotIn('untaken',self.generate()['tasks'][0])
+        for stage,phase,words,said in (
+                ('plan','plan','a plan was handed in and not taken up','plan, round 0: briefs/plan.md.'),
+                ('ack','acknowledgment',"the builder's acknowledgment was handed in and not taken up",
+                 'acknowledgment, round 0: acknowledged.')):
+            self.task.update(stage=stage); self.store()
+            late=self.handed_in('late-'+stage,phase)
+            doc=self.generate(); text=(self.shift/'report.md').read_text()
+            self.assertEqual(doc['tasks'][0]['untaken'],[dict(late,stage=stage)])
+            self.assertIn('It stopped at: '+words+' (receipts/late-'+stage+'.json).',text)
+            self.assertIn('  - receipts/late-'+stage+'.json: '+said,text)
+
+    def test_a_shift_the_developer_stopped_says_who_stopped_it_and_is_not_called_damaged(self):
+        # A shift stopped by hand read as damage: status partial, and under the problems
+        # "STOP: retained failure/withdrawal evidence".
+        from sortie_kit import grants
+        grants.stop(self.shift)
+        with self.no_external(): self.driver.finish('admitted scope unavailable, changed, or withdrawn')
+        doc=decode((self.shift/'report.json').read_bytes()); text=(self.shift/'report.md').read_text()
+        self.assertEqual((doc['status'],doc['issues'],doc['stop']),('evidence summarized',[],dict(by='developer')))
+        self.assertIn('STOP',[i['path'] for i in doc['inputs']])
+        self.assertIn('- Status: no problem was found with the evidence that was read.',text)
+        self.assertIn('- How it ended: admitted scope unavailable, changed, or withdrawn. The developer withdrew the shift '
+                      'with `sortie stop`: the marker that command writes is in the shift folder. The reason the host '
+                      'gave names three causes and does not say which it saw.\n',text)
+        self.assertIn('## Problems with the evidence\n\nNone found.',text)
+        # The marker beside a shift that ended for another reason: said, and not as the cause.
+        with self.no_external(): self.driver.finish('selected work complete')
+        text=(self.shift/'report.md').read_text()
+        self.assertIn('- How it ended: selected work complete. `sortie stop` was also run on this shift: the marker that '
+                      'command writes is in the shift folder.\n',text)
+        self.assertEqual(decode((self.shift/'report.json').read_bytes())['status'],'evidence summarized')
+
+    def test_a_stop_marker_that_is_not_the_one_the_command_writes_stays_a_problem(self):
+        # Only the bytes the command writes: a document that merely reads as equal is not known to be its.
+        for raw in ('{}','{"reason":"developer stop","version":2}','{"reason":"developer stop","version":1,"more":1}','not json',
+                    '{"reason":"developer stop","version":true}\n','{"reason":"developer stop","version":1.0}\n',
+                    '{"version":1,"reason":"developer stop"}\n','{"reason": "developer stop", "version": 1}\n'):
+            with self.subTest(raw=raw):
+                (self.shift/'STOP').write_text(raw)
+                doc=self.generate(); text=(self.shift/'report.md').read_text()
+                self.assertEqual((doc['status'],doc['stop']),('partial',None))
+                self.assertEqual(doc['issues'],[dict(path='STOP',reason='a STOP marker that is not the one `sortie stop` '
+                                                     'writes; it withdraws the shift all the same; see input hash')])
+                self.assertNotIn('The developer withdrew',text)
+                self.assertNotIn('was also run',text)
+        (self.shift/'STOP').unlink()
+        doc=self.generate()
+        self.assertEqual((doc['status'],doc['stop']),('evidence summarized',None))
+        self.assertIn('- How it ended: ',(self.shift/'report.md').read_text())
+
+    def test_the_outcome_says_when_head_at_the_end_is_not_a_commit_this_shift_accepted(self):
+        def ended(start,end):
+            self.driver.repo=dict(start=dict(head=start,changes=[],truncated=False),
+                                  end=end if isinstance(end,dict) else dict(head=end,changes=[],truncated=False))
+            with self.no_external(): self.driver.finish('done')
+            return decode((self.shift/'report.json').read_bytes()),(self.shift/'report.md').read_text()
+        lead='- **HEAD when the shift ended is not a commit this shift accepted**: '
+        # The accepted commit of the fixture is aaaa; a commit on top of it was never reviewed.
+        doc,text=ended('c'*40,'b'*40)
+        self.assertEqual(doc['head_unaccepted'],dict(head='b'*40,accepted=1,last=dict(task='task',commit='a'*40)))
+        outcome=text.split('## Outcome')[1].split('## What was asked')[0]
+        self.assertIn('- Repository HEAD: '+'c'*40+' when the shift began, '+'b'*40+' when it ended.\n'
+                      +lead+'the last commit accepted in this shift is '+'a'*40+' (task task).\n',outcome)
+        # HEAD at an accepted commit, HEAD that did not move, and a look that failed: no such line.
+        for start,end in (('c'*40,'a'*40),('b'*40,'b'*40),('c'*40,dict(error='git did not answer'))):
+            doc,text=ended(start,end)
+            self.assertIsNone(doc['head_unaccepted'],(start,end))
+            self.assertNotIn(lead,text)
+        # Nothing accepted, and HEAD moved.
+        self.task.update(stage='build',accepted=None); self.store()
+        doc,text=ended('c'*40,'b'*40)
+        self.assertEqual(doc['head_unaccepted'],dict(head='b'*40,accepted=0,last=None))
+        self.assertIn(lead+'no commit was accepted in this shift.\n',text)
+        # Without every task of the driver's record, which commits were accepted is not known: no line.
+        (self.shift/'driver-state.json').write_text('{')
+        doc=self.generate()
+        self.assertIsNone(doc['head_unaccepted'])
+        self.assertNotIn(lead,(self.shift/'report.md').read_text())
+
+    def test_files_in_receipts_that_nobody_consumed_take_nothing_from_the_bounds_of_the_evidence(self):
+        # A seat can write what it likes into receipts/. Looking there for a receipt not taken up
+        # must not cost the report a file of the shift's own, nor list what it passed over.
+        from sortie_kit import grants
+        grants.stop(self.shift)
+        self.task.update(stage='build',accepted=None,round=2,reason=''); self.store()
+        whole=self.generate()
+        self.assertEqual((whole['status'],whole['stop']),('evidence summarized',dict(by='developer')))
+        for n in range(8):
+            (self.shift/('receipts/junk-%d.json'%n)).write_text('{"n": %d}'%n)
+        late=self.handed_in()
+        with patch.object(report,'MAX_FILES',len(whole['inputs'])):  # room for the shift's own files and no more
+            doc=self.generate()
+        self.assertEqual((doc['status'],doc['issues'],doc['stop']),('evidence summarized',[],dict(by='developer')))
+        self.assertEqual([r['path'] for r in doc['tasks'][0]['untaken']],[late['path']])
+        named=[i['path'] for i in doc['inputs']]
+        self.assertEqual([p for p in named if 'junk' in p],[])
+        self.assertIn(late['path'],named)  # what the report repeats of a file is listed with its hash
+        self.assertEqual(sorted(set(named)-{late['path']}),sorted(i['path'] for i in whole['inputs']))
+
+    def test_a_receipt_not_taken_up_that_does_not_fit_the_bound_on_details_is_named_without_them(self):
+        self.task.update(stage='build',accepted=None,round=2,reason=''); self.store()
+        late=self.handed_in()
+        fits=self.generate()
+        self.assertEqual(fits['issues'],[])
+        with patch.object(report,'DETAIL_LIMIT',0):
+            with report.channels.locked(self.shift,'driver.lock',seconds=3,local_only=True) as view:
+                reader=report.Reader(view)
+                state=decode((self.shift/'driver-state.json').read_bytes())
+                rows=report.untaken(reader,state,'current',[])
+        self.assertEqual(rows,{'task':[dict(late,data=None)]})
+        self.assertEqual(reader.issues,[])  # no detail of the shift's evidence was left out
+        text='\n'.join(report.untaken_words(dict(untaken=rows['task'])))
+        self.assertIn('  - receipts/late-build.json: build, round 2; what it says is left out of this report at its size limit.',text)
+
+    def test_a_file_that_is_not_where_a_receipt_of_its_id_belongs_or_is_in_the_ledger_is_not_called_not_taken_up(self):
+        self.task.update(stage='build',accepted=None,round=2,reason=''); self.store()
+        # A draft or a copy: the host takes a receipt only from receipts/ID.json.
+        late=self.handed_in('draft',receipt_id='another-id')
+        self.assertNotIn('untaken',self.generate()['tasks'][0])
+        (self.shift/late['path']).unlink()
+        # One the ledger holds was checked by the host, whatever the driver's record says of it.
+        late=self.handed_in()
+        self.entries.append(dict(receipt_id='late-build',slot='0'*64,sha256=late['sha256'],satisfies_phase=True)); self.store()
+        self.assertNotIn('untaken',self.generate()['tasks'][0])
+        self.entries.pop(); self.store()
+        self.assertEqual(self.generate()['tasks'][0]['untaken'],[late])
+        # A record whose round is not a number, or that is kept under another name than its own, binds nothing.
+        self.task.update(round=True); self.store(); self.handed_in(round=1)
+        self.assertNotIn('untaken',self.generate()['tasks'][0])
+        self.task.update(round=2); self.state['tasks']={'other':self.task}; self.store(); self.handed_in()
+        self.assertEqual([t.get('untaken') for t in self.generate()['tasks']],[None])
+
+    def test_a_stage_or_a_receipt_path_of_another_type_costs_neither_the_rest_of_the_reading_nor_the_readable_report(self):
+        from sortie_kit import grants
+        grants.stop(self.shift)
+        for change in (lambda: self.task.update(stage=[]),lambda: self.task.update(stage={}),
+                       lambda: self.task['receipts'].append(dict(path=[],sha256='0'*64,stage='build',round=0,status='satisfied'))):
+            self.task.update(stage='build',accepted=None); change(); self.store()
+            doc=self.generate(); text=(self.shift/'report.md').read_text()
+            self.assertEqual(doc['stop'],dict(by='developer'),doc['issues'])  # read after the tasks
+            self.assertEqual([i for i in doc['issues'] if i['path']=='report extraction'],[])
+            self.assertIn('## Tasks',text)
+            self.assertNotIn('could not be written',text)
+        # The same in a report.json given to the renderer.
+        doc=dict(tasks=[dict(id='t',stage=[],acceptance='acceptance missing',untaken=[dict(path='receipts/x.json',stage={},round=0,data=[])])],
+                 blockers=[dict(task='t',stage={},untaken=['receipts/x.json',3])])
+        text=report.markdown(doc,'0'*64).decode()
+        self.assertIn('### t (',text)
+        self.assertIn('  - receipts/x.json: ',text)
+
+    def test_head_at_the_end_is_not_said_from_a_closeout_the_report_did_not_take_nor_in_the_short_report(self):
+        from sortie_kit import grants
+        grants.stop(self.shift)
+        self.driver.repo=dict(start=dict(head='c'*40,changes=[],truncated=False),end=dict(head='b'*40,changes=[],truncated=False))
+        with self.no_external(): self.driver.finish('done')
+        doc=decode((self.shift/'report.json').read_bytes())
+        self.assertEqual((doc['head_unaccepted']['head'],doc['stop']),('b'*40,dict(by='developer')))
+        size=max((self.shift/name).stat().st_size for name in ('report.json','report.md'))
+        with patch.object(receipts,'DOCUMENT_LIMIT',size-1),patch.object(report,'DETAIL_SMALL',report.DETAIL_LIMIT):
+            short=self.generate()
+        self.assertIn('output limit',short['issues'][0]['reason'])
+        self.assertEqual((short['head_unaccepted'],short['stop']),(None,None))
+        text=(self.shift/'report.md').read_text()
+        self.assertNotIn('HEAD when the shift ended',text)
+        self.assertNotIn('sortie stop',text)
+        closed=decode((self.shift/'closeout.json').read_bytes())
+        (self.shift/'closeout.json').chmod(0o600)
+        (self.shift/'closeout.json').write_bytes(receipts.encoded(dict(closed,version=2)))
+        doc=self.generate()
+        self.assertEqual(doc['actual_window']['value'],'unknown')
+        self.assertIsNone(doc['head_unaccepted'])
+
+    def test_a_kept_head_entry_of_another_shape_is_not_rendered_as_a_commit_or_as_none_accepted(self):
+        lead='- **HEAD when the shift ended is not a commit this shift accepted**: '
+        unknown=lead+'it is none of the commits accepted in this shift (see "Tasks" above); which of them was accepted last is not known from the kept state.\n'
+        for kept in (dict(head='b'*40,accepted=False,last=None),dict(head='b'*40,accepted=2,last={}),
+                     dict(head='b'*40,accepted=1,last=dict(task=None,commit=3)),dict(head='b'*40)):
+            self.assertIn(unknown,report.markdown(dict(head_unaccepted=kept),'0'*64).decode(),kept)
+        for kept in ([],'x',3):
+            self.assertNotIn(lead,report.markdown(dict(head_unaccepted=kept),'0'*64).decode())
+
+    def test_the_last_accepted_commit_is_the_one_whose_record_moved_last_and_not_the_last_by_name(self):
+        # The record keeps its tasks by name. On a real shift the first of three accepted
+        # tasks, the last by name, was given as the last accepted.
+        seen=dict(start=dict(head='c'*40),end=dict(head='b'*40))
+        task=lambda name,commit,acceptance=report.ACCEPTED: dict(id=name,acceptance=acceptance,candidate=dict(kind='commit',commit=commit))
+        tasks=[task('a-second','d'*40),task('m-third','e'*40),task('z-first','f'*40),task('zz-open','b'*40,'acceptance missing')]
+        moments={'a-second':200,'m-third':300,'z-first':100,'zz-open':400}
+        self.assertEqual(report.head_unaccepted(seen,tasks,moments),
+                         dict(head='b'*40,accepted=3,last=dict(task='m-third',commit='e'*40)))
+        # Two that moved in the same second, and a record without the stamp: which was last is not known.
+        for changed in (dict(moments,**{'a-second':300}),dict(moments,**{'z-first':None}),{}):
+            self.assertEqual(report.head_unaccepted(seen,tasks,changed),dict(head='b'*40,accepted=3,last=None))
+        doc=dict(head_unaccepted=dict(head='b'*40,accepted=3,last=None))
+        self.assertIn('- **HEAD when the shift ended is not a commit this shift accepted**: it is none of the commits '
+                      'accepted in this shift (see "Tasks" above); which of them was accepted last is not known from '
+                      'the kept state.\n',report.markdown(doc,'0'*64).decode())
+        # HEAD at any accepted commit, also one that is not the last, gets no line.
+        self.assertIsNone(report.head_unaccepted(dict(seen,end=dict(head='f'*40)),tasks,moments))
+        # An acceptance the kept evidence does not back is not an accepted commit.
+        self.assertEqual(report.head_unaccepted(seen,[task('one','b'*40,report.UNBACKED)],{'one':1}),
+                         dict(head='b'*40,accepted=0,last=None))
+
     def test_the_direction_is_named_as_the_copy_kept_in_the_shift(self):
         text=self.text()
         self.assertIn("The direction, from the shift's own copy (direction.md in the shift folder, made from the file "
