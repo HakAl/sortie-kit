@@ -1654,7 +1654,7 @@ class RequirementsReportTests(ReviewFixture):
         self.assertIn(self.LINE + "not known for 1 accepted review, whose receipt could not be read or relied on; "
                       "none in the others.\n", self.outcome(text))
         # Nor is none said of the disclosed ones where a list could not be read.
-        self.assertIn(self.TOLD + "none in the lists that could be read; not known for the accepted reviews named in "
+        self.assertIn(self.TOLD + "none in the answers that could be read; not known for the accepted reviews named in "
                       "the line above.\n", self.outcome(text))
         self.assertIn("- What the brief asks for: not known. The receipt of the review that accepted this task could "
                       'not be read; see "Problems with the evidence".\n', text)
@@ -1817,6 +1817,44 @@ class RequirementsReportTests(ReviewFixture):
                          "Said to be not delivered: 0.")
         self.assertTrue(report.requirement_words(task(("a", "met"), ("b", "odd"), ("c", 3)))[0].endswith(
             "Met: 1. Not checked: 0. Said to be not delivered: 0. **Answered otherwise: 2.**"))
+
+    def test_a_kept_list_with_an_answer_the_report_does_not_know_is_never_counted_as_none(self):
+        """A kept review whose list holds a status this report does not know was counted by
+        neither number under Outcome, so both lines could say none beside "Answered otherwise"
+        under the task. Such a review counts among those not known."""
+        from sortie_kit import report
+        def task(*needs):
+            ref = dict(stage="review", status="satisfied", path="receipts/r.json", round=0)
+            last = dict(status="complete", verdict="ACCEPT", requirements_asked=True,
+                        requirements=[dict(asked=a, status=s, where="") for a, s in needs])
+            return dict(id="task", accepted_receipt=ref, review_matched=True,
+                        reviews=[dict(review=4, receipt=dict(path="receipts/r.json"))],
+                        receipts=[dict(reference=ref, role="reviewer", integrity="matched",
+                                       data=dict(outcome="ACCEPT", attempts=[last]))])
+        for odd in ("not_met", "odd", "", 3, None, ["met"], {}):
+            only = task(("a", "met"), ("b", odd))
+            found = report.requirements_unchecked([only])
+            self.assertEqual(found, dict(count=0, items=[], more=0, unasked=0, unread=1), odd)
+            self.assertEqual(report.unchecked_words(found), "- Requirements accepted unchecked: not known for 1 accepted "
+                             "review, whose receipt could not be read or relied on; none in the others.")
+            self.assertEqual(report.disclosed_words(report.requirements_disclosed([only]), found),
+                             "- Requirements accepted as said to be not delivered: none in the answers that could be "
+                             "read; not known for the accepted reviews named in the line above.")
+            # The task still shows the list and how many answers it could not place.
+            self.assertTrue(report.requirement_words(only)[0].endswith("**Answered otherwise: 1.**"), odd)
+        # What such a list does say is counted and listed as before, beside the review that is not known.
+        mixed = task(("a", "met"), ("b", "odd"), ("c", 3), ("d", "not_checked"), ("e", "disclosed"))
+        found = report.requirements_unchecked([mixed])
+        self.assertEqual((found["count"], found["unread"], [i["asked"] for i in found["items"]]), (1, 1, ["d"]))
+        self.assertEqual(report.unchecked_words(found), "- Requirements accepted unchecked: 1. They are listed under "
+                         "each task below. Not known for 1 accepted review, whose receipt could not be read or relied on.")
+        told = report.requirements_disclosed([mixed])
+        self.assertEqual((told["count"], [i["asked"] for i in told["items"]]), (1, ["e"]))
+        self.assertTrue(report.disclosed_words(told, found).endswith(" Not known for the accepted reviews named in the line above."))
+        # One review is counted once, however many such answers it holds; a list of known answers is whole.
+        self.assertEqual(report.requirements_unchecked([mixed, task(("a", "odd"))])["unread"], 2)
+        whole = report.requirements_unchecked([task(("a", "met"), ("b", "not_checked"), ("c", "disclosed"))])
+        self.assertEqual((whole["count"], whole["unread"]), (1, 0))
 
 
 for _class in (HostReviewReportTests, OpenFindingsTests, RequirementsReportTests):

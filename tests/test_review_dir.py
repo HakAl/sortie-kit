@@ -277,6 +277,29 @@ class ReviewDirectoryTests(test_receipts.ReceiptTests):
             self.assertIn(part, said)
         self.assertNotIn("my task", said)
 
+    def test_the_reviewer_is_told_that_the_brief_is_the_whole_task_and_that_two_instruction_files_are_not_shown(self):
+        """On a real shift every reviewer named direction.md, and twice builder.md, as outside
+        its directory and a limit of its review: the brief points at them. They are the
+        driver's and the builder's instructions, and the brief is what is asked of the task."""
+        for kind, target in (("plan", dict(kind="plan", artifact=dict(path="briefs/plan.md", sha256="0" * 64))),
+                             ("commit", dict(kind="commit", commit=self.candidate))):
+            with self.subTest(kind):
+                text = " ".join(review.instructions(kind, target, NONCE).split())
+                self.assertIn("- `brief.md`: what the task asked for. It is the whole of what is asked of this task. "
+                              "Where it or another file here names `direction.md` or `builder.md`: those are the "
+                              "instructions the driver and the builder work from. They are not shown to you, and "
+                              "that they are not here is no limit of your review and nothing to list under "
+                              "`not_examined`.", text)
+        path, _ = self.make("request-1", evidence=[self.taken()])
+        said = " ".join((self.shift / path / "evidence" / "HOST.md").read_text().split())
+        self.assertIn("`brief.md` in this directory is the whole of what is asked of this task. `direction.md` and "
+                      "`builder.md`, where a file here names them, are the instructions the driver and the builder "
+                      "work from: the host shows neither, and that they are not here is no limit to state.", said)
+        # Also when the host took nothing for the task.
+        alone, _ = self.make("request-2", evidence=[])
+        self.assertIn("is the whole of what is asked of this task.",
+                      " ".join((self.shift / alone / "evidence" / "HOST.md").read_text().split()))
+
     def test_the_instructions_name_the_evidence_and_say_that_missing_proof_is_a_limit_and_not_a_finding(self):
         for kind, target in (("plan", dict(kind="plan", artifact=dict(path="briefs/plan.md", sha256="0" * 64))),
                              ("commit", dict(kind="commit", commit=self.candidate))):

@@ -204,6 +204,27 @@ class ReceiptTests(LocalTest):
         with self.assertRaisesRegex(Refused, "bounded"):
             self.validate(value, expected)
 
+    def test_a_read_tells_its_caller_the_bytes_it_took_also_when_it_fails_after_taking_them(self):
+        (self.shift / "logs/one.txt").write_bytes(b"x" * 1000)
+        with receipts.session(self.shift, 3, local_only=True) as view:
+            taken = [0]
+            self.assertEqual(len(view.read("logs/one.txt", 2000, charge=False, taken=taken)), 1000)
+            self.assertEqual((taken, view.total), ([1000], 0))
+            with self.assertRaises(receipts.TooLarge):  # refused by its size: no byte was read
+                view.read("logs/one.txt", 999, charge=False, taken=taken)
+            self.assertEqual(taken, [1000])
+            real = os.read
+            def touched(fd, size):
+                chunk = real(fd, size)
+                if chunk:
+                    os.utime(fd, ns=(1, 1))
+                return chunk
+            with patch.object(receipts.os, "read", touched), self.assertRaises(receipts.Changed):
+                view.read("logs/one.txt", 2000, charge=False, taken=taken)
+            self.assertEqual((taken, view.total), ([2000], 0))
+            self.assertEqual(len(view.read("logs/one.txt")), 1000)  # and without it a read is as it was
+            self.assertEqual(view.total, 1000)
+
     def test_a_review_receipt_rests_on_the_kept_output_and_the_signed_reviewer(self):
         self.assertDiagnostic(self.validate(*self.case()))
         mutations = [lambda d: d["reviewer"].update(model="other"),

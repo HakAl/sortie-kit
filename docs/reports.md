@@ -156,7 +156,10 @@ clickable. If the readable part cannot be built from what was kept, a short
   of a candidate that were asked for no list, because a build from before
   the list ran them) and `unread` (accepted reviews whose receipt could not
   be read or relied on: damaged, not the kept `ACCEPT` the acceptance rests
-  on, silent on which was asked, or without the list it says it has). `report.md` gives the
+  on, silent on which was asked, or without the list it says it has; and
+  those whose list holds an answer that is none of `met`, `not_checked` and
+  `disclosed`, which a kept receipt can hold and an answer the host takes
+  cannot: what such a list does say is counted and listed). `report.md` gives the
   number under Outcome as "Requirements accepted unchecked" and never says
   none while `unasked` or `unread` is above zero. Under each task that a
   review accepted it says first how many requirements that review answered
@@ -166,8 +169,10 @@ clickable. If the readable part cannot be built from what was kept, a short
   then it lists every requirement of that review with its
   status, as the reviewer worded it, cut to 200 characters; for a review
   kept from before the list it says that no requirement list was asked, and
-  for one whose receipt could not be read or relied on that it is not
-  known, and why. Only the
+  for one whose receipt could not be read, is not the kept `ACCEPT` or
+  holds no list, that it is not known and why; a list with an answer the
+  report does not know is shown as a list, with that answer among those
+  counted as otherwise. Only the
   review that the driver's record of the acceptance names is gone through
   (`accepted_receipt` of the task, beside `review_matched`), and it counts
   as `unread` when that receipt is not among the task's receipts or is not,
@@ -322,8 +327,9 @@ clickable. If the readable part cannot be built from what was kept, a short
   (`receipts/ID.json`) and with no entry in the consumed ledger (at most 4,
   each with `path`, `sha256`, `stage`, `round` and `data`). The report looks
   for them last, when everything of the shift was read: at most 64 unnamed
-  files, none over 1 MiB, and no further one once more than 4 MiB of them
-  were read, so 5 MiB at most, counted against none of the bounds on the
+  files, none over 1 MiB and 4 MiB of them together, where a file larger
+  than what is left of the 4 MiB is passed over and the bytes of a read
+  that failed count too, counted against none of the bounds on the
   shift's own files. Only a receipt that is named is listed among the inputs, and one
   whose `data` does not fit the bound on details is named with `data` null.
   The builder wrote such a receipt and the driver never consumed it, so the

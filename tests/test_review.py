@@ -401,8 +401,9 @@ class InstructionTests(unittest.TestCase):
                 self.assertNotIn(foreign, text)
             # The commit instructions carry the requirement list: its paragraph, its field and two example entries.
             # and, since the third form, the question asked of each finding and the fourth status. Both name the
-            # evidence directory (130 for a plan before it was named).
-            self.assertLess(len(text.splitlines()), 140 if kind == "plan" else 200)
+            # evidence directory (130 for a plan before it was named), and say that the brief is the whole task
+            # (140 for a plan before that: four lines).
+            self.assertLess(len(text.splitlines()), 145 if kind == "plan" else 200)
         self.assertIn("change.patch", review.instructions("commit", COMMIT, NONCE))
         self.assertIn("plan.md", review.instructions("plan", PLAN, NONCE))
         # A plan review is not asked for the requirement list.

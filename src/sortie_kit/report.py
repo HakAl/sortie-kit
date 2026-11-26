@@ -375,7 +375,10 @@ def untaken(reader, state, shift_id, ledger):
     Nothing here is evidence of the shift, and a seat can write what it likes into
     receipts/. So a file that cannot be read, or is no such receipt, is passed over and
     is no problem; what is read is counted against none of the bounds on the shift's own
-    files (their number, their bytes), and against a bound of its own; only a receipt
+    files (their number, their bytes), and against a bound of its own: UNTAKEN_READ
+    files, and UNTAKEN_BYTES of them together, where every byte taken counts, also of a
+    read that then failed, and no read is given more than what is left, so that a file
+    larger than that is passed over by its size; only a receipt
     that is named is listed among the inputs; and one whose data does not fit the bound
     on details is named without it (`data` None), with no problem recorded. The caller
     runs this after everything of the shift was read. The listing is the bounded one the
@@ -395,18 +398,18 @@ def untaken(reader, state, shift_id, ledger):
              for ref in (task.get('receipts') if isinstance(task.get('receipts'), list) else [])
              if isinstance(get(ref, 'path'), str)}
     recorded = {get(entry, 'receipt_id') for entry in ledger if isinstance(get(entry, 'receipt_id'), str)}
-    found, read, total = {}, 0, 0
+    found, read, taken = {}, 0, [0]
     for name in sorted(names):
         path = 'receipts/' + name
         if path in named or not name.endswith('.json'):
             continue
         read += 1
-        if read > UNTAKEN_READ or total > UNTAKEN_BYTES:
+        left = UNTAKEN_BYTES - taken[0]
+        if read > UNTAKEN_READ or left <= 0:
             break
         try:
             reader.guard()
-            raw = reader.view.read(path, receipts.DOCUMENT_LIMIT, charge=False)
-            total += len(raw)
+            raw = reader.view.read(path, min(receipts.DOCUMENT_LIMIT, left), charge=False, taken=taken)
             value = decode(raw)
             validate_shape(value, 'receipt', versions=(1, 2, 3))
             task = tasks.get(value['task_id'])
@@ -431,7 +434,7 @@ def untaken(reader, state, shift_id, ledger):
 
 
 UNTAKEN_READ = 64  # files of receipts/ that no task record names, read to look for a receipt not taken up
-UNTAKEN_BYTES = 4 * 1024 * 1024  # bytes of such files after which no further one is read
+UNTAKEN_BYTES = 4 * 1024 * 1024  # bytes of such files that are read at most, all of them together
 UNTAKEN_KEPT = 4  # of those, kept for one task
 
 
@@ -920,6 +923,7 @@ def open_words(found):
 
 
 REQUIREMENTS_UNKNOWN = dict(count=None, items=[], more=0, unasked=0, unread=0)  # the tasks could not be read in full
+ANSWERS = ('met', 'not_checked', 'disclosed')  # what a review that ended in ACCEPT can say of a requirement
 
 
 def accepting_review(task):
@@ -972,14 +976,18 @@ def requirements_unchecked(tasks):
     nothing is known for them; `unread`: accepted reviews whose receipt could
     not be read or relied on (see `accepting_review`: not among the task's
     receipts, damaged, not the host's consumed ACCEPT of the candidate, or
-    without the list it says it has). `tasks` are the task summaries of `extract`."""
+    without the list it says it has), and those whose list holds an answer that
+    is none of ANSWERS: what such a list says is counted and listed, and the
+    review is not known beyond it, so that no line says none beside it.
+    `tasks` are the task summaries of `extract`."""
     items, unasked, unread = [], 0, 0
     for task in tasks:
         found = accepting_review(task)
         if found is None:
             continue
         row, number, state, needs = found
-        unasked, unread = unasked + (state == 'unasked'), unread + (state in ('unread', 'unmatched', 'unlisted'))
+        unasked += state == 'unasked'
+        unread += state in ('unread', 'unmatched', 'unlisted') or any(n.get('status') not in ANSWERS for n in needs)
         items += [dict(task=task.get('id'), review=number, receipt=get(row, 'reference', 'path'),
                        asked=n.get('asked'), where=n.get('where')) for n in needs if n.get('status') == 'not_checked']
     return dict(count=len(items), items=items[:OPEN_KEPT], more=len(items) - min(len(items), OPEN_KEPT),
@@ -1029,7 +1037,7 @@ def disclosed_words(found, unchecked):
                 + ('' if whole else ' Not known for the accepted reviews named in the line above.'))
     if whole:
         return line + 'none.'
-    return line + 'none in the lists that could be read; not known for the accepted reviews named in the line above.'
+    return line + 'none in the answers that could be read; not known for the accepted reviews named in the line above.'
 
 
 def unchecked_words(found):
@@ -1079,7 +1087,7 @@ def requirement_words(task):
     # An ACCEPT beside requirements nobody checked is honest only if the developer sees how
     # much of the brief it rests on: the numbers come before the list.
     said = [need.get('status') if isinstance(need.get('status'), str) else None for need in needs]
-    known = [('Met', 'met'), ('Not checked', 'not_checked'), ('Said to be not delivered', 'disclosed')]
+    known = zip(('Met', 'Not checked', 'Said to be not delivered'), ANSWERS)
     parts = [(label, said.count(status), status != 'met') for label, status in known]
     other = len(said) - sum(number for _, number, _ in parts)
     parts += [('Answered otherwise', other, True)] if other else []

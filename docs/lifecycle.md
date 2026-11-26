@@ -704,6 +704,10 @@ build receipt, the host begins the review of that plan or candidate itself:
   file whose name is not made of plain parts, or that the host holds no
   copy of, is not shown. Whatever is not shown has a line in `HOST.md` with
   the reason, and none of it fails the review. The instructions tell the
+  reviewer, and `HOST.md` says too, that the brief is the whole of what is
+  asked of the task and that `direction.md` and `builder.md`, the
+  instructions the driver and the builder work from, are not shown, so that
+  their absence is no limit to report. They also tell the
   reviewer that proof the directory cannot hold (a file `HOST.md` says is
   not shown, a run the reviewer cannot make) is a limit to state under
   `not_examined`, and that its absence alone is no new finding. An earlier

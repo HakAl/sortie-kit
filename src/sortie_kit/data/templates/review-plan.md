@@ -18,7 +18,11 @@ and report only.
 
 ## What is here
 
-- `brief.md`: what the task asked for.
+- `brief.md`: what the task asked for. It is the whole of what is asked of
+  this task. Where it or another file here names `direction.md` or
+  `builder.md`: those are the instructions the driver and the builder work
+  from. They are not shown to you, and that they are not here is no limit of
+  your review and nothing to list under `not_examined`.
 - `plan.md`: the plan under review. This is what you review.
 - `tree/`: the files of the repository as they are now, to check the plan
   against.

@@ -1075,6 +1075,61 @@ class ReportTests(LocalTest):
         self.assertIn(late['path'],named)  # what the report repeats of a file is listed with its hash
         self.assertEqual(sorted(set(named)-{late['path']}),sorted(i['path'] for i in whole['inputs']))
 
+    def looked(self,read=None):
+        """What the look for receipts not taken up names, and the paths it asked the view for."""
+        with report.channels.locked(self.shift,'driver.lock',seconds=3,local_only=True) as view:
+            reader=report.Reader(view); state=decode((self.shift/'driver-state.json').read_bytes()); asked=[]; real=view.read
+            def noted(path,*args,**kw):
+                asked.append(path)
+                return (read or (lambda real,path,*a,**k: real(path,*a,**k)))(real,path,*args,**kw)
+            with patch.object(view,'read',noted):
+                rows=report.untaken(reader,state,'current',[])
+        return rows,asked
+
+    def test_the_look_for_a_receipt_not_taken_up_reads_four_mebibytes_of_unnamed_files_and_no_more(self):
+        # The bound was tested before a whole read: after four files of exactly 1 MiB a fifth was read.
+        self.task.update(stage='build',accepted=None,round=2,reason=''); self.store()
+        late=self.handed_in('z-late'); mib=1024*1024
+        self.assertEqual((report.UNTAKEN_BYTES,receipts.DOCUMENT_LIMIT),(4*mib,mib))
+        self.assertGreater((self.shift/late['path']).stat().st_size,10)
+        for n in range(3):
+            (self.shift/('receipts/a-%d.json'%n)).write_bytes(b' '*mib)
+        rows,asked=self.looked()
+        self.assertEqual((rows,asked[-1]),({'task':[late]},late['path']))  # 3 MiB read: the receipt is within the bound
+        # Exactly at the bound: nothing is left, and no further file is asked for.
+        (self.shift/'receipts/a-3.json').write_bytes(b' '*mib)
+        rows,asked=self.looked()
+        self.assertEqual((rows,asked),({},['receipts/a-%d.json'%n for n in range(4)]))
+        # Ten bytes left: a file larger than that is not read, by its size alone.
+        (self.shift/'receipts/a-3.json').write_bytes(b' '*(mib-10))
+        sizes=[]
+        def bounded(real,path,limit,**kw):
+            sizes.append((path,limit))
+            return real(path,limit,**kw)
+        rows,asked=self.looked(bounded)
+        self.assertEqual((rows,sizes[-2:]),({},[('receipts/a-3.json',mib),(late['path'],10)]))
+        # A file that fits in what is left is read after one that did not: the one passed over
+        # for its size ends nothing and takes nothing from what is left.
+        size=(self.shift/late['path']).stat().st_size
+        (self.shift/'receipts/a-3.json').write_bytes(b' '*(mib-size))
+        (self.shift/'receipts/b-large.json').write_bytes(b' '*(size+1))
+        sizes.clear()
+        rows,asked=self.looked(bounded)
+        self.assertEqual((rows,sizes[-2:]),({'task':[late]},[('receipts/b-large.json',size),(late['path'],size)]))
+
+    def test_bytes_of_a_read_that_failed_after_they_were_taken_count_against_the_bound_of_that_look(self):
+        self.task.update(stage='build',accepted=None,round=2,reason=''); self.store()
+        late=self.handed_in('z-late'); mib=1024*1024
+        for n in range(4):
+            (self.shift/('receipts/a-%d.json'%n)).write_bytes(b' '*mib)
+        def changed(real,path,*args,**kw):
+            raw=real(path,*args,**kw)  # the bytes were taken
+            if '/a-' in path:
+                raise receipts.Changed('evidence changed while reading')
+            return raw
+        rows,asked=self.looked(changed)
+        self.assertEqual((rows,asked),({},['receipts/a-%d.json'%n for n in range(4)]))
+
     def test_a_receipt_not_taken_up_that_does_not_fit_the_bound_on_details_is_named_without_them(self):
         self.task.update(stage='build',accepted=None,round=2,reason=''); self.store()
         late=self.handed_in()

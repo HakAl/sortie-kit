@@ -153,7 +153,11 @@ class Evidence:
         finally:
             os.close(fd)
 
-    def read(self, path, limit=DOCUMENT_LIMIT, *, charge=True):
+    def read(self, path, limit=DOCUMENT_LIMIT, *, charge=True, taken=None):
+        """The bytes of one regular file of at most `limit` bytes that did not change while
+        it was read. `charge` counts them against the bound on everything this view reads.
+        `taken`, a list of one number, has every byte added that was read from the file,
+        also when the read then fails: for a caller that keeps a bound of its own."""
         self.guard()
         with self.parent(path) as (parent, name):
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
@@ -173,6 +177,8 @@ class Evidence:
                 size += len(chunk)
                 if charge:
                     self.total += len(chunk)
+                if taken is not None:
+                    taken[0] += len(chunk)
                 if size > limit or self.total > TOTAL_LIMIT:
                     raise Refused("evidence read limit exceeded")
             after = os.fstat(fd)

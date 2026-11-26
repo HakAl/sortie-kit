@@ -402,6 +402,10 @@ def statement(lines, *, kind, base, commit):
         "",
         "A line above that says something is not shown gives the reason. That it is not here is not the "
         "builder's doing unless the line says so, and not on its own a finding: state it as a limit.",
+        "",
+        "`brief.md` in this directory is the whole of what is asked of this task. `direction.md` and "
+        "`builder.md`, where a file here names them, are the instructions the driver and the builder work "
+        "from: the host shows neither, and that they are not here is no limit to state.",
         ""])
 
 
