@@ -775,10 +775,22 @@ any receipt, and moves the task:
   review is given those answers and says for each earlier finding whether it
   is resolved. An `ACCEPT` that leaves an earlier blocker or major finding
   unresolved is a failed attempt, not an accept.
+- A candidate review answers the brief requirement by requirement (see
+  [the review contract](review.md)). An `ACCEPT` beside a requirement
+  answered `not_met` is a failed attempt, not an accept, and so is an answer
+  without the list. An `ACCEPT` beside one answered `not_checked` is taken,
+  and the report lists and counts it; so is one beside a requirement
+  answered `disclosed`, which the brief, as the reviewer read it, lets be
+  closed by saying that it is not delivered. Each finding names the
+  requirement it says is not delivered, or none, and an answer whose finding
+  names a requirement marked `met` or `not_checked` is a failed attempt
+  whatever its verdict. What goes to the builder of a finding is its text,
+  without that name. A plan review is asked for no list.
 - A failed attempt is never an accept and never `CHANGES`, and uses no repair
   round. The host makes one more attempt at once when the shift is active, a
-  review may still start and enough of its lock is left to prepare one. Two
-  attempts at most. Both are kept in the one receipt of that review, so a
+  review may still start and enough of its lock is left to prepare one. The
+  second attempt is given the same instructions and not the reason the first
+  was refused. Two attempts at most. Both are kept in the one receipt of that review, so a
   failed first attempt does not weaken a later accept. After a second failure
   the task is `blocked` for the developer with `review failed twice`, and the
   shift goes on: the driver can brief the next task. When the first attempt

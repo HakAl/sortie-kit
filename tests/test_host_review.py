@@ -141,6 +141,95 @@ class HostReviewTests(ReviewFixture):
         self.assertEqual((state["last_review"]["outcome"], state["tasks"]["task"]["stage"]), ("FAILED", "blocked"))
         self.assertIsNone(state["tasks"]["task"]["accepted"])
 
+    def answered(self, *requirements, verdict="ACCEPT", findings=(), schema=None):
+        review = self.state()["review"]
+        record = self.record(review["target"], verdict, findings, [], requirements=requirements or None, schema=schema)
+        return self.end_review(self.said(record, review["running"]["marker"]))
+
+    def test_an_accept_beside_a_requirement_not_met_is_a_failed_attempt_and_two_block_the_task_and_not_the_shift(self):
+        """Seen on a real shift: the reviewer wrote that the reported defect could still happen, rated it
+        minor and accepted, and the host did what the verdict said. With the brief answered requirement by
+        requirement such an answer contradicts itself, and the host takes no verdict from it."""
+        self.reach_review()
+        missed = self.need("retry seconds and the minimum wait agree", "not_met", "source.txt:1")
+        state = self.answered(self.need(), missed, findings=[self.finding("F1", "minor")])
+        review, task = state["review"], state["tasks"]["task"]
+        self.assertEqual((task["stage"], task["accepted"]), ("review", None))
+        self.assertEqual([(item["status"], item["verdict"], item["record"]) for item in review["attempts"]],
+                         [("failed", None, None)])
+        self.assertIn("ACCEPT with a requirement answered not_met (retry seconds and the minimum wait agree) is not an accept",
+                      review["attempts"][0]["reasons"][0])
+        self.assertEqual(review["running"]["attempt"], 2)  # run once more, as any failed review is
+        state = self.answered(missed)
+        task, last = state["tasks"]["task"], state["last_review"]
+        self.assertEqual((last["outcome"], task["stage"], task["accepted"], state["active"], state["mode"]),
+                         ("FAILED", "blocked", None, None, "active"))
+        self.assertIn("review failed twice", task["reason"])
+        receipt = self.review_receipt(state)
+        self.assertEqual((receipt["data"]["outcome"], [item["status"] for item in receipt["data"]["attempts"]]),
+                         ("FAILED", ["failed", "failed"]))
+        self.assertEqual(self.action("brief", task_id="next", kind="defect", brief=self.artifact("briefs/task.md"),
+                                     next_owner="builder")["status"], "recorded")
+
+    def test_a_commit_review_without_the_requirement_list_is_a_failed_attempt_and_one_with_it_is_taken_whole(self):
+        self.reach_review()
+        # The answer an earlier build asked for, written by habit or from an old example.
+        state = self.answered(schema="sortie-kit.review.v1")
+        first, = state["review"]["attempts"]
+        self.assertEqual((first["status"], first["verdict"]), ("failed", None))
+        self.assertIn("the schema asked of this review is sortie-kit.review.v3", first["reasons"][0])
+        # An accept beside a requirement the reviewer did not check is taken, and the record is kept whole.
+        unchecked = self.need("no caller outside the module changes", "not_checked", "")
+        state = self.answered(self.need(), unchecked)
+        task = state["tasks"]["task"]
+        self.assertEqual((state["last_review"]["outcome"], task["stage"]), ("ACCEPT", "accepted"))
+        last = self.review_receipt(state)["data"]["attempts"][-1]
+        self.assertEqual((last["record"]["schema"], last["record"]["requirements"]),
+                         ("sortie-kit.review.v3", [self.need(), unchecked]))
+        self.assertEqual(self.action("close")["status"], "closed")
+
+    def test_a_requirement_marked_met_beside_a_finding_that_names_it_is_a_failed_attempt_and_two_block_the_task(self):
+        """Seen in a replay of a kept review: the requirement marked `met` and, under ACCEPT, a minor finding
+        that said a case of that same requirement fails. With each finding naming its requirement such an
+        answer contradicts itself, and the host takes no verdict from it."""
+        self.reach_review()
+        agree = self.need("retry seconds and the minimum wait agree")
+        named = dict(self.finding("F1", "minor"), requirement=2)
+        state = self.answered(self.need(), agree, findings=[named])
+        review, task = state["review"], state["tasks"]["task"]
+        self.assertEqual((task["stage"], task["accepted"]), ("review", None))
+        self.assertEqual([(item["status"], item["verdict"], item["record"]) for item in review["attempts"]],
+                         [("failed", None, None)])
+        self.assertIn("finding F1 names requirement 2 (retry seconds and the minimum wait agree), which the list "
+                      "marks `met`", review["attempts"][0]["reasons"][0])
+        self.assertEqual(review["running"]["attempt"], 2)
+        state = self.answered(self.need(), dict(agree, status="not_checked", where=""), findings=[named])
+        task, last = state["tasks"]["task"], state["last_review"]
+        self.assertEqual((last["outcome"], task["stage"], task["accepted"], state["active"]), ("FAILED", "blocked", None, None))
+        self.assertIn("review failed twice", task["reason"])
+
+    def test_an_accept_beside_a_requirement_disclosed_is_taken_and_the_record_is_kept_whole(self):
+        self.reach_review()
+        told = self.need("the second part, or a statement that it is not delivered", "disclosed", "notes.md:3")
+        named = dict(self.finding("F1", "minor"), requirement=2)
+        state = self.answered(self.need(), told, findings=[named])
+        self.assertEqual((state["last_review"]["outcome"], state["tasks"]["task"]["stage"]), ("ACCEPT", "accepted"))
+        last = self.review_receipt(state)["data"]["attempts"][-1]
+        self.assertEqual((last["record"]["requirements"], last["record"]["findings"]), ([self.need(), told], [named]))
+
+    def test_changes_beside_a_requirement_not_met_go_to_the_builder_as_any_changes_do(self):
+        self.reach_review()
+        named = dict(self.finding("F1", "major"), requirement=1)
+        state = self.answered(self.need(status="not_met"), verdict="CHANGES", findings=[named, self.finding("F2", "minor")])
+        self.assertEqual((state["last_review"]["outcome"], state["tasks"]["task"]["stage"]), ("CHANGES", "repair_needed"))
+        # What goes to the builder, and with its answers to the next review, is the finding and not a
+        # position in a list that neither of them is given.
+        handed = decode((self.shift / state["tasks"]["task"]["findings"]["candidate"]["path"]).read_bytes())
+        self.assertEqual([sorted(item) for item in handed["findings"]], [sorted(
+            ("id", "severity", "location", "claim", "evidence", "recommendation", "earlier", "reviewer_reason"))] * 2)
+        self.assertEqual(self.review_receipt(state)["data"]["attempts"][-1]["record"]["findings"][0]["requirement"], 1)
+        self.assertEqual(self.review_receipt(state)["data"]["attempts"][-1]["record"]["requirements"][0]["status"], "not_met")
+
     def test_a_review_that_fails_twice_blocks_the_task_and_not_the_shift_and_uses_no_repair_round(self):
         self.reach_review()
         state = self.end_review("I looked and it seems fine.\n")
@@ -1386,7 +1475,303 @@ class OpenFindingsTests(ReviewFixture):
         self.assertNotIn("None:", "\n".join(section))
 
 
-for _class in (HostReviewReportTests, OpenFindingsTests):
+class RequirementsReportTests(ReviewFixture):
+    """What the brief asks for, as the review that accepted a task answered it: an ACCEPT beside a
+    requirement the reviewer did not check is taken, and the report never leaves it unsaid."""
+    LINE = "- Requirements accepted unchecked: "
+    V1 = "sortie-kit.review.v1"
+
+    def report(self):
+        self.driver.finish("the fixture ends the shift")
+        return (self.shift / "report.md").read_text(), decode((self.shift / "report.json").read_bytes())
+
+    def accept(self, *requirements, schema=None):
+        review = self.state()["review"]
+        record = self.record(review["target"], "ACCEPT", [], [dict(id=item["id"], resolved=True, reason="Checked.")
+                                                               for item in review["prior"]],
+                             requirements=requirements or None, schema=schema)
+        return self.end_review(self.said(record, review["running"]["marker"]))
+
+    def as_an_earlier_build(self):
+        """The host as it was before the list: it asked a commit review for the earlier schema."""
+        from unittest.mock import patch
+        from sortie_kit import review
+        patched = patch.object(review, "schema_for", lambda kind: self.V1)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def outcome(self, text):
+        return text.split("## Outcome")[1].split("## What was asked")[0]
+
+    def test_requirements_accepted_unchecked_are_counted_in_the_outcome_and_listed_under_the_task(self):
+        self.reach_review()
+        self.accept(self.need(), self.need("old rows <b>still</b> load\n## and more", "not_checked", ""),
+                    self.need("nothing is written outside the cache", "not_checked", "tree/src/cache.py"))
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        last = doc["tasks"][0]["reviews"][-1]
+        self.assertEqual(doc["requirements_unchecked"], dict(count=2, more=0, unasked=0, unread=0, items=[
+            dict(task="task", review=last["review"], receipt=last["receipt"]["path"],
+                 asked="old rows <b>still</b> load\n## and more", where=""),
+            dict(task="task", review=last["review"], receipt=last["receipt"]["path"],
+                 asked="nothing is written outside the cache", where="tree/src/cache.py")]))
+        self.assertIn(self.LINE + "2. They are listed under each task below.\n", self.outcome(text))
+        task = text.split("### task (")[1].split("\n### ")[0].split("\n## ")[0]
+        self.assertIn("- What the brief asks for, as review " + str(last["review"]) + " that ended in ACCEPT answered it:\n"
+                      "  - met: the word says after (seen at source.txt:1)\n"
+                      "  - **not_checked**: old rows &lt;b&gt;still&lt;/b&gt; load ## and more\n"
+                      "  - **not_checked**: nothing is written outside the cache (place named: tree/src/cache.py)\n", task)
+        self.assertNotIn("<b>", task)  # a reviewer's words stay inert
+        kept = doc["tasks"][0]["receipts"][-1]["data"]["attempts"][-1]
+        self.assertEqual((kept["requirements_asked"], [item["status"] for item in kept["requirements"]]),
+                         (True, ["met", "not_checked", "not_checked"]))
+        self.assertEqual(doc["issues"], [])
+
+    TOLD = "- Requirements accepted as said to be not delivered: "
+
+    def test_a_requirement_accepted_as_disclosed_is_counted_in_the_outcome_and_listed_under_the_task(self):
+        """Seen on a real shift: the accepting review said a part of the task was not delivered, as the brief
+        allowed, and the report read one task accepted and nothing left open."""
+        self.reach_review()
+        self.accept(self.need(), self.need("the second <i>part</i>, or a statement", "disclosed", "notes.md:3"),
+                    self.need("old rows still load", "not_checked", ""))
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        last = doc["tasks"][0]["reviews"][-1]
+        self.assertEqual(doc["requirements_disclosed"], dict(count=1, more=0, items=[
+            dict(task="task", review=last["review"], receipt=last["receipt"]["path"],
+                 asked="the second <i>part</i>, or a statement", where="notes.md:3")]))
+        # The unchecked ones are counted apart, in the shape they had.
+        self.assertEqual((doc["requirements_unchecked"]["count"], [i["asked"] for i in doc["requirements_unchecked"]["items"]]),
+                         (1, ["old rows still load"]))
+        outcome = self.outcome(text)
+        self.assertIn(self.TOLD + "1. The brief allowed saying so in place of the work, as the review that accepted "
+                      "the task read it. They are listed under each task below.\n", outcome)
+        self.assertIn(self.LINE + "1. ", outcome)
+        task = text.split("### task (")[1].split("\n### ")[0].split("\n## ")[0]
+        self.assertIn("  - **disclosed** (not delivered, and said so): the second &lt;i&gt;part&lt;/i&gt;, or a statement "
+                      "(said at notes.md:3)\n", task)
+        self.assertEqual(doc["issues"], [])
+
+    def test_an_accept_with_every_requirement_met_leaves_none(self):
+        self.reach_review()
+        self.accept(self.need(), self.need("the test names the case", "met", "tests/test_x.py:9"))
+        text, doc = self.report()
+        self.assertEqual(doc["requirements_unchecked"], dict(count=0, items=[], more=0, unasked=0, unread=0))
+        self.assertEqual(doc["requirements_disclosed"], dict(count=0, items=[], more=0))
+        self.assertIn(self.LINE + "none.\n", self.outcome(text))
+        self.assertIn(self.TOLD + "none.\n", self.outcome(text))
+        self.assertIn("  - met: the test names the case (seen at tests/test_x.py:9)\n", text)
+
+    def test_a_task_no_review_accepted_has_no_such_lines_and_a_request_for_changes_is_not_counted(self):
+        self.reach_review()
+        review = self.state()["review"]
+        record = self.record(review["target"], "CHANGES", [self.finding()], [],
+                             requirements=[self.need(status="not_met"), self.need("x", "not_checked", "")])
+        self.end_review(self.said(record, review["running"]["marker"]))
+        text, doc = self.report()
+        self.assertEqual(doc["requirements_unchecked"], dict(count=0, items=[], more=0, unasked=0, unread=0))
+        self.assertNotIn("What the brief asks for", text)
+
+    def test_a_review_kept_from_before_the_list_is_said_to_have_been_asked_for_none(self):
+        self.as_an_earlier_build()
+        self.reach_review()
+        state = self.accept(schema=self.V1)
+        self.assertEqual(state["last_review"]["outcome"], "ACCEPT")
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        from sortie_kit import report
+        self.assertEqual((doc["tasks"][0]["acceptance"], doc["issues"]), (report.ACCEPTED, []))
+        self.assertEqual(doc["requirements_unchecked"], dict(count=0, items=[], more=0, unasked=1, unread=0))
+        self.assertIn(self.LINE + "not known: no requirement list was asked of 1 accepted review, which a build "
+                      "from before the list ran.\n", self.outcome(text))
+        self.assertNotIn(self.LINE + "none", text)
+        self.assertIn("- What the brief asks for: no requirement list was asked of review "
+                      + str(doc["tasks"][0]["reviews"][-1]["review"]) + ", which accepted this task. It was run by a "
+                      "build from before the list, and the receipt is as that build wrote it.\n", text)
+        kept = doc["tasks"][0]["receipts"][-1]["data"]["attempts"][-1]
+        self.assertEqual((kept["requirements_asked"], kept["requirements"]), (False, None))
+
+    def test_an_accepted_review_whose_receipt_cannot_be_read_is_counted_as_not_known(self):
+        self.reach_review()
+        self.accept(self.need("x", "not_checked", ""))
+        _, doc = self.report()
+        path = self.shift / doc["tasks"][0]["reviews"][-1]["receipt"]["path"]
+        path.chmod(0o600)
+        path.write_bytes(path.read_bytes().replace(b"not_checked", b"not_looked "))
+        from sortie_kit import report
+        doc = report.finalize(self.shift, 3)
+        text = (self.shift / "report.md").read_text()
+        self.assertEqual(doc["requirements_unchecked"], dict(count=0, items=[], more=0, unasked=0, unread=1))
+        self.assertIn(self.LINE + "not known for 1 accepted review, whose receipt could not be read or relied on; "
+                      "none in the others.\n", self.outcome(text))
+        # Nor is none said of the disclosed ones where a list could not be read.
+        self.assertIn(self.TOLD + "none in the lists that could be read; not known for the accepted reviews named in "
+                      "the line above.\n", self.outcome(text))
+        self.assertIn("- What the brief asks for: not known. The receipt of the review that accepted this task could "
+                      'not be read; see "Problems with the evidence".\n', text)
+
+    def test_when_the_tasks_cannot_be_read_or_are_dropped_the_number_is_not_known_rather_than_none(self):
+        from unittest.mock import patch
+        from sortie_kit import receipts, report
+        self.reach_review()
+        self.accept(self.need("x", "not_checked", ""))
+        self.report()
+        unknown = dict(count=None, items=[], more=0, unasked=0, unread=0)
+        size = max((self.shift / name).stat().st_size for name in ("report.json", "report.md"))
+        with patch.object(receipts, "DOCUMENT_LIMIT", size - 1):  # the bound on each output, not on reading
+            doc = report.finalize(self.shift, 3)
+        self.assertIn("output limit", doc["issues"][0]["reason"])
+        self.assertEqual(doc["requirements_unchecked"], unknown)
+        self.assertEqual(doc["requirements_disclosed"], dict(count=None, items=[], more=0))
+        self.assertIn(self.LINE + "not known", (self.shift / "report.md").read_text())
+        path = self.shift / "driver-state.json"
+        path.chmod(0o600)
+        path.write_bytes(b"{not json")
+        doc = report.finalize(self.shift, 3)
+        self.assertEqual(doc["requirements_unchecked"], unknown)
+        self.assertEqual(doc["requirements_disclosed"], dict(count=None, items=[], more=0))
+        self.assertIn(self.LINE + "not known, because the tasks could not be read in full or were left out of this "
+                      "report.\n", (self.shift / "report.md").read_text())
+        self.assertIn(self.TOLD + "not known, for the same reason.\n", (self.shift / "report.md").read_text())
+
+    def test_the_count_and_the_words_take_whatever_a_kept_report_holds(self):
+        from sortie_kit import report
+        def row(outcome="ACCEPT", requirements=(), asked=True, stage="review", **changed):
+            last = dict(status="complete", verdict=outcome, requirements_asked=asked,
+                        requirements=None if requirements is None else [dict(asked=a, status=s, where="") for a, s in requirements])
+            return dict(dict(reference=dict(stage=stage, status="satisfied", path="receipts/r.json", round=0), role="reviewer",
+                             integrity="matched", data=dict(outcome=outcome, attempts=[last])), **changed)
+        def held(*rows, named=-1, matched=True, **changed):
+            """A task summary whose recorded acceptance names the receipt of one of the rows, the last by default."""
+            return dict(dict(id="task", receipts=list(rows), accepted_receipt=rows[named]["reference"] if rows else None,
+                             review_matched=matched, reviews=[dict(review=4, receipt=dict(path="receipts/r.json"))]), **changed)
+        count = lambda *rows, **kw: report.requirements_unchecked([held(*rows, **kw)])
+        unknown = dict(count=0, items=[], more=0, unasked=0, unread=1)
+        # The review a task was accepted on is the one its recorded acceptance names, and no other. A later
+        # ACCEPT among the receipts that the acceptance does not name gives no list.
+        first = row(requirements=[("a", "not_checked")], reference=dict(stage="review", status="satisfied", path="receipts/a.json", round=0))
+        other = row(requirements=[("b", "not_checked"), ("c", "not_checked")])
+        self.assertEqual([i["asked"] for i in count(first, other, named=0)["items"]], ["a"])
+        # An acceptance whose receipt is not among the task's receipts is not known, and never none.
+        gone = held(first, accepted_receipt=dict(stage="review", status="satisfied", path="receipts/gone.json", round=0))
+        self.assertEqual(report.requirements_unchecked([gone]), unknown)
+        self.assertIn("not known", report.unchecked_words(report.requirements_unchecked([gone])))
+        self.assertIn("not known", report.requirement_words(gone)[0])
+        for odd in (None, 3, "receipts/r.json", {}):
+            self.assertEqual(report.requirements_unchecked([held(first, accepted_receipt=odd)]), unknown, odd)
+        # Nor is one the report did not find to be the host's consumed ACCEPT of the candidate.
+        unmatched = "not known. The review receipt the recorded acceptance names is not, as kept, the host's consumed ACCEPT"
+        for odd in (held(first, matched=False), held(first, matched=None), held(row("CHANGES", [("a", "not_checked")])),
+                    held(dict(first, role="builder")), held(row(stage="plan_review", asked=False, requirements=None))):
+            self.assertEqual(report.requirements_unchecked([odd]), unknown, odd)
+            self.assertIn(unmatched, report.requirement_words(odd)[0], odd)
+        # The Outcome line and the line under the task do not say different things of the same receipt.
+        self.assertIn("whose receipt could not be read or relied on", report.unchecked_words(unknown))
+        self.assertIn("could not be read;", report.requirement_words(gone)[0])
+        self.assertIn("does not hold a requirement list", report.requirement_words(held(row(requirements=None)))[0])
+        # A task with no recorded acceptance has no accepting review, whatever its receipts say.
+        free = held(first)
+        del free["accepted_receipt"]
+        self.assertEqual(report.requirements_unchecked([free])["count"], 0)
+        self.assertEqual(report.requirement_words(free), [])
+        seen = count(row(requirements=[("a", "met"), ("b", "not_checked"), ("c", "not_met")]))
+        self.assertEqual((seen["count"], [(i["asked"], i["review"]) for i in seen["items"]]), (1, [("b", 4)]))
+        # Only the review that accepted counts: one that asked for changes before it does not.
+        seen = count(row("CHANGES", [("a", "not_checked")]), row(requirements=[("a", "met")]))
+        self.assertEqual(seen["count"], 0)
+        # More than the report lists are counted.
+        many = count(row(requirements=[("r%d" % n, "not_checked") for n in range(64)]))
+        self.assertEqual((many["count"], len(many["items"]), many["more"]), (64, 64, 0))
+        tasks = [held(row(requirements=[("r%d" % m, "not_checked") for m in range(64)]), id="t%d" % n) for n in range(5)]
+        many = report.requirements_unchecked(tasks)
+        self.assertEqual((many["count"], len(many["items"]), many["more"]), (320, 256, 64))
+        self.assertIn("320.", report.unchecked_words(many))
+        # Odd shapes are never raised on, and a list said to be asked for and not kept is not known, not none.
+        self.assertEqual(report.requirements_unchecked([3, dict(id="t"), dict(id="t", receipts=[dict(reference=None), 3])]),
+                         dict(count=0, items=[], more=0, unasked=0, unread=0))
+        self.assertEqual(report.requirements_unchecked([dict(id="t", accepted_receipt=None, receipts=[dict(reference=None), 3])]),
+                         unknown)
+        seen = count(row(requirements=None))
+        self.assertEqual((seen["count"], seen["unread"]), (0, 1))
+        # No list was asked only where the kept attempt says so: an attempt that does not say, or no attempt
+        # at all, is not known and is never called a review from before the list.
+        for odd in (row(asked=None), row(asked="no"), dict(row(), data=dict(outcome="ACCEPT", attempts=[])),
+                    dict(row(), data=dict(outcome="ACCEPT"))):
+            seen = count(odd)
+            self.assertEqual((seen["count"], seen["unasked"], seen["unread"]), (0, 0, 1), odd)
+            words = report.requirement_words(held(odd))
+            self.assertEqual(len(words), 1)
+            self.assertIn("not known", words[0])
+            self.assertNotIn("before the list", words[0])
+        self.assertEqual(count(row(asked=False, requirements=None))["unasked"], 1)
+        kept = lambda record: report.review_kept(dict(attempts=[dict(record=record)]))["attempts"][0]
+        self.assertEqual([kept(r)["requirements_asked"] for r in (
+            dict(schema="sortie-kit.review.v2", requirements=[]), dict(schema="sortie-kit.review.v1"),
+            dict(schema="sortie-kit.review.v3", requirements=[]), dict(schema="sortie-kit.review.v4"), dict(), None,
+            dict(schema=["sortie-kit.review.v1"]))],
+            [True, False, True, None, None, None, None])
+        # A finding's `requirement` is kept for the third schema only, and only as a position or none.
+        named = lambda schema, value: kept(dict(schema=schema, findings=[dict(id="F1", requirement=value)]))["findings"][0]
+        self.assertEqual([named("sortie-kit.review.v3", value).get("requirement", "absent")
+                          for value in (2, None, True, "2", 2.0, [2], 0, -1)], [2, None, None, None, None, None, None, None])
+        for schema in ("sortie-kit.review.v2", "sortie-kit.review.v1", None):
+            self.assertNotIn("requirement", named(schema, 2), schema)
+        self.assertIsNone(report.unchecked_words(None))
+        # The disclosed ones: counted from the accepting review alone, listed up to the same bound, and the
+        # words take whatever a kept report holds.
+        told = report.requirements_disclosed([held(row(requirements=[("a", "met"), ("b", "disclosed"), ("c", "not_checked")])),
+                                              held(row("CHANGES", [("d", "disclosed")])), 3, dict(id="t")])
+        self.assertEqual((told["count"], [i["asked"] for i in told["items"]], told["more"]), (1, ["b"], 0))
+        many = report.requirements_disclosed(tasks[:0] + [held(row(requirements=[("r%d" % m, "disclosed") for m in range(64)]),
+                                                               id="t%d" % n) for n in range(5)])
+        self.assertEqual((many["count"], len(many["items"]), many["more"]), (320, 256, 64))
+        self.assertIsNone(report.disclosed_words(None, None))
+        self.assertIn("320.", report.disclosed_words(many, None))
+        self.assertTrue(report.disclosed_words(dict(count=0), dict(count=0, unasked=0, unread=0)).endswith(": none."))
+        for odd in (dict(count=None), dict(count="3"), dict(count=True), dict()):
+            self.assertIn("not known", report.disclosed_words(odd, dict(count=0)), odd)
+        for odd in (dict(unread=1), dict(unasked=2), dict(count=None), 3, None):
+            self.assertNotIn(": none.", report.disclosed_words(dict(count=0), odd), odd)
+        # A number beside accepted reviews whose list could not be read is not the whole number, and says so.
+        whole, rest = dict(count=0, unasked=0, unread=0), " Not known for the accepted reviews named in the line above."
+        self.assertTrue(report.disclosed_words(dict(count=2), whole).endswith("They are listed under each task below."))
+        for odd in (dict(count=0, unasked=0, unread=1), dict(count=0, unasked=1, unread=0), dict(count=None), 3):
+            self.assertTrue(report.disclosed_words(dict(count=2), odd).endswith("each task below." + rest), odd)
+        self.assertIn("not known", report.disclosed_words(dict(count=-1), whole))
+        for odd in (dict(count=None), dict(count="3"), dict(count=1, unasked="x", unread=None, items=3)):
+            self.assertTrue(report.unchecked_words(odd).startswith(self.LINE), odd)
+        self.assertIn("not known", report.unchecked_words(dict(count="3")))
+        self.assertEqual(report.requirement_words(dict(id="t", receipts=[3], reviews=None)), [])
+
+    def test_an_accepted_task_says_how_many_requirements_were_met_not_checked_and_disclosed(self):
+        """An ACCEPT beside requirements nobody checked is honest only when the developer sees
+        how much of the brief the acceptance rests on: the task gives the numbers before the list,
+        and the list has every requirement that was not checked."""
+        from sortie_kit import report
+        def task(*needs):
+            ref = dict(stage="review", status="satisfied", path="receipts/r.json", round=0)
+            last = dict(status="complete", verdict="ACCEPT", requirements_asked=True,
+                        requirements=[dict(asked=a, status=s, where="") for a, s in needs])
+            return dict(id="task", accepted_receipt=ref, review_matched=True,
+                        reviews=[dict(review=4, receipt=dict(path="receipts/r.json"))],
+                        receipts=[dict(reference=ref, role="reviewer", integrity="matched",
+                                       data=dict(outcome="ACCEPT", attempts=[last]))])
+        words = report.requirement_words(task(("a", "met"), ("b", "not_checked"), ("c", "not_checked"),
+                                              ("d", "disclosed"), ("e", "met"), ("f", "met")))
+        self.assertEqual(words[0], "- Requirements of the brief when review 4 accepted: 6. Met: 3. **Not checked: 2.** "
+                                   "**Said to be not delivered: 1.**")
+        self.assertEqual(words[1], "- What the brief asks for, as review 4 that ended in ACCEPT answered it:")
+        self.assertEqual([w for w in words if "**not_checked**" in w], ["  - **not_checked**: b", "  - **not_checked**: c"])
+        # Nothing is in bold when everything was met, and a status this report does not know is counted apart.
+        self.assertEqual(report.requirement_words(task(("a", "met"), ("b", "met")))[0],
+                         "- Requirements of the brief when review 4 accepted: 2. Met: 2. Not checked: 0. "
+                         "Said to be not delivered: 0.")
+        self.assertTrue(report.requirement_words(task(("a", "met"), ("b", "odd"), ("c", 3)))[0].endswith(
+            "Met: 1. Not checked: 0. Said to be not delivered: 0. **Answered otherwise: 2.**"))
+
+
+for _class in (HostReviewReportTests, OpenFindingsTests, RequirementsReportTests):
     for _name in tuple(vars(test_lifecycle.LifecycleFixture)):
         if _name.startswith("test_"):
             setattr(_class, _name, None)

@@ -816,6 +816,8 @@ class ReportTests(LocalTest):
     def test_a_shift_without_a_reviewer_seat_has_no_list_of_open_findings(self):
         doc=self.generate()
         self.assertIsNone(doc['open_findings'])
+        self.assertIsNone(doc['requirements_unchecked'])
+        self.assertNotIn('Requirements accepted unchecked',(self.shift/'report.md').read_text())
         self.assertNotIn('Findings left open',(self.shift/'report.md').read_text())
 
     def test_a_builder_written_review_backs_nothing_in_a_shift_whose_grant_has_a_reviewer_seat(self):

@@ -8,6 +8,7 @@ import time
 from . import channels, grants, receipts, repo_state
 from .layout import Refused
 from .receipt_schema import decode, validate_shape
+from .review import SCHEMA as UNLISTED, LISTED, SCHEMA_V3 as NAMING
 from .report_metrics import delta, metric, timestamp, unknown
 
 SCHEMA = 'sortie-kit.report.v2'
@@ -181,7 +182,15 @@ class Reader:
 def review_kept(data):
     """What the report keeps of a review receipt the host wrote: every attempt as the
     host recorded it, and of the reviewer's own record its target, its findings in
-    short and its answers to earlier findings. The receipt has the full text."""
+    short, its answers to earlier findings and, where the review was asked to
+    answer the brief requirement by requirement, that list in short
+    (`requirements_asked` is false and `requirements` null for a review of a
+    plan and for one that a build from before the list ran; `requirements_asked`
+    is null where the attempt has no record or one of a schema not known here,
+    so that nothing is said of what was asked). A finding of the schema in
+    which each names its requirement carries that `requirement`, a position
+    in the list or null; a finding of an earlier schema has no such key. The
+    receipt has the full text."""
     def short(value, limit):
         return value[:limit] if isinstance(value, str) else None
 
@@ -200,6 +209,17 @@ def review_kept(data):
                     # ACCEPT left unresolved is read from these, and one must not be lost.
                     prior=[dict(id=f.get('id'), resolved=f.get('resolved'), reason=short(f.get('reason'), 300))
                            for f in record.get('prior') or [] if isinstance(f, dict)][:64])
+        schema = record.get('schema') if isinstance(record.get('schema'), str) else None
+        asked = True if schema in LISTED else False if schema == UNLISTED else None
+        if schema == NAMING:
+            for kept, f in zip(item['findings'], listed('findings')):
+                place = f.get('requirement')
+                kept['requirement'] = place if type(place) is int and place >= 1 else None
+        needs = record.get('requirements')
+        # Every one, up to the contract's own bound: those not checked are counted from these.
+        item.update(requirements_asked=asked, requirements=[
+            dict(asked=short(f.get('asked'), 200), status=short(f.get('status'), 20), where=short(f.get('where'), 200))
+            for f in needs if isinstance(f, dict)][:64] if asked and isinstance(needs, list) else None)
         attempts.append(item)
     return dict({k: data.get(k) for k in ('target', 'base', 'implementer_family', 'reviewer', 'limit_seconds',
                                           'outcome', 'prior')}, attempts=attempts)
@@ -260,6 +280,8 @@ def task_summary(reader, task, shift_id, ledger, host_reviews=False):
         # of the candidate. An acceptance may be unbacked with this true: a build receipt
         # of the round may be what no longer holds.
         result['review_matched'] = False
+        # The reference itself, as the driver's record has it: what that review left is read from this receipt only.
+        result['accepted_receipt'] = accepted.get('receipt')
     for ref in task['receipts']:
         item = receipt_summary(reader, ref, task, shift_id, ledger)
         result['receipts'].append(item)
@@ -463,6 +485,10 @@ def extract(view, *, previous=None, reader=None):
     # Without every task of the driver's record there is no saying how many: not known, which is not none.
     result['open_findings'] = (None if not hosted(get(result['grant'], 'review_policy'))
                                else open_findings(result['tasks']) if summarized else dict(OPEN_UNKNOWN, items=[]))
+    result['requirements_unchecked'] = (None if not hosted(get(result['grant'], 'review_policy'))
+                                        else requirements_unchecked(result['tasks']) if summarized else dict(REQUIREMENTS_UNKNOWN, items=[]))
+    result['requirements_disclosed'] = (None if not hosted(get(result['grant'], 'review_policy'))
+                                        else requirements_disclosed(result['tasks']) if summarized else dict(DISCLOSED_UNKNOWN, items=[]))
     result['issues'] = reader.issues
     result['inputs'] = list(reader.inputs.values())
     result['status'] = 'partial' if reader.issues else 'evidence summarized'
@@ -723,6 +749,184 @@ def open_words(found):
     if not total and not lost:
         out.append('None: no review that ended in ACCEPT left a finding open.')
     return line, out + ['']
+
+
+REQUIREMENTS_UNKNOWN = dict(count=None, items=[], more=0, unasked=0, unread=0)  # the tasks could not be read in full
+
+
+def accepting_review(task):
+    """The review a task's recorded acceptance rests on, in a shift whose reviews are the
+    host's: (its receipt as read, the review's number, what is known of its list, the list).
+
+    It is the receipt the driver's record of the acceptance names
+    (`accepted_receipt` of the task summary) and no other: a later or earlier
+    ACCEPT among the task's receipts is not gone by. What is known is `asked`
+    with the list the review answered, `unasked` for a review that was asked
+    for none (a build from before the list ran it), or one of three that all
+    mean not known: `unread`, the named receipt is not among the task's
+    receipts or could not be read; `unmatched`, it was not found to be the
+    host's consumed ACCEPT of the candidate (`review_matched`); `unlisted`, it
+    does not say which was asked or does not hold the list it says it has.
+    None when no acceptance is recorded. The review of a plan answers no list."""
+    if not isinstance(task, dict) or 'accepted_receipt' not in task:
+        return None
+    ref = task['accepted_receipt']
+    rows = task.get('receipts') if isinstance(task.get('receipts'), list) else []
+    row = next((r for r in rows if isinstance(r, dict) and isinstance(ref, dict) and r.get('reference') == ref), None)
+    state, needs = 'unread', []
+    if row is not None and row.get('integrity') == 'matched' and isinstance(row.get('data'), dict):
+        state = 'unmatched'
+    if (state == 'unmatched' and task.get('review_matched') is True and row.get('role') == 'reviewer'
+            and get(row, 'reference', 'stage') == 'review' and get(row, 'data', 'outcome') == 'ACCEPT'):
+        state = 'unlisted'
+        attempts = get(row, 'data', 'attempts')
+        last = attempts[-1] if isinstance(attempts, list) and attempts and isinstance(attempts[-1], dict) else {}
+        listed = last.get('requirements')
+        if last.get('requirements_asked') is False:
+            state = 'unasked'
+        elif (last.get('requirements_asked') is True and isinstance(listed, list) and listed
+              and all(isinstance(n, dict) for n in listed)):
+            state, needs = 'asked', listed
+    path = get(ref, 'path')
+    number = next((get(r, 'review') for r in (task.get('reviews') if isinstance(task.get('reviews'), list) else [])
+                   if isinstance(r, dict) and path is not None and get(r, 'receipt', 'path') == path), None)
+    return row, number, state, needs
+
+
+def requirements_unchecked(tasks):
+    """What a brief asked for that the review a task was accepted on answered `not_checked`.
+
+    The host takes an ACCEPT beside such an answer, so the report counts them as
+    it counts the findings left open. `count`: how many there are; `items`:
+    those listed (at most OPEN_KEPT), each with `task`, `review`, `receipt`,
+    `asked` and `where`; `more`: how many of the count are not listed;
+    `unasked`: accepted reviews of a candidate that were asked for no list, so
+    nothing is known for them; `unread`: accepted reviews whose receipt could
+    not be read or relied on (see `accepting_review`: not among the task's
+    receipts, damaged, not the host's consumed ACCEPT of the candidate, or
+    without the list it says it has). `tasks` are the task summaries of `extract`."""
+    items, unasked, unread = [], 0, 0
+    for task in tasks:
+        found = accepting_review(task)
+        if found is None:
+            continue
+        row, number, state, needs = found
+        unasked, unread = unasked + (state == 'unasked'), unread + (state in ('unread', 'unmatched', 'unlisted'))
+        items += [dict(task=task.get('id'), review=number, receipt=get(row, 'reference', 'path'),
+                       asked=n.get('asked'), where=n.get('where')) for n in needs if n.get('status') == 'not_checked']
+    return dict(count=len(items), items=items[:OPEN_KEPT], more=len(items) - min(len(items), OPEN_KEPT),
+                unasked=int(unasked), unread=int(unread))
+
+
+DISCLOSED_UNKNOWN = dict(count=None, items=[], more=0)  # the tasks could not be read in full
+
+
+def requirements_disclosed(tasks):
+    """What a brief asked for that the review a task was accepted on answered `disclosed`:
+    not delivered, with the brief, as that review read it, allowing that to be
+    said in place of the work.
+
+    The host takes an ACCEPT beside such an answer and cannot read the brief,
+    so the report counts them: a task is not shown as accepted with nothing
+    open while its accepting review says a part of it is not there. `count`,
+    `items` (at most OPEN_KEPT, each with `task`, `review`, `receipt`, `asked`
+    and `where`) and `more` as in `requirements_unchecked`, which also holds
+    for how many accepted reviews no list could be read."""
+    items = []
+    for task in tasks:
+        found = accepting_review(task)
+        if found is None:
+            continue
+        row, number, _, needs = found
+        items += [dict(task=task.get('id'), review=number, receipt=get(row, 'reference', 'path'),
+                       asked=n.get('asked'), where=n.get('where')) for n in needs if n.get('status') == 'disclosed']
+    return dict(count=len(items), items=items[:OPEN_KEPT], more=len(items) - min(len(items), OPEN_KEPT))
+
+
+def disclosed_words(found, unchecked):
+    """The Outcome line on requirements accepted as disclosed, or None for a shift whose
+    reviews were not the host's. `unchecked` is `requirements_unchecked` of the
+    same report: where that could not read a list, this does not say none."""
+    if not isinstance(found, dict):
+        return None
+    line = '- Requirements accepted as said to be not delivered: '
+    if type(found.get('count')) is not int or found['count'] < 0:
+        return line + 'not known, for the same reason.'
+    # Whether every accepted review gave a list that could be read: only then is the number the whole number.
+    whole = (isinstance(unchecked, dict) and type(unchecked.get('count')) is int
+             and all(type(unchecked.get(name)) is int and unchecked.get(name) == 0 for name in ('unasked', 'unread')))
+    if found['count'] > 0:
+        return (line + str(found['count']) + '. The brief allowed saying so in place of the work, as the review that '
+                'accepted the task read it. They are listed under each task below.'
+                + ('' if whole else ' Not known for the accepted reviews named in the line above.'))
+    if whole:
+        return line + 'none.'
+    return line + 'none in the lists that could be read; not known for the accepted reviews named in the line above.'
+
+
+def unchecked_words(found):
+    """The Outcome line on requirements accepted unchecked, or None for a shift whose
+    reviews were not the host's. It never says none where something is not known."""
+    if not isinstance(found, dict):
+        return None
+    line = '- Requirements accepted unchecked: '
+    if type(found.get('count')) is not int:
+        return line + 'not known, because the tasks could not be read in full or were left out of this report.'
+    number = lambda name: found.get(name) if type(found.get(name)) is int and found.get(name) > 0 else 0
+    total, unasked, unread = number('count'), number('unasked'), number('unread')
+    lost = (count_words(unread, 'accepted review') + ', whose receipt could not be read or relied on') if unread else ''
+    old = ('no requirement list was asked of ' + count_words(unasked, 'accepted review')
+           + ', which a build from before the list ran') if unasked else ''
+    if total:
+        return (line + str(total) + '. They are listed under each task below.'
+                + (' Not known for ' + lost + '.' if lost else '') + (' And ' + old + '.' if old else ''))
+    if lost and old:
+        return line + 'not known for ' + lost + ', and ' + old + '; none in the others.'
+    if lost:
+        return line + 'not known for ' + lost + '; none in the others.'
+    if old:
+        return line + 'not known: ' + old + '.'
+    return line + 'none.'
+
+
+def requirement_words(task):
+    """The lines of a task on what its brief asks for, as the review that accepted it answered."""
+    found = accepting_review(task)
+    if found is None:
+        return []
+    row, number, state, needs = found
+    name = 'review ' + plain(number) if number is not None else 'the review'
+    if state == 'unlisted':
+        return ['- What the brief asks for: not known. The receipt of ' + name + ', which accepted this task, does '
+                    'not hold a requirement list this report can read.']
+    if state == 'unmatched':
+        return ['- What the brief asks for: not known. The review receipt the recorded acceptance names is not, as '
+                "kept, the host's consumed ACCEPT of this candidate, so no list is taken from it."]
+    if state == 'unread':
+        return ['- What the brief asks for: not known. The receipt of the review that accepted this task could not '
+                'be read; see "Problems with the evidence".']
+    if state == 'unasked':
+        return ['- What the brief asks for: no requirement list was asked of ' + name + ', which accepted this task. '
+                'It was run by a build from before the list, and the receipt is as that build wrote it.']
+    # An ACCEPT beside requirements nobody checked is honest only if the developer sees how
+    # much of the brief it rests on: the numbers come before the list.
+    said = [need.get('status') if isinstance(need.get('status'), str) else None for need in needs]
+    known = [('Met', 'met'), ('Not checked', 'not_checked'), ('Said to be not delivered', 'disclosed')]
+    parts = [(label, said.count(status), status != 'met') for label, status in known]
+    other = len(said) - sum(number for _, number, _ in parts)
+    parts += [('Answered otherwise', other, True)] if other else []
+    out = ['- Requirements of the brief when ' + name + ' accepted: ' + str(len(said)) + '. ' + ' '.join(
+        ('**%s: %d.**' if number and loud else '%s: %d.') % (label, number) for label, number, loud in parts)]
+    out += ['- What the brief asks for, as ' + name + ' that ended in ACCEPT answered it:']
+    for need in needs:
+        status, where = need.get('status'), need.get('where')
+        shown = plain(status, 20) if status == 'met' else '**' + plain(status, 20) + '**'
+        shown += ' (not delivered, and said so)' if status == 'disclosed' else ''
+        place = (' (' + ('seen at ' if status == 'met' else 'said at ' if status == 'disclosed' else 'place named: ')
+                 + plain(where, 200) + ')'
+                 if isinstance(where, str) and where.strip() else '')
+        out.append('  - ' + shown + ': ' + plain(need.get('asked'), 200) + place)
+    return out
 
 
 def wake_words(window):
@@ -1245,6 +1449,7 @@ def task_words(task, headless=False, policy=None):
             for review in reviews:
                 first, *below = review_words(review, receipts_kept)
                 lines += ['  - ' + first] + ['  ' + line for line in below]
+        lines += requirement_words(task)
     turns = task.get('turns') if isinstance(task.get('turns'), list) else []
     if turns:
         lines.append('- Builder turns: ' + str(len(turns)) + '.')
@@ -1613,6 +1818,10 @@ def markdown(doc, sha):
     out += temp_words(window)
     left_open, open_section = open_words(doc.get('open_findings'))
     out += [left_open] if left_open else []
+    unchecked = unchecked_words(doc.get('requirements_unchecked'))
+    out += [unchecked] if unchecked else []
+    told = disclosed_words(doc.get('requirements_disclosed'), doc.get('requirements_unchecked')) if unchecked else None
+    out += [told] if told else []
     noted, notes_section = notes_words(doc.get('driver_notes'))
     out.append(noted)
     out += head_words(window.get('repo'))
@@ -1756,6 +1965,10 @@ def write(view, *, previous=None):
         doc['not_started'] = doc['driver_notes'] = doc['last_activity'] = None
         if doc.get('open_findings') is not None:
             doc['open_findings'] = dict(OPEN_UNKNOWN, items=[])  # the tasks are dropped, and a list of their findings with them
+        if doc.get('requirements_unchecked') is not None:
+            doc['requirements_unchecked'] = dict(REQUIREMENTS_UNKNOWN, items=[])  # and what their reviews left unchecked
+        if doc.get('requirements_disclosed') is not None:
+            doc['requirements_disclosed'] = dict(DISCLOSED_UNKNOWN, items=[])  # or took as said to be not delivered
         raw = receipts.encoded(doc)
         text = rendered(doc, receipts.digest(raw))
     view.atomic('report.json', raw, replace=True)

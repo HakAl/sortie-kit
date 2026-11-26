@@ -141,6 +141,52 @@ clickable. If the readable part cannot be built from what was kept, a short
   whole entry is `null` when the kept grant has no reviewer seat (an earlier
   shift, whose reviews were the builder's reports, or a shift that was
   prepared and never signed) or could not be read.
+- `requirements_unchecked`: what a brief asked for that the review which
+  accepted the task answered `not_checked` (see
+  [the review contract](review.md)). The host takes an `ACCEPT` beside such
+  an answer, so the report counts them: `count`, `items` (those listed, at
+  most 256, each with `task`, `review`, `receipt`, `asked` and `where`),
+  `more` (how many of the count are not listed), `unasked` (accepted reviews
+  of a candidate that were asked for no list, because a build from before
+  the list ran them) and `unread` (accepted reviews whose receipt could not
+  be read or relied on: damaged, not the kept `ACCEPT` the acceptance rests
+  on, silent on which was asked, or without the list it says it has). `report.md` gives the
+  number under Outcome as "Requirements accepted unchecked" and never says
+  none while `unasked` or `unread` is above zero. Under each task that a
+  review accepted it says first how many requirements that review answered
+  and how many of them as met, as not checked and as said to be not
+  delivered (and how many otherwise, if any), since an `ACCEPT` beside
+  requirements nobody checked is honest only when the developer sees it;
+  then it lists every requirement of that review with its
+  status, as the reviewer worded it, cut to 200 characters; for a review
+  kept from before the list it says that no requirement list was asked, and
+  for one whose receipt could not be read or relied on that it is not
+  known, and why. Only the
+  review that the driver's record of the acceptance names is gone through
+  (`accepted_receipt` of the task, beside `review_matched`), and it counts
+  as `unread` when that receipt is not among the task's receipts or is not,
+  as kept, the host's consumed `ACCEPT` of the candidate. A plan
+  review answers no list, and the list of a review that asked for changes
+  is in its receipt. `count` is `null` and the whole entry is `null` in the
+  same cases as for `open_findings`. Each kept attempt of a review receipt
+  carries `requirements_asked` (`null` where the attempt has no object or
+  one of a schema this build does not know) and `requirements` (`null`
+  unless a list was asked). A requirement answered `met` is the reviewer's statement and was
+  not checked by anything. A kept finding of a commit review in which each
+  finding names its requirement carries `requirement`, a position in that
+  list or `null`; one of an earlier review has no such key.
+- `requirements_disclosed`: what a brief asked for that the review which
+  accepted the task answered `disclosed`: not delivered, with the brief, as
+  that review read it, allowing that to be said in place of the work. The
+  host takes an `ACCEPT` beside such an answer: `count`, `items` (at most
+  256, each with `task`, `review`, `receipt`, `asked` and `where`, the place
+  where it is said) and `more`, from the same one review per task as
+  `requirements_unchecked`. `report.md` gives the number under Outcome as
+  "Requirements accepted as said to be not delivered", lists each under its
+  task as `disclosed`, and while `requirements_unchecked`
+  has `unasked` or `unread` above zero it does not say none and says beside
+  a number that it is not known for those accepted reviews. `count` is `null` and the whole
+  entry is `null` in the same cases as for `open_findings`.
 - `actual_window.repo`: the closeout's `repo`, the host's two looks at the
   target repository (`start` and `end`, each with `head` and `changes`; see
   [the lifecycle](lifecycle.md#what-was-left-in-the-repository) for what a

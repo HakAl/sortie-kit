@@ -184,7 +184,9 @@ def main(argv=None):
     reviewing_subs = reviewing.add_subparsers(dest="review_command", required=True)
     told = reviewing_subs.add_parser("instructions", help="print what the reviewer of a plan or a commit is told")
     told.add_argument("kind", choices=("plan", "commit"))
-    judged = reviewing_subs.add_parser("check", help="say what the host would take from a saved reviewer output")
+    judged = reviewing_subs.add_parser("check", help="say what the host would take from a saved reviewer output; "
+                                                     "a commit review is read by the schema its object names, with "
+                                                     "the requirement list or, as kept by an earlier build, without")
     judged.add_argument("output", type=Path, help="the reviewer's saved output")
     judged.add_argument("--expected", type=Path, required=True,
                         help='JSON with "marker", "target" and "prior", as the host held them for that run')
@@ -211,7 +213,8 @@ def main(argv=None):
         except (OSError, ValueError, RecursionError, Refused) as exc:
             print(json.dumps({"status": "unusable", "detail": "expected context or output not usable: " + safe(str(exc))}))
             return 2
-        result = review.check(text, expected["marker"], expected["target"], expected["prior"])
+        # A saved output may be from before the requirement list: the object's own schema decides.
+        result = review.check(text, expected["marker"], expected["target"], expected["prior"], schema=None)
         print(json.dumps(result, sort_keys=True))
         return 0 if result["status"] == "complete" else 1
     if args.command == "report":

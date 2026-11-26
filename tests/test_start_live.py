@@ -112,13 +112,17 @@ if sys.argv[1] == "review":
     first = commit and not (audit / "asked-once").exists()
     if first:
         (audit / "asked-once").write_text("")
-    record = dict(schema="sortie-kit.review.v1", verdict="CHANGES" if first else "ACCEPT", target=shown["target"],
+    record = dict(schema=shown["schema"], verdict="CHANGES" if first else "ACCEPT", target=shown["target"],
                   findings=[dict(id="F1", severity="major", location="change.patch", claim="The fixture asks once.",
                                  evidence="Nothing: this is the fixture's one request for changes.",
                                  recommendation="Answer it.")] if first else [],
                   prior=[dict(id=item["id"], resolved=True, reason="The builder's answer holds.")
                          for item in (earlier or {{}}).get("earlier_findings", [])],
                   examined=sorted(os.listdir(".")), not_examined=[])
+    if "requirements" in shown:  # a commit review answers the brief requirement by requirement
+        record["requirements"] = [dict(asked="What the fixture's brief asks for.", status="met", where="change.patch")]
+        for item in record["findings"]:  # and each finding names the requirement it says is not delivered, or none
+            item["requirement"] = None
     note("reviews.jsonl", dict(argv=sys.argv[1:-1], cwd=os.getcwd(), files=sorted(os.listdir(".")),
                                verdict=record["verdict"], kind=shown["target"]["kind"], answers=earlier,
                                patch=Path("change.patch").read_text() if commit else None,

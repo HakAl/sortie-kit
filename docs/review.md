@@ -26,6 +26,21 @@ print the two texts (`data/templates/review-plan.md` and
   `major`, whatever its size, while an untested case or a weak test is not
   on its own such a breach and keeps the severity it would have had, and a
   doubt that could not be settled is still no finding;
+- for a commit only: to start from the brief and list each thing it asks
+  for, the outcome and every condition, and to answer each as `met`,
+  `not_met`, `not_checked` or `disclosed` with the place where that was
+  seen. `met` means the reviewer read the code that does it. A thing
+  delivered for only some of the cases the brief covers is `not_met`, and
+  every `not_met` is a finding. `disclosed` is only for a thing the brief
+  itself allows to be closed by saying that it is not delivered, when the
+  change says so; a gap the builder wrote down by its own choice is
+  `not_met`. Of each finding the reviewer is asked whether it means that
+  something the brief asks for is not delivered in some case, and then
+  names that requirement by its position in the list; otherwise the finding
+  names none. A finding that something the brief asks for is not delivered, or
+  for a defect task that the reported defect can still happen, is at least
+  `major`, whatever its size and however rare the input. What the brief says
+  to the builder about time is no reason to accept and lowers no severity;
 - what to return, with this run's two marker lines named inside sentences
   and an example object that the host would take in that round. No marker
   stands on a line of its own in the instructions, so a CLI that prints its
@@ -47,14 +62,21 @@ before they existed, so an object quoted in a patch or a plan is not taken
 for the answer. A code fence directly inside the markers is allowed; any
 other text there is not.
 
-The object has exactly these fields:
+The object has exactly these fields. A plan review has no `requirements`
+and its findings no `requirement`: it is the object of
+`sortie-kit.review.v1`, which a commit review's also was before the list.
+The object of a commit review is that one with the list added and, on each
+finding, the requirement it names. `sortie-kit.review.v2` is the list
+without that name and without the status `disclosed`; shifts kept from
+between the two hold it.
 
 | Field | Value |
 |---|---|
-| `schema` | `"sortie-kit.review.v1"` |
+| `schema` | `"sortie-kit.review.v3"` for a commit, `"sortie-kit.review.v1"` for a plan |
 | `verdict` | `"ACCEPT"` or `"CHANGES"` |
 | `target` | what was reviewed, as the host gave it: `{"kind": "commit", "commit": FULL_ID}` (40 or 64 hexadecimal characters) or `{"kind": "plan", "artifact": {"path": ..., "sha256": ...}}` |
-| `findings` | at most 64, each `id` (a short unique token), `severity` (`blocker`, `major`, `minor`), `location` (at most 500 characters), `claim`, `evidence`, `recommendation` (at most 2000 each) |
+| `findings` | at most 64, each `id` (a short unique token), `severity` (`blocker`, `major`, `minor`), `location` (at most 500 characters), `claim`, `evidence`, `recommendation` (at most 2000 each) and, for a commit only and then required, `requirement`: the position in `requirements`, counted from 1, of the thing the finding says is not delivered in some case, or `null` when it is about something else |
+| `requirements` | a commit only, and then required: 1 to 64 things the brief asks for, each `asked` (the reviewer's own few words, at most 500 characters), `status` (`met`, `not_met`, `not_checked`, `disclosed`) and `where` (a place in the patch or the tree, at most 500; the empty string only with `not_checked`; for `disclosed` the place where it is said) |
 | `prior` | in a repair round, one answer for each earlier finding and no other: `id`, `resolved` (true or false), `reason`; otherwise empty |
 | `examined` | what was read, in words; never empty |
 | `not_examined` | what was not read or could not be settled; may be empty |
@@ -67,19 +89,58 @@ The object has exactly these fields:
 - the output is longer than 1,000,000 characters;
 - there is no marker pair of this run, more than one, or what is between
   them is not one JSON object (a repeated key or `NaN` included);
+- the object is not of the schema the host asked for: a commit review
+  answered without the requirement list, or in the shape before a finding
+  named its requirement, is no review;
 - a field is missing, unknown or of the wrong shape, or `examined` is empty;
+- `requirements` is empty, has an entry with another field or status, or
+  has an empty `where` beside any status but `not_checked`;
+- a finding of a commit review has no `requirement`, or one that is not
+  `null` or a position in the list;
+- a finding names a requirement that the list marks `met` or `not_checked`,
+  whatever the verdict: a finding names only what is `not_met` or
+  `disclosed` (the reason quotes what was asked, as below);
 - `target` is not the one the host asked about;
 - `prior` does not answer exactly the earlier findings, or a new finding
   reuses an earlier id;
 - the verdict contradicts the object: `ACCEPT` with a blocker or major
   finding, `ACCEPT` while an earlier blocker or major finding is not
-  resolved, or `CHANGES` with no finding and no unresolved earlier finding.
+  resolved, `ACCEPT` beside a requirement answered `not_met` (the reason
+  quotes what was asked as one printable line, its white space folded, cut
+  to 80 characters), or `CHANGES` with no
+  finding and no unresolved earlier finding.
 
 An earlier minor finding left unresolved does not block an accept. A failed
-review is neither an accept nor a request for changes.
+review is neither an accept nor a request for changes. The host never
+rewrites a verdict: an answer that says `ACCEPT` and `not_met` together is
+refused whole, as any other that breaks the contract.
 
-A marker, target or list of earlier findings that the caller itself passes
-wrongly is refused outright and is not a failed review.
+`ACCEPT` beside a requirement answered `not_checked` is taken. It is not
+silent: the report lists, for each task a review accepted, every requirement
+with its status, and counts those accepted unchecked under Outcome (see
+[reports](reports.md)).
+
+`ACCEPT` beside a requirement answered `disclosed` is taken too. Some briefs
+allow a part to be closed by saying that it is not delivered; a reviewer
+that accepts such a task is right, and the part is neither `met` nor a
+breach. The report lists it under the task and counts it under Outcome,
+apart from the unchecked ones, so that a task is not shown as accepted with
+nothing open while its accepting review says a part of it is not there.
+Whether the brief did allow it is the reviewer's reading: the host does not
+read a brief.
+
+A marker, target, list of earlier findings or schema that the caller itself
+passes wrongly is refused outright and is not a failed review.
+
+The host that runs a review names the schema it asked for. Where a kept
+output is read again, by `sortie receipt validate` on a review receipt and
+by `sortie review check`, no schema is named and the object's own decides: a
+commit review kept by a build from before the list has none, one kept from
+before a finding named its requirement has the list alone, each is still what
+the host took then, and neither is rewritten. The report does not read a
+reviewer's output again. It goes by the object kept in the review receipt
+and its `schema`, and says of a review from before the list that no
+requirement list was asked.
 
 In a shift the host adds conditions of its own before it takes a verdict: the
 reviewer ended on its own with status 0 and was seen ended before its limit
@@ -96,10 +157,32 @@ repository's commit and status lines and the listing of the shift's `receipts/` 
 before the run. A run
 that misses one of these is a failed attempt whatever its object says. A
 failed review is run once more when the shift is active and a review may
-still start; a second failure blocks the task.
+still start; a second failure blocks the task. The second run gets a new
+directory and marker and the same instructions. It is not told why the first
+answer was refused; the reason is in the receipt and the report.
+
+## What the list does not show
 
 The check is of shape and consistency. It cannot tell whether a finding is
-true or whether the reviewer read what it lists.
+true, whether the reviewer read what it lists, or whether a requirement
+answered `met` is met.
+
+- The list is the reviewer's reading of the brief. The host does not read a
+  brief and cannot tell whether something it asks for is missing from the
+  list.
+- One review is one reading. The same reviewer on the same change gave
+  different verdicts in our replays: `ACCEPT` with no finding and `CHANGES`
+  with a major one. The list shows what the reviewer looked at, not that it
+  was right. A reviewer that misses a defect answers `met`, and nothing here
+  catches that. What the list takes away is the answer that names the gap
+  and accepts all the same.
+- A finding with `requirement` `null` is the reviewer saying that it is not
+  about anything the brief asks for. The host cannot tell whether that is
+  so, nor whether a part marked `disclosed` is one the brief let be closed
+  that way. Both are in the report for the developer to read.
+- A required list is one more thing an answer can get wrong, and an answer
+  that breaks the contract is a failed attempt. Two of them block the task
+  for the developer; they do not accept it.
 
 ## Checking a saved output
 
@@ -108,7 +191,9 @@ sortie review check OUTPUT.txt --expected EXPECTED.json
 ```
 
 `EXPECTED.json` holds exactly `marker`, `target` and `prior` (a list of
-`{"id", "severity"}`), as the host held them for that run. The command
+`{"id", "severity"}`), as the host held them for that run. A commit review
+is read by the schema its object names, with the requirement list or, as
+kept by an earlier build, without. The command
 prints the result as JSON and exits 0 for `complete`, 1 for `failed` (an
 output that is too long included) and 2 when a file could not be read or
 `EXPECTED.json` is not as described. It starts nothing and writes nothing.

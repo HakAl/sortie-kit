@@ -26,6 +26,26 @@ def record(verdict="ACCEPT", target=COMMIT, findings=(), prior=(), **changed):
                      prior=list(prior), examined=["change.patch", "src/pad.py"], not_examined=[]), **changed)
 
 
+V1, V2, V3 = "sortie-kit.review.v1", "sortie-kit.review.v2", "sortie-kit.review.v3"
+
+
+def need(asked="pad keeps the last cell of a row", status="met", where="src/pad.py:12", **changed):
+    return dict(dict(asked=asked, status=status, where=where), **changed)
+
+
+def listed(verdict="ACCEPT", requirements=None, **changed):
+    """A commit review as the host asks for it now: the brief answered requirement by requirement."""
+    return record(verdict, **dict(dict(schema=V2, requirements=[need()] if requirements is None else requirements),
+                                  **changed))
+
+
+def third(verdict="ACCEPT", requirements=None, findings=(), **changed):
+    """A commit review as the host asks for it now: each finding names the requirement it says is not
+    delivered in some case, by its position in the list, or none."""
+    return listed(verdict, requirements, **dict(dict(
+        schema=V3, findings=[dict(dict(requirement=None), **item) for item in findings]), **changed))
+
+
 def said(value, nonce=NONCE, before="I read the patch.\n", after=""):
     begin, end = review.markers(nonce)
     body = value if isinstance(value, str) else json.dumps(value, indent=1)
@@ -33,8 +53,8 @@ def said(value, nonce=NONCE, before="I read the patch.\n", after=""):
 
 
 class ContractTests(unittest.TestCase):
-    def check(self, text, target=COMMIT, prior=()):
-        return review.check(text, NONCE, target, list(prior))
+    def check(self, text, target=COMMIT, prior=(), schema=None):
+        return review.check(text, NONCE, target, list(prior), schema)
 
     def failed(self, text, part, **kw):
         result = self.check(text, **kw)
@@ -90,7 +110,8 @@ class ContractTests(unittest.TestCase):
         for name, value in (
                 ("an unknown field", record(score=9)),
                 ("a missing field", {k: v for k, v in record().items() if k != "not_examined"}),
-                ("another schema", record(schema="sortie-kit.review.v2")),
+                ("another schema", record(schema="sortie-kit.review.v9")),
+                ("a requirement list where none belongs", record(requirements=[need()])),
                 ("an unknown verdict", record("APPROVE")),
                 ("a lower-case verdict", record("accept")),
                 ("findings that are not a list", record(findings={})),
@@ -169,6 +190,195 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "CHANGES")  # an unresolved earlier finding is something to change
         self.assertEqual(self.check(said(record(prior=open_minor)), prior=prior)["verdict"], "ACCEPT")
 
+    def test_a_commit_review_answers_the_brief_requirement_by_requirement(self):
+        self.assertEqual((review.schema_for("commit"), review.schema_for("plan")), (V3, V1))
+        with self.assertRaises(Refused):
+            review.schema_for("branch")
+        several = listed(requirements=[need(), need("the old rows still load", "not_checked", ""),
+                                       need("nothing is written outside the cache", "not_checked", "tree/src/cache.py")])
+        for schema in (V2, None):
+            with self.subTest(schema=schema):
+                result = self.check(said(several), schema=schema)
+                self.assertEqual((result["status"], result["verdict"], result["reasons"]), ("complete", "ACCEPT", []))
+                self.assertEqual(result["record"], several)
+        self.assertEqual(review.validate(several, COMMIT, [], V2), "ACCEPT")
+
+    def test_the_host_takes_only_the_schema_it_asked_for(self):
+        # The live host knows what it asked: an answer in the earlier shape, written by habit, is no review.
+        result = self.failed(said(record()), "contract", schema=V2)
+        self.assertIn("the schema asked of this review is " + V2, result["reasons"][0])
+        result = self.failed(said(listed()), "contract", schema=V1)
+        self.assertIn("the schema asked of this review is " + V1, result["reasons"][0])
+        # The schema is looked at before the fields, so the reason names it and not the field that follows from it.
+        without = {key: value for key, value in listed().items() if key != "requirements"}
+        self.assertIn("requirements", self.failed(said(without), "contract", schema=V2)["reasons"][0])
+        # A plan is not asked for the list, and a record that carries one for a plan is refused whoever reads it.
+        plan = listed(target=PLAN)
+        self.failed(said(plan), "contract", target=PLAN)
+        self.failed(said(plan), "contract", target=PLAN, schema=V1)
+        self.assertEqual(self.check(said(record(target=PLAN)), target=PLAN, schema=V1)["verdict"], "ACCEPT")
+
+    def test_the_reason_names_the_list_only_where_the_list_is_what_is_wrong(self):
+        reason = lambda value: self.failed(said(value), "contract")["reasons"][0]
+        self.assertIn("this schema has no requirements list", reason(record(requirements=[need()])))
+        for value in (record(score=9), {k: v for k, v in record().items() if k != "not_examined"}, listed(score=9)):
+            self.assertNotIn("requirements list", reason(value))
+            self.assertIn("missing or unknown fields", reason(value))
+
+    def test_a_review_kept_from_before_the_list_is_still_read(self):
+        # With no schema named the record's own decides: this is a kept receipt read again, not a live answer.
+        self.assertEqual(self.check(said(record()))["verdict"], "ACCEPT")
+        self.assertEqual(self.check(said(record()), schema=V1)["verdict"], "ACCEPT")
+        self.assertEqual(review.validate(record(), COMMIT, []), "ACCEPT")
+
+    def test_a_schema_the_host_cannot_ask_for_is_the_callers_fault(self):
+        for target, schema in ((COMMIT, "sortie-kit.review.v9"), (PLAN, V2), (PLAN, V3), (COMMIT, ""), (COMMIT, 2)):
+            with self.subTest(target=target, schema=schema):
+                with self.assertRaises(Refused):
+                    review.asked(target, [], schema)
+                with self.assertRaises(Refused):
+                    review.check(said(listed()), NONCE, target, [], schema)
+                with self.assertRaises(Refused):
+                    review.validate(listed(), target, [], schema)
+        for target, schema in ((COMMIT, V3), (COMMIT, V2), (COMMIT, V1), (PLAN, V1), (COMMIT, None), (PLAN, None)):
+            review.asked(target, [], schema)
+
+    def test_the_requirement_list_has_exactly_its_shape(self):
+        for name, value in (
+                ("no list", {key: value for key, value in listed().items() if key != "requirements"}),
+                ("an empty list", listed(requirements=[])),
+                ("not a list", listed(requirements=dict(asked="x", status="met", where="y"))),
+                ("text for a list", listed(requirements="all met")),
+                ("too many", listed(requirements=[need("thing " + str(i)) for i in range(65)])),
+                ("an item that is not an object", listed(requirements=["pad keeps the last cell: met"])),
+                ("an unknown field", listed(requirements=[need(note="sure")])),
+                ("no where", listed(requirements=[dict(asked="x", status="not_checked")])),
+                ("a blank asked", listed(requirements=[need(" ")])),
+                ("asked that is not text", listed(requirements=[need(3)])),
+                ("an overlong asked", listed(requirements=[need("a" * 501)])),
+                ("an overlong where", listed(requirements=[need(where="w" * 501)])),
+                ("a status with a space", listed(requirements=[need(status="not met")])),
+                ("a status in capitals", listed(requirements=[need(status="MET")])),
+                ("a status that is not text", listed(requirements=[need(status=True)])),
+                ("met without where", listed(requirements=[need(where="")])),
+                ("not_met without where", listed("CHANGES", findings=[finding()], requirements=[need(status="not_met", where="")])),
+                ("a blank where", listed(requirements=[need(status="not_checked", where=" ")])),
+                ("where that is not text", listed(requirements=[need(status="not_checked", where=None)]))):
+            with self.subTest(name=name):
+                for schema in (V2, None):
+                    result = self.failed(said(value), "contract", schema=schema)
+                    self.assertIn("requirement", result["reasons"][0])
+        most = listed(requirements=[need("thing " + str(i), where="w" * 500) for i in range(63)] + [need("a" * 500)])
+        self.assertEqual(self.check(said(most), schema=V2)["verdict"], "ACCEPT")
+
+    def test_an_accept_beside_a_requirement_not_met_is_not_an_accept(self):
+        missed = need("retry seconds and the minimum wait agree", "not_met", "src/advice.py:88")
+        for schema in (V2, None):
+            result = self.failed(said(listed(requirements=[need(), missed])), "ACCEPT with a requirement answered not_met "
+                                 "(retry seconds and the minimum wait agree) is not an accept", schema=schema)
+            self.assertIsNone(result["record"])
+        # The same with the defect listed as a minor finding beside it, as a real shift's reviewer did.
+        self.failed(said(listed(findings=[finding(severity="minor")], requirements=[missed])), "answered not_met", schema=V2)
+        # What the refusal quotes of the reviewer's words is one short line.
+        long = need("first\x1b[31m line\nsecond\tline\u2028" + "x" * 200, "not_met")
+        reason = self.failed(said(listed(requirements=[long])), "answered not_met", schema=V2)["reasons"][0]
+        self.assertIn("(first [31m line second line " + "x" * 52 + ")", reason)
+        self.assertTrue(reason.isprintable(), reason)
+        # Sent back with a finding it is a review like any other; the host rewrites no verdict.
+        changes = listed("CHANGES", findings=[finding()], requirements=[need(), missed])
+        result = self.check(said(changes), schema=V2)
+        self.assertEqual((result["verdict"], result["record"]), ("CHANGES", changes))
+        # A requirement not met is not by itself a finding: CHANGES still names something to change.
+        self.failed(said(listed("CHANGES", requirements=[missed])), "CHANGES names nothing to change", schema=V2)
+
+    def test_an_accept_beside_a_requirement_not_checked_is_taken(self):
+        unchecked = listed(requirements=[need(), need("no caller outside the module changes", "not_checked", "")])
+        result = self.check(said(unchecked), schema=V2)
+        self.assertEqual((result["status"], result["verdict"]), ("complete", "ACCEPT"))
+        self.assertEqual(result["record"]["requirements"][1]["status"], "not_checked")
+        self.assertEqual(self.check(said(listed(requirements=[need(status="not_checked")])), schema=V2)["verdict"], "ACCEPT")
+
+    MISSED = need("retry seconds and the minimum wait agree", "not_met", "src/advice.py:88")
+
+    def test_a_finding_of_a_commit_review_names_the_requirement_it_says_is_not_delivered_or_none(self):
+        changes = third("CHANGES", [need(), self.MISSED], [finding(requirement=2), finding("F2", "minor")])
+        self.assertEqual([item["requirement"] for item in changes["findings"]], [2, None])
+        for schema in (V3, None):
+            result = self.check(said(changes), schema=schema)
+            self.assertEqual((result["status"], result["verdict"], result["record"]), ("complete", "CHANGES", changes))
+        self.assertEqual(self.check(said(third()), schema=V3)["verdict"], "ACCEPT")
+        # The field is on every finding, and is a position in this answer's own list or null.
+        for name, value in (("no field", listed("CHANGES", [self.MISSED], schema=V3, findings=[finding()])),
+                            ("zero", 0), ("past the list", 3), ("below it", -1), ("true", True), ("a fraction", 2.0),
+                            ("text", "2"), ("a list", [2])):
+            with self.subTest(name=name):
+                answer = value if isinstance(value, dict) else third(
+                    "CHANGES", [need(), self.MISSED], [finding(requirement=value)])
+                for schema in (V3, None):
+                    reason = self.failed(said(answer), "contract", schema=schema)["reasons"][0]
+                    self.assertIn("`requirement`", reason)
+        # A plan review has no list and so no such field; nor has a review kept in an earlier shape.
+        self.failed(said(third(target=PLAN)), "contract", target=PLAN)
+        for earlier in (record("CHANGES", findings=[finding(requirement=None)]),
+                        listed("CHANGES", [self.MISSED], findings=[finding(requirement=1)])):
+            self.failed(said(earlier), "contract")
+
+    def test_a_finding_that_names_a_requirement_marked_met_or_not_checked_is_no_review(self):
+        """Seen in a replay of a kept review: the requirement marked `met`, and a minor finding that said of
+        the same requirement that a case fails, under ACCEPT. The answer holds two things at once; the host
+        takes neither."""
+        for status, where in (("met", "src/advice.py:88"), ("not_checked", ""), ("not_checked", "src/advice.py:88")):
+            asked = need("retry seconds and the minimum wait agree", status, where)
+            for verdict, severity in (("ACCEPT", "minor"), ("CHANGES", "minor"), ("CHANGES", "major")):
+                with self.subTest(status=status, verdict=verdict, severity=severity):
+                    answer = third(verdict, [need(), asked], [finding(severity=severity, requirement=2)])
+                    for schema in (V3, None):
+                        result = self.failed(said(answer), "finding F1 names requirement 2 (retry seconds and the minimum "
+                                             "wait agree), which the list marks `" + status + "`", schema=schema)
+                        self.assertNotIn("contract", result["reasons"][0])
+                        self.assertIsNone(result["record"])
+        # The same finding with no requirement named is the reviewer saying it is about something else: taken.
+        aside = third(requirements=[need(), need("retry seconds and the minimum wait agree")],
+                      findings=[finding(severity="minor")])
+        self.assertEqual(self.check(said(aside), schema=V3)["verdict"], "ACCEPT")
+        # What the refusal quotes of the reviewer's words is one short printable line.
+        long = need("first\x1b[31m line\nsecond\tline\u2028" + "x" * 200)
+        reason = self.failed(said(third("CHANGES", [long], [finding(requirement=1)])), "names requirement 1", schema=V3)["reasons"][0]
+        self.assertIn("(first [31m line second line " + "x" * 52 + ")", reason)
+        self.assertTrue(reason.isprintable(), reason)
+        self.assertLess(len(reason), 300)
+
+    def test_an_accept_beside_not_met_stays_no_accept_and_a_finding_may_name_what_is_not_met(self):
+        named = third(requirements=[need(), self.MISSED], findings=[finding(severity="minor", requirement=2)])
+        self.failed(said(named), "ACCEPT with a requirement answered not_met", schema=V3)
+        sent_back = dict(named, verdict="CHANGES")
+        self.assertEqual(self.check(said(sent_back), schema=V3)["verdict"], "CHANGES")
+
+    def test_a_requirement_the_brief_lets_be_closed_by_saying_so_is_disclosed_and_an_accept_beside_it_is_taken(self):
+        """Seen on a real shift: the brief allowed either delivering a part or saying where that it is not
+        delivered. The reviewer was right to accept, and the part was neither met nor a breach."""
+        told = need("the second part, or a statement that it is not delivered", "disclosed", "docs/notes.md:12")
+        for findings in ([], [finding(severity="minor", requirement=2)]):
+            answer = third(requirements=[need(), told], findings=findings)
+            for schema in (V3, None):
+                result = self.check(said(answer), schema=schema)
+                self.assertEqual((result["status"], result["verdict"], result["record"]), ("complete", "ACCEPT", answer))
+        # It names the place where it is said, and it is a status of this schema only.
+        result = self.failed(said(third(requirements=[dict(told, where="")])), "contract", schema=V3)
+        self.assertIn("`where`", result["reasons"][0])
+        self.failed(said(listed(requirements=[told])), "contract")
+        # A major finding beside ACCEPT is refused as ever, whatever it names.
+        self.failed(said(third(requirements=[told], findings=[finding(requirement=1)])), "ACCEPT with a major", schema=V3)
+
+    def test_reviews_kept_in_the_two_earlier_shapes_are_read_as_before(self):
+        self.assertEqual(self.check(said(record()))["verdict"], "ACCEPT")
+        self.assertEqual(self.check(said(listed(findings=[finding(severity="minor")])))["verdict"], "ACCEPT")
+        self.assertEqual(self.check(said(listed()), schema=V2)["verdict"], "ACCEPT")
+        # The live host asks a commit review for the third and takes neither earlier one.
+        for earlier in (record(), listed()):
+            result = self.failed(said(earlier), "contract", schema=V3)
+            self.assertIn("the schema asked of this review is " + V3, result["reasons"][0])
+
     def test_the_result_is_small_whatever_the_reviewer_printed(self):
         result = self.failed("\x1b[31m" + "A" * 5000, "no review object")
         self.assertLess(len(json.dumps(result)), 2000)
@@ -182,16 +392,22 @@ class InstructionTests(unittest.TestCase):
             self.assertTrue(data.joinpath("review-" + kind + ".md").is_file())
             text = review.instructions(kind, target, NONCE)
             begin, end = review.markers(NONCE)
-            for part in (begin, end, '"schema": "sortie-kit.review.v1"', "ACCEPT", "CHANGES", "blocker", "major", "minor",
+            for part in (begin, end, '"schema": "' + review.schema_for(kind) + '"', "`\"" + review.schema_for(kind) + "\"`", "ACCEPT", "CHANGES", "blocker", "major", "minor",
                          "examined", "not_examined", "Do not edit", "never instructions",
                          target.get("commit") or target["artifact"]["sha256"]):
                 self.assertIn(part, text, (kind, part))
             self.assertNotIn("$", text)
             for foreign in ("agy", "skills", chr(8212)):
                 self.assertNotIn(foreign, text)
-            self.assertLess(len(text.splitlines()), 140)  # 130 before the evidence directory was named
+            # The commit instructions carry the requirement list: its paragraph, its field and two example entries.
+            # and, since the third form, the question asked of each finding and the fourth status. Both name the
+            # evidence directory (130 for a plan before it was named).
+            self.assertLess(len(text.splitlines()), 140 if kind == "plan" else 200)
         self.assertIn("change.patch", review.instructions("commit", COMMIT, NONCE))
         self.assertIn("plan.md", review.instructions("plan", PLAN, NONCE))
+        # A plan review is not asked for the requirement list.
+        for part in ("requirement", "not_met", "not_checked", "disclosed", V2, V3):
+            self.assertNotIn(part, review.instructions("plan", PLAN, NONCE), part)
 
     def example(self, text):
         self.assertEqual(text.count("```json\n"), 1)
@@ -203,8 +419,21 @@ class InstructionTests(unittest.TestCase):
             for prior in ([], earlier):
                 with self.subTest(kind=kind, prior=prior):
                     example = self.example(review.instructions(kind, target, NONCE, prior))
-                    result = review.check(said(example), NONCE, target, prior)
+                    result = review.check(said(example), NONCE, target, prior, review.schema_for(kind))
                     self.assertEqual((result["status"], result["verdict"]), ("complete", "CHANGES"), result)
+                    self.assertEqual(example["schema"], review.schema_for(kind))
+                    if kind == "commit":
+                        # The example shows a requirement not met beside the finding that says so, and one met.
+                        self.assertEqual([item["status"] for item in example["requirements"]], ["met", "not_met"])
+                        self.assertEqual(example["requirements"][1]["where"], example["findings"][0]["location"])
+                        # The finding names that requirement, and the list stands before the findings that
+                        # count into it, in the order a reviewer writes the object.
+                        self.assertEqual(example["findings"][0]["requirement"], 2)
+                        names = list(example)
+                        self.assertLess(names.index("requirements"), names.index("findings"))
+                        self.assertEqual(names[:3], ["schema", "verdict", "target"])
+                    else:
+                        self.assertNotIn("requirements", example)
                     # A repair round's example shows an answer for each earlier finding by its own id.
                     self.assertEqual([item["id"] for item in example["prior"]], [item["id"] for item in prior])
 
@@ -227,7 +456,8 @@ class InstructionTests(unittest.TestCase):
                     self.assertEqual(review.check(numbered, NONCE, target, prior)["status"], "failed")
                     # And it does not spoil the real answer that follows it.
                     answers = [dict(id=item["id"], resolved=True, reason="checked") for item in prior]
-                    result = review.check(text + said(record(target=target, prior=answers)), NONCE, target, prior)
+                    answer = (third if kind == "commit" else record)(target=target, prior=answers)
+                    result = review.check(text + said(answer), NONCE, target, prior, review.schema_for(kind))
                     self.assertEqual((result["status"], result["verdict"]), ("complete", "ACCEPT"), result)
 
     def test_the_instructions_say_how_long_and_how_named(self):
@@ -262,6 +492,49 @@ class InstructionTests(unittest.TestCase):
             # The verdict rule is as it was, so such a finding leads to CHANGES.
             self.assertIn("Verdict: `ACCEPT` when no blocker or major finding stands. `CHANGES` when one does, or when "
                           "you judge the minor ones must be fixed first. You may accept and still list minor findings.", text)
+
+    def test_the_commit_review_is_told_to_answer_the_brief_requirement_by_requirement(self):
+        """Seen on a real shift: the brief asked for one thing, the reviewer found that the reported defect
+        could still happen, rated it minor and accepted. The must-hold rule did not fire, because the brief
+        stated the wanted behaviour as the task itself. The reviewer now lists what the brief asks for and
+        answers each; the host refuses an accept beside one not met."""
+        text = " ".join(review.instructions("commit", COMMIT, NONCE).split())
+        for part in ("Start from the brief.", "under `requirements`", "`met`, `not_met`, `not_checked` or `disclosed`",
+                     "`met` means you read the code that does it, not that a test or a message says so.",
+                     "Every `not_met` is a finding.",
+                     "for a finding that something the brief asks for is not delivered, unless you marked it "
+                     "`disclosed`, and, where the task is a "
+                     "defect, for a finding that the reported defect can still happen after the change: at least "
+                     "`major`, whatever its size",
+                     "The host does not take an `ACCEPT` beside a `not_met`",
+                     "is no reason to accept and does not lower a severity.",
+                     "- `requirements`: a list, never empty.", "`asked`", "`where`"):
+            self.assertIn(part, text, part)
+        # Words that were tried on kept reviews and changed nothing are not shipped; the field has one spelling.
+        for gone in ("callers outside the task", "`not met`", "`not checked`"):
+            self.assertNotIn(gone, text, gone)
+
+    def test_the_commit_review_is_asked_of_each_finding_which_requirement_it_says_is_not_delivered(self):
+        """Seen in a replay: a requirement marked `met` beside a finding that said a case of it fails. The
+        question is put per finding, and what the brief lets be closed by saying so has its own status."""
+        text = " ".join(review.instructions("commit", COMMIT, NONCE).split())
+        for part in ("does this finding mean that something the brief asks for is not delivered in some case? Then "
+                     "name it under `requirement`",
+                     "by its position in your list, counted from 1",
+                     "A test that proves less than it claims is `null` unless the brief asks for that test by name.",
+                     "The host does not take a finding that names a requirement you marked `met` or `not_checked`",
+                     "`disclosed` is only for a thing that `brief.md` itself allows to be closed by saying that it "
+                     "is not delivered",
+                     "A gap, a limit or a note of work left that the builder wrote down by its own choice is `not_met`",
+                     "`met`, `not_met`, `not_checked` or `disclosed`", "`requirement` (", "`null`",
+                     # From the one read of this form: a disclosure the brief allows is no breach to rate major,
+                     # and the two paragraphs on findings and on proof that is not here say the same status.
+                     "A requirement you marked `disclosed` needs no finding",
+                     "unless you marked it `disclosed`",
+                     "a requirement that rests on it is `not_checked`",
+                     "where in the patch, the tree or `evidence/` you saw it",
+                     "the place in the patch, the tree or `evidence/` where you saw it"):
+            self.assertIn(part, text, part)
 
     def test_a_repair_round_lists_the_earlier_findings_to_answer(self):
         prior = [dict(id="F1", severity="major"), dict(id="F2", severity="minor")]
@@ -307,6 +580,16 @@ class CommandTests(unittest.TestCase):
             output.write_text(said(record()))
             code, text = self.run_cli("review", "check", str(output), "--expected", str(expected))
             self.assertEqual((code, json.loads(text)["verdict"]), (0, "ACCEPT"))
+            # A saved output is checked by the schema its own object names: one of a commit review of now, with
+            # its requirement list, and one kept from before the list.
+            for kept in (listed(), third(findings=[finding(severity="minor")])):
+                output.write_text(said(kept))
+                code, text = self.run_cli("review", "check", str(output), "--expected", str(expected))
+                self.assertEqual((code, json.loads(text)["verdict"]), (0, "ACCEPT"))
+            output.write_text(said(listed(requirements=[need(status="not_met")])))
+            code, text = self.run_cli("review", "check", str(output), "--expected", str(expected))
+            self.assertEqual((code, json.loads(text)["status"]), (1, "failed"))
+            self.assertIn("answered not_met", json.loads(text)["reasons"][0])
             output.write_text("no object here")
             code, text = self.run_cli("review", "check", str(output), "--expected", str(expected))
             self.assertEqual((code, json.loads(text)["status"]), (1, "failed"))
@@ -343,7 +626,7 @@ class CommandTests(unittest.TestCase):
         for kind in ("plan", "commit"):
             code, text = self.run_cli("review", "instructions", kind)
             self.assertEqual(code, 0)
-            self.assertIn('"schema": "sortie-kit.review.v1"', text)
+            self.assertIn('"schema": "' + review.schema_for(kind) + '"', text)
             self.assertIn("BEGIN SORTIE REVIEW", text)
 
 

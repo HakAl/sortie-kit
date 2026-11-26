@@ -792,8 +792,10 @@ class Driver:
             reasons.append("what the reviewer printed could not be read back")
         else:
             try:
+                # The host names the schema it asked for: a commit review answers the brief requirement by
+                # requirement, and an answer in the earlier shape is a failed attempt, not a silent pass.
                 result = contract.check(held["said"].decode("utf-8", "replace"), running["marker"], review["target"],
-                                        review["prior"])
+                                        review["prior"], contract.schema_for(review["target"]["kind"]))
                 reasons += result["reasons"]
             except Refused as exc:
                 reasons.append("the review could not be checked: " + str(exc)[:300])
@@ -863,7 +865,10 @@ class Driver:
                                    ("location", "claim", "evidence", "recommendation")},
                                   id=answer["id"], severity=severity[answer["id"]], earlier=True,
                                   reviewer_reason=answer["reason"]))
-        items += [dict(item, earlier=False, reviewer_reason=None) for item in record["findings"]]
+        # The finding as the builder can use it: the requirement a finding names is a position in the
+        # reviewer's own list, which neither the builder nor the next review is given.
+        items += [dict({name: item[name] for name in ("id", "severity", "location", "claim", "evidence", "recommendation")},
+                       earlier=False, reviewer_reason=None) for item in record["findings"]]
         items.sort(key=lambda item: SEVERITY[item["severity"]])
         return items[:OUTSTANDING], len(items[OUTSTANDING:])
 

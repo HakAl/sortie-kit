@@ -194,7 +194,10 @@ What the check makes of it, whoever presents it:
 - the kept standard output of a complete attempt is read again and run
   through [the review contract](review.md) with the attempt's marker, the
   target and the earlier findings, and must give exactly the verdict and
-  record the receipt states;
+  record the receipt states. The object is read by the schema it names: a
+  candidate review of a build from before the requirement list has none and
+  still verifies, and one with the list must keep the contract of its own
+  schema, the earlier or the one in which each finding names its requirement;
 - a failed attempt has a reason and neither verdict nor record;
 - the outcome is the last attempt's verdict when that attempt is complete,
   and `FAILED` otherwise.

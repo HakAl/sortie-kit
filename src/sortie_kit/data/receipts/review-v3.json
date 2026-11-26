@@ -58,13 +58,20 @@
         "verdict": "ACCEPT",
         "reasons": [],
         "record": {
-          "schema": "sortie-kit.review.v1",
+          "schema": "sortie-kit.review.v3",
           "verdict": "ACCEPT",
           "target": {
             "kind": "commit",
             "commit": "0000000000000000000000000000000000000000"
           },
           "findings": [],
+          "requirements": [
+            {
+              "asked": "What the brief asks for, as the reviewer put it.",
+              "status": "met",
+              "where": "change.patch"
+            }
+          ],
           "prior": [],
           "examined": [
             "change.patch"

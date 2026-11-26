@@ -50,9 +50,21 @@ class ReceiptTests(LocalTest):
         begin, end = review.markers(nonce or self.NONCE)
         return "I read the patch.\n" + begin + "\n" + json.dumps(record, indent=1) + "\n" + end + "\n"
 
-    def record(self, target, verdict="ACCEPT", findings=(), prior=()):
-        return dict(schema="sortie-kit.review.v1", verdict=verdict, target=target, findings=list(findings),
-                    prior=list(prior), examined=["change.patch"], not_examined=[])
+    def need(self, asked="the word says after", status="met", where="source.txt:1"):
+        return dict(asked=asked, status=status, where=where)
+
+    def record(self, target, verdict="ACCEPT", findings=(), prior=(), requirements=None, schema=None):
+        """A reviewer's answer as the host asks for it: a commit review answers the brief requirement by
+        requirement, a plan review does not. `schema` names the earlier shape, as a kept shift has it."""
+        from sortie_kit import review
+        schema = schema or review.schema_for(target["kind"])
+        value = dict(schema=schema, verdict=verdict, target=target, findings=list(findings),
+                     prior=list(prior), examined=["change.patch"], not_examined=[])
+        if schema in review.LISTED:
+            value["requirements"] = [self.need()] if requirements is None else list(requirements)
+        if schema == review.SCHEMA_V3:  # each finding names the requirement it says is not delivered, or none
+            value["findings"] = [dict(dict(requirement=None), **item) for item in value["findings"]]
+        return value
 
     def finding(self, identity="F1", severity="major"):
         return dict(id=identity, severity=severity, location="source.txt:1", claim="wrong word", evidence="line 1",
@@ -318,6 +330,34 @@ class ReceiptTests(LocalTest):
         value, expected = self.case(record=self.record(target, prior=answered), prior=prior)
         with self.assertRaisesRegex(Refused, "kept review output"):
             self.validate(value, expected)
+
+    def test_a_review_kept_from_before_the_requirement_list_still_verifies_and_one_with_the_list_does(self):
+        """The check reads a kept output again by the schema its own object names. A shift kept by an earlier
+        build has commit reviews without the list; they are what the host took then and are not rewritten."""
+        target = dict(kind="commit", commit=self.candidate)
+        earlier = self.record(target, schema="sortie-kit.review.v1")
+        self.assertNotIn("requirements", earlier)
+        self.assertDiagnostic(self.validate(*self.case(record=earlier)))
+        for schema in ("sortie-kit.review.v2", "sortie-kit.review.v3"):
+            listed = self.record(target, requirements=[self.need(), self.need("old rows still load", "not_checked", "")],
+                                 schema=schema)
+            self.assertDiagnostic(self.validate(*self.case(record=listed)))
+        self.assertEqual(self.record(target)["schema"], "sortie-kit.review.v3")
+        # The third shape: a part the brief lets be closed by saying so, and a minor finding that names it.
+        told = self.record(target, findings=[dict(self.finding("F1", "minor"), requirement=2)],
+                           requirements=[self.need(), self.need("the second part, or a statement", "disclosed", "notes.md:3")])
+        self.assertDiagnostic(self.validate(*self.case(record=told)))
+        contradicted = self.record(target, findings=[dict(self.finding("F1", "minor"), requirement=1)])
+        with self.assertRaisesRegex(Refused, "kept review output"):
+            self.validate(*self.case(record=contradicted))
+        # A kept output with the list that the host would not have taken is refused here too.
+        for name, broken in (("an accept beside not_met", self.record(target, requirements=[self.need(status="not_met")])),
+                             ("an empty list", self.record(target, requirements=[])),
+                             ("disclosed on the second schema", self.record(target, schema="sortie-kit.review.v2", requirements=[
+                                 self.need("the second part", "disclosed", "notes.md:3")])),
+                             ("the list on the earlier schema", dict(earlier, requirements=[self.need()]))):
+            with self.subTest(name=name), self.assertRaisesRegex(Refused, "kept review output"):
+                self.validate(*self.case(record=broken))
 
     def test_a_failed_review_and_one_that_asks_for_changes_stay_blocked(self):
         value, expected = self.case(record=self.record(dict(kind="commit", commit=self.candidate), "CHANGES", [self.finding()]))

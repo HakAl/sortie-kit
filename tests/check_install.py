@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory(dir=scratch) as directory:
     # The review contract ships in the wheel: what a reviewer is told, and the check of its answer.
     for kind in ("plan", "commit"):
         told = run([cli, "review", "instructions", kind]).stdout
-        assert '"schema": "sortie-kit.review.v1"' in told and "=====BEGIN SORTIE REVIEW " in told
+        assert '"schema": "sortie-kit.review.v' + ("3" if kind == "commit" else "1") + '"' in told and "=====BEGIN SORTIE REVIEW " in told
     assert '"status": "unusable"' in run([cli, "review", "check", "/nonexistent", "--expected", "/nonexistent"], 2).stdout
     # The pane transport, the journal and the runtime starters are not in the wheel.
     import importlib.util

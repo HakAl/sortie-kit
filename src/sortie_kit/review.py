@@ -6,6 +6,14 @@ that carry a value made for that run. The host takes a verdict only from an
 object that parses, has exactly the fields below, names the target the host
 asked about and does not contradict itself. Anything else is a failed review:
 never an accept and never a request for changes.
+
+A commit review answers the brief requirement by requirement, under
+`requirements`, and each of its findings names the requirement it says is not
+delivered in some case, or none; its object is `sortie-kit.review.v3`. A plan
+review does neither, and its object is `sortie-kit.review.v1`, as a commit
+review's was in shifts kept from before the list. `sortie-kit.review.v2` is
+the list without the name on a finding and without the status `disclosed`:
+shifts kept from between the two hold it, and it is read as it was.
 """
 from __future__ import annotations
 
@@ -18,6 +26,10 @@ from . import channels
 from .layout import Refused
 
 SCHEMA = "sortie-kit.review.v1"
+SCHEMA_V2 = "sortie-kit.review.v2"  # v1 and the requirement list; asked of commit reviews only
+SCHEMA_V3 = "sortie-kit.review.v3"  # v2, a finding that names its requirement, and the status `disclosed`
+SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3)
+LISTED = (SCHEMA_V2, SCHEMA_V3)  # the schemas with a requirement list: of a commit review only
 KINDS = ("plan", "commit")
 VERDICTS = ("ACCEPT", "CHANGES")
 SEVERITIES = ("blocker", "major", "minor")
@@ -25,6 +37,10 @@ BLOCKING = ("blocker", "major")
 FIELDS = {"schema", "verdict", "target", "findings", "prior", "examined", "not_examined"}
 FINDING = {"id", "severity", "location", "claim", "evidence", "recommendation"}
 ANSWER = {"id", "resolved", "reason"}
+REQUIREMENT = {"asked", "status", "where"}
+STATUSES = ("met", "not_met", "not_checked")
+DISCLOSED = "disclosed"  # asked for, not delivered, and the brief itself allows saying so instead: v3 only
+NAMEABLE = ("not_met", DISCLOSED)  # what a finding may name: a requirement its own list says is not delivered
 OUTPUT_LIMIT = 1_000_000  # characters of reviewer output the host will look through
 ITEMS = 64
 NONCE = re.compile(r"[0-9a-f]{16}\Z")
@@ -63,6 +79,13 @@ def target_checked(kind, target):
     return target
 
 
+def schema_for(kind):
+    """The schema the host asks of a review of this kind today."""
+    if kind not in KINDS:
+        raise Refused("a review is of a plan or of a commit")
+    return SCHEMA_V3 if kind == "commit" else SCHEMA
+
+
 def prior_checked(prior):
     """The earlier findings a repair round must answer: their ids and severities."""
     if not isinstance(prior, list) or len(prior) > ITEMS:
@@ -92,13 +115,21 @@ def instructions(kind, target, value, prior=()):
     prior = prior_checked(list(prior))
     earlier_ids = {item["id"] for item in prior}
     new = next(name for name in ("F" + str(i) for i in range(1, ITEMS + 2)) if name not in earlier_ids)
-    example = dict(schema=SCHEMA, verdict="CHANGES", target=target, findings=[dict(
-        id=new, severity="major", location="path/to/file.py:42" if kind == "commit" else "plan.md, step 3",
-        claim="One sentence: what is wrong.", evidence="What you read that shows it.",
-        recommendation="What would put it right.")],
-        prior=[dict(id=item["id"], resolved=True, reason="What you checked that shows it is resolved, or is not.")
-               for item in prior],
-        examined=["plan.md" if kind == "plan" else "change.patch", "tree/path/to/file.py"], not_examined=[])
+    # In the order a reviewer writes it: the list stands before the findings that count into it.
+    example = dict(schema=schema_for(kind), verdict="CHANGES", target=target)
+    found = dict(id=new, severity="major", location="path/to/file.py:42" if kind == "commit" else "plan.md, step 3",
+                 claim="One sentence: what is wrong.", evidence="What you read that shows it.",
+                 recommendation="What would put it right.")
+    if example["schema"] == SCHEMA_V3:
+        example["requirements"] = [
+            dict(asked="One thing the brief asks for, in a few of your own words.", status="met",
+                 where="path/to/other.py:17"),
+            dict(asked="Another thing it asks for.", status="not_met", where="path/to/file.py:42")]
+        found["requirement"] = 2
+    example.update(findings=[found],
+                   prior=[dict(id=item["id"], resolved=True, reason="What you checked that shows it is resolved, or is not.")
+                          for item in prior],
+                   examined=["plan.md" if kind == "plan" else "change.patch", "tree/path/to/file.py"], not_examined=[])
     answers = earlier = ""
     if prior:
         names = ", ".join(item["id"] + " (" + item["severity"] + ")" for item in prior)
@@ -109,7 +140,7 @@ def instructions(kind, target, value, prior=()):
                    "when the finding rested only on proof this directory cannot hold. Give new findings new ids.\n\n")
     text = files("sortie_kit").joinpath("data", "templates", "review-" + kind + ".md").read_text()
     for name, filled in (("$ANSWERS\n", answers), ("$PRIOR", earlier), ("$BEGIN", begin), ("$END", end),
-                         ("$EXAMPLE", json.dumps(example, indent=2, sort_keys=True))):
+                         ("$EXAMPLE", json.dumps(example, indent=2))):
         if text.count(name) != 1:
             raise Refused("packaged review instructions are damaged")
         text = text.replace(name, filled)
@@ -157,17 +188,71 @@ def strings(value, limit, *, empty):
             and all(isinstance(item, str) and item.strip() and len(item) <= limit for item in value))
 
 
-def validate(record, target, prior):
-    """The verdict of a record that keeps the contract; refused otherwise."""
-    asked(target, prior)
+def short(words):
+    """A reviewer's own words as they go into a reason that is kept and shown: one short printable line."""
+    return " ".join("".join(c if c.isprintable() else " " for c in words).split())[:80]
+
+
+def requirements_checked(value, disclosed=False):
+    """What the brief asks for, each thing with whether the change does it and where that was seen.
+    `disclosed` is a status of the third schema only."""
+    statuses = STATUSES + ((DISCLOSED,) if disclosed else ())
+    if not isinstance(value, list) or not value or len(value) > ITEMS:
+        raise Refused("requirements is a list of at least one and at most " + str(ITEMS) + " things the brief asks for")
+    for item in value:
+        if not isinstance(item, dict) or set(item) != REQUIREMENT:
+            raise Refused("a requirement has exactly `asked`, `status` and `where`")
+        if not isinstance(item["asked"], str) or not item["asked"].strip() or len(item["asked"]) > 500:
+            raise Refused("the `asked` of a requirement is nonblank text of at most 500 characters")
+        if not isinstance(item["status"], str) or item["status"] not in statuses:
+            raise Refused("the `status` of a requirement is `met`, `not_met`" + (
+                ", `not_checked` or `disclosed`" if disclosed else " or `not_checked`"))
+        where = item["where"]
+        if not isinstance(where, str) or len(where) > 500 or (where and not where.strip()):
+            raise Refused("the `where` of a requirement is text of at most 500 characters")
+        if not where and item["status"] != "not_checked":
+            raise Refused("the `where` of a requirement may be empty only when its status is `not_checked`")
+
+
+def validate(record, target, prior, schema=None):
+    """The verdict of a record that keeps the contract; refused otherwise.
+
+    With `schema` named the record must be of that schema: the host that runs a
+    review knows what it asked. With none the record's own decides, the earlier
+    one or, for a commit, the one with the requirement list: that is a kept
+    output read again, which may be from before the list.
+    """
+    asked(target, prior, schema)
     try:
-        channels.fields(record, FIELDS)
-        if record["schema"] != SCHEMA or record["verdict"] not in VERDICTS:
-            raise Refused("unknown schema or verdict")
+        if not isinstance(record, dict):
+            raise Refused("missing or unknown fields")
+        # The schema is looked at before the fields, so an answer in another shape is told which one was asked.
+        named = record.get("schema")
+        if schema is not None and (not isinstance(named, str) or named != schema):
+            raise Refused("the schema asked of this review is " + schema)
+        if not isinstance(named, str) or named not in SCHEMAS or (named in LISTED and target["kind"] != "commit"):
+            raise Refused("unknown schema, or the schema of a commit review on a plan")
+        listed, naming = named in LISTED, named == SCHEMA_V3
+        if listed and "requirements" not in record:
+            raise Refused("a commit review answers the brief under `requirements`, which is missing")
+        try:
+            channels.fields(record, FIELDS | ({"requirements"} if listed else set()))
+        except Refused:
+            raise Refused("missing or unknown fields" + ("; this schema has no requirements list"
+                                                         if not listed and "requirements" in record else "")) from None
+        if listed:
+            requirements_checked(record["requirements"], disclosed=naming)
+        if record["verdict"] not in VERDICTS:
+            raise Refused("unknown verdict")
         if not isinstance(record["findings"], list) or len(record["findings"]) > ITEMS:
             raise Refused("findings are a short list")
         for item in record["findings"]:
-            channels.fields(item, FINDING)
+            if naming and (not isinstance(item, dict) or "requirement" not in item
+                           or not (item["requirement"] is None or (type(item["requirement"]) is int
+                                   and 1 <= item["requirement"] <= len(record["requirements"])))):
+                raise Refused("each finding has `requirement`: the position in `requirements`, counted from 1, of "
+                              "the thing it says is not delivered in some case, or null")
+            channels.fields(item, FINDING | ({"requirement"} if naming else set()))
             channels.token(item["id"])
             if item["severity"] not in SEVERITIES:
                 raise Refused("unknown severity")
@@ -202,7 +287,19 @@ def validate(record, target, prior):
     if set(ids) & set(expected):
         raise Refused("a new finding reuses the id of an earlier one")
     unresolved = [item["id"] for item in record["prior"] if not item["resolved"]]
+    for item in record["findings"]:
+        # A finding that names a requirement says a case of it is not delivered. The same answer may not
+        # also hold that requirement to be met, or not looked at: whatever the verdict, it is no review.
+        position = item.get("requirement")
+        if position is not None and record["requirements"][position - 1]["status"] not in NAMEABLE:
+            need = record["requirements"][position - 1]
+            raise Refused("finding " + item["id"] + " names requirement " + str(position) + " (" + short(need["asked"])
+                          + "), which the list marks `" + need["status"] + "`: a finding names only what is "
+                          "`not_met` or `disclosed`, and null when it is about something else")
     if record["verdict"] == "ACCEPT":
+        for item in record.get("requirements", ()):
+            if item["status"] == "not_met":
+                raise Refused("ACCEPT with a requirement answered not_met (" + short(item["asked"]) + ") is not an accept")
         for item in record["findings"]:
             if item["severity"] in BLOCKING:
                 raise Refused("ACCEPT with a " + item["severity"] + " finding (" + item["id"] + ") is not an accept")
@@ -215,25 +312,30 @@ def validate(record, target, prior):
     return record["verdict"]
 
 
-def asked(target, prior):
+def asked(target, prior, schema=None):
     """What the host held for the run. A fault here is the caller's, not a failed review."""
     target_checked(target.get("kind") if isinstance(target, dict) else None, target)
     prior_checked(prior)
+    if schema is not None and (not isinstance(schema, str) or schema not in SCHEMAS
+                               or (schema in LISTED and target["kind"] != "commit")):
+        raise Refused("a review is asked for by a schema this build knows, and the requirement list of a commit only")
 
 
-def check(text, value, target, prior):
+def check(text, value, target, prior, schema=None):
     """What the host takes from one reviewer run's output.
 
     `status` is `complete` with a `verdict` and the `record`, or `failed` with
     the reason and neither. A failed review settles nothing about the work.
-    A marker, target or list of earlier findings that the host itself passed
-    wrongly is refused outright: that is no review at all.
+    A marker, target, list of earlier findings or schema that the host itself
+    passed wrongly is refused outright: that is no review at all. `schema` is
+    what the host asked of the run, `schema_for` of its kind; none is given
+    only where a kept output is read again (see `validate`).
     """
     markers(value)
-    asked(target, prior)
+    asked(target, prior, schema)
     try:
         record = extract(text, value)
-        verdict = validate(record, target, prior)
+        verdict = validate(record, target, prior, schema)
     except Refused as exc:
         return dict(status="failed", verdict=None, reasons=[str(exc)[:300]], record=None)
     return dict(status="complete", verdict=verdict, reasons=[], record=record)

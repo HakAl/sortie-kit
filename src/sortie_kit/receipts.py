@@ -392,7 +392,10 @@ def reviewed(view, data, expected, reasons):
                     or attempt["reasons"] or not attempt["argv"]):
                 raise Refused("a complete review attempt ended on its own with status 0, with all its output kept, "
                               "its command recorded and no reason for failure")
-            again = review.check(kept["stdout"].decode("utf-8", "replace"), attempt["marker"], data["target"], prior)
+            # No schema is named: the kept object's own decides. A commit review kept by an earlier build has
+            # no requirement list and is still what the host took then; one with the list keeps its contract.
+            again = review.check(kept["stdout"].decode("utf-8", "replace"), attempt["marker"], data["target"], prior,
+                                 schema=None)
             if (again["status"], again["verdict"], again["record"]) != ("complete", attempt["verdict"], attempt["record"]):
                 raise Refused("the kept review output does not give the verdict and record the receipt states")
         elif attempt["verdict"] is not None or attempt["record"] is not None or not attempt["reasons"]:
