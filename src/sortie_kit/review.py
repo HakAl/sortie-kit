@@ -105,8 +105,8 @@ def instructions(kind, target, value, prior=()):
         answers = ("- `answers.json`: the earlier review's findings and what the builder says it did about each.\n"
                    "  A claim there is not evidence: check it against the " + ("plan" if kind == "plan" else "patch") + ".\n")
         earlier = ("This is a repair round. Under `prior`, answer every one of these earlier findings by its id\n"
-                   "and no other: " + names + ". `resolved` is true only when you checked that it is. Give\n"
-                   "new findings new ids.\n\n")
+                   "and no other: " + names + ". `resolved` is true only when you checked that it is, or\n"
+                   "when the finding rested only on proof this directory cannot hold. Give new findings new ids.\n\n")
     text = files("sortie_kit").joinpath("data", "templates", "review-" + kind + ".md").read_text()
     for name, filled in (("$ANSWERS\n", answers), ("$PRIOR", earlier), ("$BEGIN", begin), ("$END", end),
                          ("$EXAMPLE", json.dumps(example, indent=2, sort_keys=True))):

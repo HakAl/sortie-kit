@@ -189,7 +189,7 @@ class InstructionTests(unittest.TestCase):
             self.assertNotIn("$", text)
             for foreign in ("agy", "skills", chr(8212)):
                 self.assertNotIn(foreign, text)
-            self.assertLess(len(text.splitlines()), 130)
+            self.assertLess(len(text.splitlines()), 140)  # 130 before the evidence directory was named
         self.assertIn("change.patch", review.instructions("commit", COMMIT, NONCE))
         self.assertIn("plan.md", review.instructions("plan", PLAN, NONCE))
 

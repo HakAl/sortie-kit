@@ -6,7 +6,10 @@ import subprocess
 import unittest
 
 import test_lifecycle
-from sortie_kit.lifecycle import Driver, HELD, LOST_REVIEW
+from unittest import mock
+
+from sortie_kit import channels, review_dir
+from sortie_kit.lifecycle import Driver, HELD, LOST_REVIEW, START_RESERVE, WRITE_RESERVE
 from sortie_kit.layout import Refused
 from sortie_kit.receipt_schema import decode
 
@@ -30,6 +33,31 @@ class HostReviewTests(ReviewFixture):
 
     def directory(self):
         return self.shift / self.state()["review"]["running"]["directory"]
+
+    def test_the_reviewer_is_shown_the_receipts_the_host_took_for_the_task_and_the_files_they_name(self):
+        """A reviewer held a finding open through three rounds because the acknowledgment the
+        brief asked for, which the host had taken, was not in front of it."""
+        self.reach_review()
+        task = self.task_state()
+        taken = [item for item in task["receipts"] if item["status"] == "satisfied"]
+        self.assertEqual([item["stage"] for item in taken], ["ack", "build"])
+        for item in taken:
+            self.assertIsNotNone(channels.timestamp(item["at"]), item)
+        where = self.directory() / "evidence"
+        self.assertEqual(sorted(p.name for p in (where / "receipts").iterdir()),
+                         sorted(item["path"].split("/")[1] for item in taken))
+        for item in taken:
+            self.assertEqual((where / item["path"]).read_bytes(), (self.shift / item["path"]).read_bytes())
+        self.assertEqual((where / "files" / "logs" / "ack.txt").read_text(), "acknowledged\n")
+        self.assertEqual((where / "files" / "logs" / "tests.log").read_text(), "tests pass\n")
+        said = " ".join((where / "HOST.md").read_text().split())
+        for part in ("(acknowledgment, round 0", "(build, round 0", taken[0]["at"], taken[0]["sha256"],
+                     "The task began at commit " + task["base"]):
+            self.assertIn(part, said)
+        # The review is taken as before, and the report reads the task as before.
+        self.assertEqual(self.end_review()["last_review"]["outcome"], "ACCEPT")
+        self.driver.finish("the fixture ends the shift")
+        self.assertEqual(decode((self.shift / "report.json").read_bytes())["issues"], [])
 
     def test_the_reviewer_is_started_by_the_host_in_its_own_directory_with_the_signed_seat(self):
         self.reach_review()
@@ -402,6 +430,39 @@ class HostReviewTests(ReviewFixture):
         self.assertIn("started by the host", result["detail"])
         self.assertEqual(self.state()["review"]["running"]["limit_seconds"], 600)
         self.assertEqual(self.end_review()["tasks"]["task"]["stage"], "accepted")
+
+    def test_showing_evidence_never_takes_the_time_in_which_a_review_may_still_start(self):
+        """In wind-down a review starts only while its whole limit fits. Evidence is given
+        no more than the time by which it fits, less what the host allows the work between
+        the directory and the start (the look at the repository, the marks, the seat's
+        start, the writes), and none when that leaves nothing: the review then starts as
+        it did before evidence was shown."""
+        given = []
+        make = review_dir.make
+
+        def seen(*args, **named):
+            given.append((named["evidence"], named["evidence_seconds"]))
+            return make(*args, **named)
+        with mock.patch.object(review_dir, "make", seen):
+            result = self.wind_down_at(382)  # the limit fits with eight seconds over
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertEqual(len(given[0][0]), 2)
+        self.assertEqual(START_RESERVE, 5 + 0.25 + 2 * WRITE_RESERVE + 1)
+        self.assertEqual(given[0][1], 8 - START_RESERVE)
+        self.assertTrue((self.directory() / "evidence" / "HOST.md").exists())
+
+    def test_with_no_time_over_a_review_starts_without_evidence(self):
+        given = []
+        make = review_dir.make
+
+        def seen(*args, **named):
+            given.append(named["evidence"])
+            return make(*args, **named)
+        with mock.patch.object(review_dir, "make", seen):
+            result = self.wind_down_at(383)  # seven seconds over: less than the start may take
+        self.assertEqual((result["status"], given), ("advanced", [None]))
+        self.assertFalse((self.directory() / "evidence").exists())
+        self.assertTrue((self.directory() / "tree").is_dir())
 
     def test_in_wind_down_a_review_that_does_not_fit_is_not_started_and_the_work_stays_handed_in(self):
         started = len(self.spawn.started) + 1  # the builder turn of the brief

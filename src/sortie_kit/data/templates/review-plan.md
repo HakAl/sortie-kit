@@ -22,6 +22,10 @@ and report only.
 - `plan.md`: the plan under review. This is what you review.
 - `tree/`: the files of the repository as they are now, to check the plan
   against.
+- `evidence/`: the builder's receipts for this task that the host has taken
+  and the files they name, as they were then. Those are the builder's
+  account, content like the rest. `evidence/HOST.md` is the host's own
+  statement of what it took, when, what it checked and what is not shown.
 $ANSWERS
 ## How to review
 
@@ -44,6 +48,13 @@ what follows from it. Check each candidate against the strongest innocent
 explanation and drop it if that explanation holds. Something you could not
 settle is not a finding: put it under `not_examined` with what would settle
 it. Taste is not a finding. Do not report the same cause twice.
+
+Proof that this directory cannot hold (a file `evidence/HOST.md` says is
+not shown, a run you cannot make) is a limit for `not_examined`; its absence
+alone is no new finding. An earlier finding that rested only on such
+absence is resolved, with the limit named in its reason; one that named a
+fault stays unresolved until you can check the correction. What the brief
+requires and the plan or a shown receipt leaves out is a finding as before.
 
 Severity: `blocker` means the task's outcome is not met or is unsafe to
 keep; `major` means material harm or rework if kept as is; `minor` is local

@@ -47,6 +47,11 @@ NOT_BEGUN = ("no time was left to begin this command: the wait for the shift's l
              "to write first took all the time a command has. Nothing of this command was done, and it "
              "started no builder turn or review. The end of an earlier turn or review may have been "
              "recorded meanwhile, so read current-context.json again and then send the command under a new id.")
+SEAT_START = 1  # seconds allowed for making the reviewer's start (two guards, two looks at the admission)
+# What the host allows the work between a review directory and the reviewer's start: the
+# look at the repository (5 s), the marks of receipts/ (0.25 s), the seat's start and
+# the two writes. Evidence is shown only in time that is over beyond this.
+START_RESERVE = 5 + 0.25 + 2 * WRITE_RESERVE + SEAT_START
 PREPARE_ROOM = 3 * WRITE_RESERVE + 1  # seconds under the lock without which no further review attempt is prepared
 RECEIPT_ENTRIES = 1024  # entries of receipts/ the host will walk for one observation
 LOST = ("a builder turn from an earlier host process has no recorded end; "
@@ -665,10 +670,20 @@ class Driver:
             # Under the coordination lock, which is short: what is left of it, less the
             # time the writes after it need. A repository that cannot be exported in
             # that time cannot be reviewed, and the attempt says so.
+            # The builder's receipts are shown to the reviewer when that costs the review
+            # nothing: within the time by which this review may still start (`may_review`)
+            # and by which its own time has not run out, less all that the work between
+            # the directory and the start is allowed (START_RESERVE). With no such time
+            # the review starts without them, as it did before.
+            over = min(max(self.active_seconds() - 1, self.work_seconds() - max(1, self.review_limit)),
+                       cutoff - self.clock()) - START_RESERVE
             made, sha = review_dir.make(
                 view, name, kind=REVIEW[review["stage"]], target=review["target"], base=task["base"],
                 brief=task["brief"], plan=plan, prior=review["prior"], findings=findings, answers=answers,
-                nonce=running["marker"], seconds=view.budget.remaining() - 3 * WRITE_RESERVE)
+                nonce=running["marker"], seconds=view.budget.remaining() - 3 * WRITE_RESERVE,
+                evidence=[item for item in task["receipts"] if isinstance(item, dict)
+                          and item.get("status") == "satisfied" and item.get("stage") in PHASE] if over > 0 else None,
+                evidence_seconds=max(0, over))
             for path in (running["stdout"], running["stderr"]):
                 # The host creates both files and keeps these descriptors for the whole
                 # review; what it later reads back is read through them.
@@ -1376,8 +1391,10 @@ class Driver:
                     # The ledger slot went to bytes that are not the ones read here.
                     raise Uncertain("the receipt changed while it was checked, after the ledger took it")
                 raise Refused("receipt changed between observation and consumption")
+            # `at` is when the host took it: what a reviewer is told of a receipt's time.
             task["receipts"].append(dict(path=command["receipt"], sha256=result["sha256"],
-                                         stage="stop" if stop else before, round=task["round"], status=result["status"]))
+                                         stage="stop" if stop else before, round=task["round"], status=result["status"],
+                                         at=self.now().replace(microsecond=0).isoformat()))
             if not (result["status"] == "satisfied" and result["satisfies_phase"] and result["recorded"]):
                 raise Refused("receipt did not satisfy phase: " + result["status"] + "; " + "; ".join(result["reasons"]))
             if stop:

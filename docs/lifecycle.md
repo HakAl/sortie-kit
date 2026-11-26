@@ -690,6 +690,41 @@ build receipt, the host begins the review of that plan or candidate itself:
   whole change from the commit the repository was at when the task was briefed
   to the candidate, and in a repair round `answers.json` with the earlier
   findings in full and the builder's answer to each.
+- In that directory it puts `evidence/`, what it has taken from the builder
+  for the task so far: under `evidence/receipts/` each acknowledgment, plan
+  and build receipt it consumed that satisfied its phase, shown while the file still has the bytes
+  the host took; under `evidence/files/` the files those receipts name,
+  from the host's own copies of the bytes it checked at that time, so a log
+  the builder has since rewritten is shown as it was; and `evidence/HOST.md`,
+  the host's statement: which receipts it took, of which phase and round,
+  when and with which SHA-256, the commit the task began at and, for a plan, the commit the
+  repository is at now or, for a candidate, the candidate, what it checked of them (shape, the request they were
+  written for, the bytes of each named file) and that it did not judge what
+  they say. At most 64 files are shown, none over 1 MiB, 4 MiB together; a
+  file whose name is not made of plain parts, or that the host holds no
+  copy of, is not shown. Whatever is not shown has a line in `HOST.md` with
+  the reason, and none of it fails the review. The instructions tell the
+  reviewer that proof which is not in the directory is a limit to state
+  under `not_examined`, not a finding to raise or to keep open. The
+  entry of a receipt taken by `consume` or `stop-evidence` on the task in
+  `driver-state.json` has `at`, the time the host took it; the entries of
+  the host's own review receipts, and entries written before this, have
+  none. Evidence is written after the export of the files, in at most
+  half of the time then left for preparing the review and never past the
+  time by which the review may still start, less the 7.25 seconds the host
+  allows the work between the directory and the start (the look at the
+  repository, the listing of `receipts/`, the reviewer's start, the
+  writes); what that leaves is named as not shown. When no such time is
+  over, the review starts without `evidence/`: so it is for a review begun
+  in the last eight seconds before wind-down, and in wind-down for one whose
+  limit fits with less than that over. Every receipt is shown before any file, and then
+  one file of each receipt in turn from the latest receipt back, so a
+  receipt that names many files takes the place of no other. If
+  `evidence/` cannot be made at all, the review runs without it. What is
+  in `evidence/` is given to the reviewer's CLI: with a reviewer of another
+  family the receipts and the files they name go to another provider, as
+  the files of the repository already do. A log is not in the repository,
+  so a builder should not put into a receipt what the reviewer may not see.
 - It notes the repository's commit and status and a listing of `receipts/`,
   and starts the signed reviewer argv (`Admission.seat_start("reviewer", ...)`)
   in that directory as an owned process group, with no terminal input, the
