@@ -133,26 +133,56 @@ class SetupTests(LocalTest):
 
     def test_without_a_terminal_it_refuses_before_anything_is_made_or_started(self):
         def none():
-            raise Refused("sign only in the developer's own terminal; redirected streams refused")
+            raise signing.NoTerminal("sign only in the developer's own terminal; redirected streams refused",
+                                     "standard input, output and error are not all a terminal")
         keygen = Keygen()
-        with self.assertRaisesRegex(Refused, "sortie setup is run by a person in their own terminal.*redirected streams"):
+        # What is missing, and no word on who may run it: an agent may run it for a trial.
+        with self.assertRaises(Refused) as raised:
             self.run_setup(keygen, terminal=none)
+        self.assertEqual(str(raised.exception),
+                         "sortie setup needs a terminal and has none it can use: standard input, output and error are "
+                         "not all a terminal. It starts ssh-keygen, which asks for the new key's passphrase there")
         self.assertEqual((keygen.calls, self.asked), ([], []))
         self.assertFalse((self.home / ".config").exists())
 
     def test_a_terminal_that_cannot_be_opened_refuses_in_the_same_words(self):
         def gone():
             raise OSError(6, "Device not configured")
-        with self.assertRaisesRegex(Refused, "sortie setup is run by a person in their own terminal.*Device not"):
+        with self.assertRaises(Refused) as raised:
             self.run_setup(terminal=gone)
+        # The check opens the terminal and then asks it two things: either can be what failed.
+        self.assertEqual(str(raised.exception),
+                         "sortie setup needs a terminal and has none it can use: the terminal could not be opened or "
+                         "checked (Device not configured). It starts ssh-keygen, which asks for the new key's "
+                         "passphrase there")
         self.assertFalse((self.home / ".config").exists())
 
     def test_the_terminal_check_is_the_one_signing_uses(self):
         import inspect
         self.assertIs(inspect.signature(setup.run).parameters["terminal"].default, signing.terminal)
-        with patch("os.isatty", return_value=False), self.assertRaisesRegex(Refused, "their own terminal"):
+        with patch("os.isatty", return_value=False), self.assertRaises(Refused) as raised:
             setup.run(self.home, which=self.which, spawn=Keygen())
+        self.assertIn("has none it can use: standard input, output and error are not all a terminal. ", str(raised.exception))
+        for word in ("person", "developer", "own terminal", "sign only"):
+            self.assertNotIn(word, str(raised.exception))
         self.assertFalse((self.home / ".config").exists())
+        # A start keeps the words it had: there a real key is signed with.
+        with patch("os.isatty", return_value=False), self.assertRaises(Refused) as raised:
+            signing.terminal()
+        self.assertEqual(str(raised.exception), "sign only in the developer's own terminal; redirected streams refused")
+        self.assertEqual(raised.exception.missing, "standard input, output and error are not all a terminal")
+
+    def test_it_names_the_home_directory_a_start_finds_the_files_under_and_the_flags_for_another(self):
+        import shlex
+        first = self.run_setup()[1]
+        again = self.run_setup()[1]
+        self.assertIn("Nothing was changed", again)
+        for shown in (first, again):
+            self.assertIn("\nA sortie start run with this home directory, " + str(self.home) + ", finds both there and "
+                          "needs no --trust or --key flag.\n", shown)
+            self.assertNotIn("flag is needed", shown)
+            offered = shlex.split(shown.split("Run with another home directory, it needs both: ", 1)[1])
+            self.assertEqual(offered, ["--trust", str(self.trust), "--key", str(self.key)])
 
     def test_nothing_there_makes_the_directory_the_key_and_the_trust_file(self):
         keygen, said = self.run_setup()
@@ -175,7 +205,7 @@ class SetupTests(LocalTest):
         self.assertEqual(stat.S_IMODE(self.trust.stat().st_mode), 0o600)
         self.assertEqual(self.asked, ["ssh-keygen"])  # resolved once: what made the key is what the file names
         self.assertEqual(grants.Trust(self.trust, self.root / "elsewhere").identity, "developer")
-        for part in ("Made the directory", "Made the key pair", "Trust file written", "sortie start finds both"):
+        for part in ("Made the directory", "Made the key pair", "Trust file written", "finds both there and needs no"):
             self.assertIn(part, said)
 
     def test_the_arguments_given_to_ssh_keygen_hold_no_passphrase_option(self):
@@ -791,7 +821,7 @@ class SetupTests(LocalTest):
         home = self.own_home()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), patch("os.isatty", return_value=False):
             self.assertEqual(cli.main(["setup"]), 3)
-        self.assertIn("sortie: refused: sortie setup is run by a person in their own terminal", err.getvalue())
+        self.assertIn("sortie: refused: sortie setup needs a terminal and has none it can use: ", err.getvalue())
         self.assertEqual(list(home.iterdir()), [])
 
     def test_the_real_ssh_keygen_in_a_terminal_of_the_tests_own(self):
@@ -817,7 +847,9 @@ class SetupTests(LocalTest):
         code, output, prompts = terminal_run(argv, env, secret, timeout=60)
         text = output.decode(errors="replace")
         self.assertEqual((code, prompts), (0, 2), text)
-        self.assertIn("no --trust or --key flag is needed", text)
+        self.assertIn("finds both there and needs no --trust or --key flag", text)
+        import shlex
+        self.assertIn("--trust " + shlex.quote(str(self.trust)) + " --key " + shlex.quote(str(self.key)), text)
         self.assertEqual(sorted(p.name for p in self.config.iterdir()), ["signing-key", "signing-key.pub", "trust.json"])
         self.assertEqual([stat.S_IMODE(p.stat().st_mode) for p in (self.config, self.key, self.trust)], [0o700, 0o600, 0o600])
         trust = grants.Trust(self.trust, self.root / "elsewhere")

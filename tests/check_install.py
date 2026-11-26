@@ -74,7 +74,7 @@ with tempfile.TemporaryDirectory(dir=scratch) as directory:
     assert "already exists" in run(trust_args, 3).stderr
     # Without flags the trust file goes to the usual place, and a start finds it and the key there.
     (usual / "signing-key.pub").write_text((config / "signing-key.pub").read_text())
-    assert "no --trust or --key flag is needed" in run([cli, "trust", "init"]).stdout
+    assert "finds both there and needs no --trust or --key flag" in run([cli, "trust", "init"]).stdout
     half = run(args + seats, 2).stderr
     assert "--key FILE" in half and "--trust FILE" not in half, half
     (usual / "signing-key").write_text("stands in for a key; never read here\n")

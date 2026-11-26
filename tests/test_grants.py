@@ -314,6 +314,85 @@ class GrantTests(LocalTest):
                      seats={role: value['seats'][role] for role in ('driver', 'builder')})
         return value
 
+    def test_verify_says_that_a_shift_ended_before_it_speaks_of_the_grants_window(self):
+        """After a trial shift `sortie verify` said "Window: current until ...", true of the grant
+        and read as a shift that still ran."""
+        def checked():
+            return subprocess.run([sys.executable, '-B', '-m', 'sortie_kit', 'verify',
+                                   '--shift', str(self.shift), '--trust', str(self.trust_path)],
+                                  env=self.env, capture_output=True, text=True, timeout=10)
+        pin = hashlib.sha256((self.shift / 'grant.json').read_bytes()).hexdigest()
+        end = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(seconds=90)
+        until = grants.moment(grants.decoded(self.raw)['until']).strftime('%Y-%m-%d %H:%M:%S UTC')
+        ended = 'Shift: ended ' + end.strftime('%Y-%m-%d %H:%M:%S UTC') + ', by the host\'s own record of it'
+
+        def close(raw=None, **changed):
+            (self.shift / 'closeout.json').write_bytes(raw if raw is not None else grants.encoded(dict(dict(
+                version=1, source='foreground host', end=end.isoformat(), grant_sha256=pin), **changed)))
+
+        def state(mode):
+            (self.shift / 'driver-state.json').write_bytes(grants.encoded(dict(mode=mode)))
+
+        def running(what):
+            seen = checked()
+            self.assertEqual((seen.returncode, seen.stderr), (0, ''), what)
+            self.assertIn('Window: current until ' + until, seen.stdout, what)
+            self.assertNotIn('Shift:', seen.stdout, what)
+        # The host writes a closeout while the shift runs too, and when the driver closes the
+        # shift, before it has stopped anything: neither is the end. Its last one says what
+        # became of its cleanup.
+        close()
+        running('a closeout that says nothing of the cleanup')
+        close(processes=dict(cleanup='not yet performed'))
+        state('active')
+        running('a closeout of a shift that runs')
+        state('closed')
+        running('a closeout written when the driver closed the shift, the host still stopping its processes')
+        for odd in (None, 'done', [], dict(cleanup=None), dict(cleanup=['done']), dict(cleanup='')):
+            close(processes=odd)
+            running('processes of another shape: ' + repr(odd))
+        (self.shift / 'driver-state.json').unlink()
+        close(processes=dict(cleanup='incomplete: one directory stayed'))
+        self.assertIn(ended, checked().stdout)
+        close(processes=dict(cleanup='done'))
+        seen = checked()
+        self.assertEqual((seen.returncode, seen.stderr), (0, ''), seen.stdout)
+        lines = seen.stdout.splitlines()
+        at = next(n for n, line in enumerate(lines) if line.startswith(ended))
+        self.assertIn('not signed', lines[at])
+        self.assertEqual(lines[at + 1], "Window: the grant's window runs until " + until + '.')
+        self.assertNotIn('current until', seen.stdout)
+        self.assertTrue(lines[0].startswith('Signature: verified.'), lines)
+        # A closeout of another grant, one that cannot be read, and a time that is none say nothing.
+        done = dict(cleanup='done')
+        for what, change in (('another grant', lambda: close(grant_sha256='0' * 64, processes=done)),
+                             ('no JSON', lambda: close(b'{')), ('no object', lambda: close(b'[]')),
+                             ('no time', lambda: close(end='soon', processes=done)),
+                             ('a time of another kind', lambda: close(end=7, processes=done))):
+            change()
+            running(what)
+        # The state is not what says it: a host that could not read its state still ended.
+        (self.shift / 'driver-state.json').write_bytes(b'{')
+        close(processes=done)
+        self.assertIn(ended, checked().stdout)
+        (self.shift / 'driver-state.json').unlink()
+        # A start that was admitted and failed has a closeout that names no cleanup.
+        close(source='admitted start failed')
+        self.assertIn(ended, checked().stdout)
+        # Once the window has passed it is said as before, after the shift's own end.
+        value = grants.decoded(self.raw)
+        begun = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=3)
+        value.update(start=begun.isoformat(), until=(begun + dt.timedelta(hours=1)).isoformat(),
+                     admit_before=(begun + dt.timedelta(seconds=120)).isoformat())
+        self.sign_crypto(grants.encoded(value))
+        close(grant_sha256=hashlib.sha256((self.shift / 'grant.json').read_bytes()).hexdigest(), processes=done)
+        past = checked()
+        self.assertEqual((past.returncode, past.stderr), (4, ''), past.stdout)
+        lines = past.stdout.splitlines()
+        at = next(n for n, line in enumerate(lines) if line.startswith(ended))
+        self.assertTrue(lines[at + 1].startswith('Window: ended ' + (begun + dt.timedelta(hours=1)).strftime(
+            '%Y-%m-%d %H:%M:%S UTC') + '. Nothing is admitted'), lines)
+
     def test_verify_tells_a_good_signature_on_an_ended_window_from_a_bad_signature(self):
         """On a real shift, once its window had passed, `sortie verify` said only that the grant was
         not current, as it would for a grant nobody signed."""
@@ -860,6 +939,9 @@ class GrantTests(LocalTest):
         self.assertLess(time.monotonic() - began, 3)
         self.assertFalse((self.shift / 'grant.json.sig').exists())
         self.assertFalse((self.repo_path / '.sortie/admissions').exists())
+        # What a start that ends at the prompt leaves, as the walkthrough says: the shift's folder
+        # with the grant that was shown and no signature.
+        self.assertTrue((self.shift / 'grant.json').is_file())
 
     def test_echo_control_failure_refuses_before_signer_or_scope_write(self):
         self.encrypted_fixture()

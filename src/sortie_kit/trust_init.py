@@ -28,6 +28,27 @@ def default_trust(home=None):
     return directory(home) / "trust.json"
 
 
+def start_words(trust, key, home):
+    """What to say of the next `sortie start` once the trust file and the key are at
+    their usual names under `home`. A start looks under the home directory it runs
+    with, which need not be this one: a trial makes its files under a home of its own
+    and starts under the real one. So the home is named and the flags for a start
+    elsewhere are given, ready to paste when the paths can be shown as they are."""
+    import shlex
+    lines = ["A sortie start run with this home directory, " + str(home) + ", finds both there and needs no --trust "
+             "or --key flag."]
+    used = [str(trust), str(key)]
+    if all(" " <= c <= "~" for text in used for c in text):
+        lines.append("Run with another home directory, it needs both: --trust " + shlex.quote(used[0]) + " --key "
+                     + shlex.quote(used[1]))
+    else:
+        # An escaped path is not the path: copying it would name another file.
+        lines.append("Run with another home directory, it needs --trust and --key with the paths of these two "
+                     "files. The paths hold characters that are shown here with escapes, so they are not offered "
+                     "as ready flags.")
+    return lines
+
+
 def held(path, what):
     """An open descriptor for a directory reached through no link. What is read or
     created afterwards is named relative to it, so it lands in the directory checked."""

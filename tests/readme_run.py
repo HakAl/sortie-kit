@@ -101,20 +101,26 @@ def tty(command, cwd, secret, answers=(), expected=0, prompts=None, note=""):
     return text
 
 
-# Step 1: install, from the checkout, into a fresh environment.
-subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=120)
-sh(said("python -m pip install ."), tree, note="fresh venv; run in the exported tree")
+# Step 1: install, from the checkout, into a fresh environment: the two commands as written, with
+# `.venv` as this run's own directory so that nothing is made in the tree. `python3` is this
+# run's interpreter, from the directory of tools above.
+import shlex  # noqa: E402
+for line in ("python3 -m venv .venv", ".venv/bin/python -m pip install ."):
+    sh(said(line).replace(".venv", shlex.quote(str(venv))), tree,
+       note="README: " + line + ", with .venv as this run's directory")
 assert Path(sh("command -v sortie", work).stdout.strip()) == venv / "bin/sortie"
 
 # Step 2: the key and the trust file by the one command, with ssh-keygen's own prompts
 # answered in a disposable terminal. Without a terminal the command refuses and makes nothing.
 secret = secrets.token_urlsafe(24).encode()  # never a user credential
 refused = sh(said("sortie setup"), work, expected=3, note="no terminal: refused").stderr
-assert "sortie setup is run by a person in their own terminal" in refused, refused
+assert "sortie setup needs a terminal and has none it can use" in refused, refused
 assert not (home / ".config").exists()
 shown = tty(said("sortie setup"), work, secret, prompts=2, note="synthetic passphrase typed at ssh-keygen's two prompts")
-assert "no --trust or --key flag is needed" in shown, shown
 config = home / ".config/sortie-kit"
+assert "run with this home directory, " + str(home) + ", finds both there" in shown, shown
+assert ("--trust " + shlex.quote(str(config / "trust.json")) + " --key " + shlex.quote(str(config / "signing-key"))
+        in shown), shown
 assert stat.S_IMODE(config.stat().st_mode) == 0o700, oct(config.stat().st_mode)
 assert sorted(p.name for p in config.iterdir()) == ["signing-key", "signing-key.pub", "trust.json"]
 assert all(stat.S_IMODE((config / n).stat().st_mode) == 0o600 for n in ("signing-key", "trust.json"))

@@ -382,9 +382,39 @@ def scope(raw, shift, trust, *, now=None, expected_seats=None, legacy=False, cur
     return value
 
 
-def window(value, shift, now=None):
+def ended(shift, raw):
+    """When the shift of the grant bytes `raw` ended, by the host's own closeout in the
+    shift folder, or None when that does not say that it has. The file is not signed.
+
+    The host writes `closeout.json` while a shift runs as well, and once more when the
+    driver closes the shift, before anything is stopped: a closeout alone is no end,
+    and neither is a state that says `closed`. The host's last closeout is the one
+    that says what became of its cleanup, `done` or `incomplete`; every earlier one
+    says `not yet performed` (`launcher.report_read` tells a final report the same
+    way). The closeout of an admitted start that failed is an end too and names no
+    cleanup. A closeout of another grant, or one that cannot be read, says nothing."""
+    try:
+        closed = json.loads(read_file(Path(shift) / "closeout.json")[0])
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(closed, dict) or closed.get("grant_sha256") != hashlib.sha256(raw).hexdigest():
+        return None
+    if closed.get("source") != "admitted start failed":
+        processes = closed.get("processes")
+        cleanup = processes.get("cleanup") if isinstance(processes, dict) else None
+        if not isinstance(cleanup, str) or not cleanup.startswith(("done", "incomplete")):
+            return None
+    try:
+        return moment(closed.get("end"))
+    except ValueError:
+        return None
+
+
+def window(value, shift, now=None, closed=False):
     """Whether the signed window of a verified grant is open now: (True, words) when
-    it is and the shift was not withdrawn, else (False, words). Words for a person."""
+    it is and the shift was not withdrawn, else (False, words). Words for a person.
+    `closed` is for a shift that has ended: an open window is then the grant's, and
+    is not called current."""
     start, until = moment(value["start"]), moment(value["until"])
     now = now or dt.datetime.now(dt.timezone.utc)
     said = lambda at: at.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -394,7 +424,7 @@ def window(value, shift, now=None):
         return False, "not begun; it starts " + said(start)
     if os.path.lexists(Path(shift) / "STOP"):
         return False, "open until " + said(until) + ", but the shift was withdrawn (sortie stop, or the host at its end)"
-    return True, "current until " + said(until)
+    return True, ("the grant's window runs until " if closed else "current until ") + said(until)
 
 
 def verify(shift, trust, *, expected_seats=None, now=None, timeout=10, legacy=False, current=True):

@@ -260,7 +260,8 @@ def main(argv=None):
         print("Trust file written: " + safe(path) + " (identity " + safe(args.identity) + ", public key from "
               + safe(str(key) + ".pub") + ").")
         if path == trust_init.default_trust() and Path(key) == trust_init.default_key():
-            print("sortie start finds both there; no --trust or --key flag is needed.")
+            print("\n".join(safe(line) for line in trust_init.start_words(
+                used[0], used[1], trust_init.directory().parent.parent)))
         elif all(safe(text) == text for text in used):
             print("Start a shift with: --trust " + shlex.quote(used[0]) + " --key " + shlex.quote(used[1]))
         else:
@@ -313,9 +314,14 @@ def main(argv=None):
                 # Two facts, said apart: who signed these bytes, and whether the window is open.
                 raw, _, _ = grants.verify(args.shift, trust, legacy=True, current=False)
                 value = grants.decoded(raw)
-                version, (current, when) = value["version"], grants.window(value, args.shift)
+                end = grants.ended(args.shift, raw)
+                version, (current, when) = value["version"], grants.window(value, args.shift, closed=end is not None)
                 print("Signature: verified. grant.json and its scope are as signed, and this shift was signed "
                       "by the key in the trust file (identity " + trust.identity + "). No admission and no agent started.")
+                if end is not None:
+                    # First, so that an open window is not read as a shift that still runs.
+                    print("Shift: ended " + end.strftime("%Y-%m-%d %H:%M:%S UTC") + ", by the host's own record of "
+                          "it in the shift folder, which is not signed.")
                 print("Window: " + when + "." + ("" if current else " Nothing is admitted under this grant now."))
                 if version == 3:
                     print("This is a format-3 grant. It has no reviewer seat and this version "

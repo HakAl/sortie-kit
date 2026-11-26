@@ -157,8 +157,44 @@ class TrustInitTests(LocalTest):
         with contextlib.redirect_stdout(io.StringIO()) as seen:
             self.assertEqual(cli.main(["trust", "init"]), 0)
         self.assertTrue(trust_init.default_trust(home).is_file())
-        self.assertIn("no --trust or --key flag is needed", seen.getvalue())
-        self.assertNotIn("Start a shift with", seen.getvalue())
+        shown = seen.getvalue()
+        self.assertNotIn("Start a shift with", shown)
+        # Which home directory that is, and what a start under another one needs: a trial's
+        # files are made under a home of their own and the start runs under the real one.
+        self.assertIn("A sortie start run with this home directory, " + str(home) + ", finds both there and needs "
+                      "no --trust or --key flag.\n", shown)
+        self.assertNotIn("flag is needed", shown)
+        import shlex
+        offered = shlex.split(shown.split("Run with another home directory, it needs both: ", 1)[1].strip())
+        self.assertEqual(offered, ["--trust", str(trust_init.default_trust(home)),
+                                   "--key", str(trust_init.default_key(home))])
+
+    def test_flags_for_paths_a_shell_would_split_are_quoted(self):
+        home = self.root / "a home; with $spaces"
+        trust, key = trust_init.default_trust(home), trust_init.default_key(home)
+        first, second = trust_init.start_words(trust, key, home)
+        self.assertIn("this home directory, " + str(home) + ", finds", first)
+        import shlex
+        flags = second.split("it needs both: ", 1)[1]
+        self.assertEqual(flags, "--trust " + shlex.quote(str(trust)) + " --key " + shlex.quote(str(key)))
+        self.assertIn("'", flags)
+        self.assertEqual(shlex.split(flags), ["--trust", str(trust), "--key", str(key)])
+
+    def test_a_home_directory_that_cannot_be_shown_as_it_is_gets_no_ready_flags_either(self):
+        from unittest.mock import patch
+        home = self.root / "cl\u00e9s home"
+        usual = trust_init.directory(home)
+        usual.mkdir(parents=True, mode=0o700)
+        (usual / "signing-key.pub").write_text(self.public.read_text())
+        with patch.dict(os.environ, HOME=str(home)), contextlib.redirect_stdout(io.StringIO()) as seen:
+            self.assertEqual(cli.main(["trust", "init"]), 0)
+        shown = seen.getvalue()
+        self.assertIn("finds both there and needs no --trust or --key flag", shown)
+        self.assertIn("Run with another home directory, it needs --trust and --key with the paths of these two "
+                      "files", shown)
+        self.assertIn("shown here with escapes", shown)
+        self.assertNotIn("--trust '", shown)
+        self.assertTrue(shown.isascii())
 
     def test_a_path_that_cannot_be_shown_as_it_is_gets_no_ready_flags(self):
         for name in ("cl\u00e9s", "two\nlines", "odd\x1b[2J"):

@@ -32,6 +32,26 @@ def git(repo, *args):
     return result.stdout
 
 
+def linked_words(repo):
+    """A line for the signer when `repo` is a linked working tree (`git worktree add`):
+    it is taken as any repository is, and it is no copy. Git's own directory for the
+    tree then differs from the common one, where commits, branches and the exclude
+    rule go. Not part of what is signed: the grant names the repository, not its kind.
+    This is a note and no check, so where Git gives no answer there is no line.
+    The shared directory is named as Git gives it and no main working tree is: a
+    directory named `.git` can be a bare repository or lie apart from its tree."""
+    try:
+        out = os.fsdecode(git(repo, "rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    found = out.split("\n")
+    if len(found) != 3 or found[2] or not found[0] or not found[1] or found[0] == found[1]:
+        return []
+    return ["Linked working tree: the repository " + str(repo) + " is a linked working tree (git worktree) and not a "
+            "copy. It shares the Git directory " + found[1] + " with the repository's other working trees: the "
+            "builder's commits go into that shared directory."]
+
+
 def safe_child(root: Path, relative: str) -> Path:
     """No symlink components, absolute paths, or traversal in writable state."""
     parts = Path(relative).parts

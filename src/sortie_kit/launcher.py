@@ -197,6 +197,9 @@ def start(request: Request, *, prepare_only=False, sign_only=False, trust_path=N
     # files as they are now and, like the two lines above, no part of the grant.
     from . import agents
     notes += agents.launcher_words(seats)
+    # A linked working tree is taken without a refusal, and is no copy of the repository.
+    from .layout import linked_words
+    notes += linked_words(repo)
     sign(shift, trust, key, raw, seconds=request.seconds, sources=sources, note=notes or None)
     if sign_only:
         return shift

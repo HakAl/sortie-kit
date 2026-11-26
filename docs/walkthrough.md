@@ -23,8 +23,21 @@ steps before it.
               picked: the first installed agent of another family than the builder
   ```
 
+  Under the summary, marked as not part of what is signed, come the things
+  the host tells you that the grant does not hold. One of them is a line
+  when the repository is a linked working tree (`git worktree add`): such a
+  tree is taken as any repository is, and the line names the Git directory
+  it shares with the repository's other working trees, where the builder's
+  commits go.
+
   Then it shows the exact bytes being signed, and `ssh-keygen` asks for your
-  key's passphrase.
+  key's passphrase. A start that ends at that prompt, by a wrong passphrase
+  or by Ctrl-C, has made the shift's folder under `.sortie/shifts/` already,
+  with the `grant.json` that was shown and no signature. Nothing is admitted
+  from that folder and nothing is signed in it again; the next start makes a
+  new one. The folder is kept as the record of what was shown. When you do
+  not want it, remove that one folder, which the summary named, with
+  `rm -r`.
 - **The driver in your terminal.** The terminal is handed to the driver agent.
   The first time an agent CLI starts in a repository, expect a question of
   its own first, such as whether you trust the folder. That prompt is the
@@ -150,11 +163,16 @@ sortie start --repo COPY --direction DIRECTION --for 30m \
   nor written.
 - `sortie start` runs under the real home directory, because the agent CLIs
   in the seats need their sign-in there, and is given the trial's two files
-  by name with `--trust` and `--key`.
+  by name with `--trust` and `--key`. `sortie setup` ends by naming the home
+  directory it wrote under and printing those two flags with the paths of
+  the files it made. Without the flags a start under the real home directory
+  would look for the developer's own key and trust file.
 - `COPY` is a practice repository or a clone of the real one that stands
   alone, never the only copy of work that matters. A linked working tree
   (`git worktree add`) is not such a copy: it shares the real repository's
   Git directory, where the shift writes and the builder commits.
+  `sortie start` does not refuse one; it says so in a line beside the
+  signing summary.
 - `DIRECTION` is the direction file, by its full path or a path from the
   directory the command is run in. `--repo` does not change where it is
   looked for.
@@ -168,6 +186,11 @@ sortie start --repo COPY --direction DIRECTION --for 30m \
   them in a terminal it can type into. It chooses a passphrase for the trial
   key, types it at `ssh-keygen`'s prompts and again when `sortie start`
   signs.
+- After the signature the driver's CLI may first ask a question of its own,
+  such as whether to trust the folder, and its preselected answer can be the
+  one that declines and exits (Claude Code's is "No, exit"), which ends the
+  shift: the agent reads the question and answers it, as
+  [the driver in your terminal](#what-you-will-see) says.
 - The agent says in what it reports that the shift was signed by the agent
   with a key made for the trial. Such a shift shows what the tool does. It
   does not show that a person approved the scope, so the presence boundary

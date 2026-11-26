@@ -725,6 +725,61 @@ class LauncherTests(LocalTest):
             start(self.request, sign_only=True, **kwargs)
         self.assertIsNone(seen["note"])
 
+    def test_a_linked_working_tree_is_said_to_the_signer_and_a_main_one_is_not(self):
+        import os
+        from sortie_kit import layout
+        git = lambda where, *args: subprocess.run(
+            ["git", "-C", str(where), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             "-c", "commit.gpgsign=false", *args], check=True, capture_output=True, timeout=20)
+        self.assertEqual(layout.linked_words(self.target), [])
+        git(self.target, "commit", "-q", "--allow-empty", "-m", "first")
+        linked = self.root / "linked tree"
+        git(self.target, "worktree", "add", "-q", "--detach", str(linked))
+        linked = linked.resolve()
+        line, = layout.linked_words(linked)
+        said = lambda tree, shared: (
+            "Linked working tree: the repository " + str(tree) + " is a linked working tree (git worktree) and not a "
+            "copy. It shares the Git directory " + str(shared) + " with the repository's other working trees: the "
+            "builder's commits go into that shared directory.")
+        self.assertEqual(line, said(linked, self.target.resolve() / ".git"))
+        # The shared directory is named and no main working tree is: a directory named `.git`
+        # can be a bare repository, with no tree at all, or lie apart from its tree.
+        for name in ("bare.git", "holds a bare one/.git"):
+            bare = self.root / name
+            bare.parent.mkdir(exist_ok=True)
+            subprocess.run(["git", "clone", "-q", "--bare", str(self.target), str(bare)], check=True,
+                           capture_output=True, timeout=20)
+            other = (self.root / ("tree of " + name.replace("/", " "))).resolve()
+            git(bare, "worktree", "add", "-q", "--detach", str(other))
+            line, = layout.linked_words(other)
+            self.assertEqual(line, said(other, bare.resolve()), name)
+            self.assertNotIn("main working tree", line)
+        apart, tree = self.root / "apart" / ".git", self.root / "its tree"
+        apart.parent.mkdir()
+        subprocess.run(["git", "clone", "-q", "--separate-git-dir", str(apart), str(self.target), str(tree)],
+                       check=True, capture_output=True, timeout=20)
+        self.assertEqual(layout.linked_words(tree.resolve()), [])
+        other = (self.root / "tree of apart").resolve()
+        git(tree, "worktree", "add", "-q", "--detach", str(other))
+        line, = layout.linked_words(other)
+        self.assertEqual(line, said(other, apart.resolve()))
+        self.assertNotIn(str(apart.parent.resolve()) + " ", line.replace(str(apart.resolve()), ""))
+        # A note and no check: where Git gives no answer there is no line and nothing is raised.
+        self.assertEqual(layout.linked_words(self.root / "nowhere"), [])
+        # Signing only shows it too, after the line for a pinned script.
+        (linked / "direction.md").write_text("Implement the selected task.\n")
+        fixture = agent_fixture(self.root, linked)
+        seen = {}
+        with patch("sortie_kit.signing.terminal", side_effect=lambda: os.open(os.devnull, os.O_RDONLY)), \
+                patch("sortie_kit.grants.Trust"), \
+                patch("sortie_kit.grants.make_grant", return_value=b"{}"), \
+                patch("sortie_kit.signing.sign", side_effect=lambda *a, **kw: seen.update(kw)):
+            start(Request(linked, linked / "direction.md", 30), sign_only=True, home=fixture["home"],
+                  trust_path=self.root / "t", key=self.root / "k", choices=fixture["choices"])
+        script, tree = seen["note"]
+        self.assertTrue(script.startswith("Pinned script: "), script)
+        self.assertTrue(tree.startswith("Linked working tree: the repository " + str(linked) + " is"), tree)
+
     def test_no_path_under_a_skills_directory_is_looked_up(self):
         for name in ("review_script", "SKILL_ROOTS", "reviewer"):
             self.assertFalse(hasattr(launcher, name), name)

@@ -55,6 +55,16 @@ def encrypted_key(raw, trusted_blob):
         raise Refused("invalid or unsupported encrypted private key") from exc
 
 
+class NoTerminal(Refused):
+    """A refusal of `terminal()`. Its text is for a start, where a real key is signed
+    with, and says where to sign. `missing` says only what of a terminal is not there,
+    for a command that needs one and signs nothing (`sortie setup`)."""
+
+    def __init__(self, text, missing):
+        super().__init__(text)
+        self.missing = missing
+
+
 def terminal():
     """Require inherited foreground terminal streams; never accept piped secrets.
 
@@ -62,16 +72,19 @@ def terminal():
     rules must deny agents this signing path/key and access to this terminal.
     """
     if threading.current_thread() is not threading.main_thread():
-        raise Refused("signing requires the foreground main thread")
+        raise NoTerminal("signing requires the foreground main thread", "it was not called from the main thread")
     if not all(os.isatty(fd) for fd in (0, 1, 2)):
-        raise Refused("sign only in the developer's own terminal; redirected streams refused")
+        raise NoTerminal("sign only in the developer's own terminal; redirected streams refused",
+                         "standard input, output and error are not all a terminal")
     fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
     try:
         if os.tcgetpgrp(fd) != os.getpgrp():
-            raise Refused("signing requires the foreground terminal")
+            raise NoTerminal("signing requires the foreground terminal",
+                             "the command is not in the foreground of its terminal")
         # /dev/tty is an alias device; compare stream devices to one another.
         if len({os.fstat(n).st_rdev for n in (0, 1, 2)}) != 1:
-            raise Refused("signing streams must share the developer's terminal")
+            raise NoTerminal("signing streams must share the developer's terminal",
+                             "standard input, output and error are not one and the same terminal")
         return fd
     except BaseException:
         os.close(fd)

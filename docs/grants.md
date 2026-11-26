@@ -258,7 +258,7 @@ grants keep valid signatures: `sortie verify` still checks them under the
 rules they were signed with and says they cannot be admitted. Sign a fresh
 shift.
 
-Signing shows a plain-words summary of the grant (repository, window and working time, each seat's agent, model and full command, how the reviewer was chosen and the limit of one run, what the builder may do, what the reviewer can reach), then lines marked as not part of what is signed (for a start that runs the shift, whether the host keeps the machine awake, and where, as things are at signing, it would make [the temporary directory of builder turns and reviews](lifecycle.md#the-temporary-directory-of-builder-turns-and-reviews); for that and for `--sign-only`, one line for each seat's pinned file that is a script, see [the executable pin](agents.md#executable-pin)), then the exact bytes being signed, and invokes `ssh-keygen -Y sign` in the developer's
+Signing shows a plain-words summary of the grant (repository, window and working time, each seat's agent, model and full command, how the reviewer was chosen and the limit of one run, what the builder may do, what the reviewer can reach), then lines marked as not part of what is signed (for a start that runs the shift, whether the host keeps the machine awake, and where, as things are at signing, it would make [the temporary directory of builder turns and reviews](lifecycle.md#the-temporary-directory-of-builder-turns-and-reviews); for that and for `--sign-only`, one line for each seat's pinned file that is a script, see [the executable pin](agents.md#executable-pin), and one line when the repository is a linked working tree, naming the Git directory it shares), then the exact bytes being signed, and invokes `ssh-keygen -Y sign` in the developer's
 foreground controlling terminal. Python never reads the password. Signing
 requires unredirected terminal streams, explicitly disables/checks terminal
 echo, uses the encrypted private key directly, and removes inherited agent,
@@ -287,8 +287,17 @@ its window has passed:
 
 - `Signature: verified.` The bytes of `grant.json` and its scope are as signed,
   and the shift was signed by the key in the trust file.
+- `Shift: ended TIME`, only when the host's own closeout in the shift folder
+  says that the shift has ended: it names this grant and says what became of
+  the host's cleanup, which only the host's last closeout does, or it is the
+  closeout of an admitted start that failed. That file is not signed. The
+  line comes before the window, so that an open window is not read as a
+  shift that still runs. A shift whose host was killed before its last
+  closeout gets no such line.
 - `Window:` whether the signed window is open now: `current until TIME`,
-  `ended TIME`, `not begun`, or open and the shift was withdrawn.
+  `ended TIME`, `not begun`, or open and the shift was withdrawn. After a
+  `Shift: ended` line an open window reads `the grant's window runs until
+  TIME`.
 
 | Exit | Meaning |
 | --- | --- |

@@ -71,11 +71,20 @@ what it does not claim.
 ## Your first shift
 
 1. Install sortie-kit, from a checkout of this repository, into a Python
-   environment of your choice:
+   environment of its own. In the checkout:
 
    ```sh
-   python -m pip install .
+   python3 -m venv .venv
+   .venv/bin/python -m pip install .
    ```
+
+   `python3` has to be Python 3.11 or later; `python3 --version` says which
+   it is. The `python3` that comes with Apple's developer tools can be older
+   (3.9 where this was written), and the install then refuses: name a newer
+   one in the first command, such as `python3.13`. The command is then
+   `.venv/bin/sortie`. The steps below write `sortie`: run
+   `. .venv/bin/activate` in the terminal you use, or write the path out.
+   Another environment of your choice does as well.
 
 2. Make a signing key with a passphrase, and the trust file that names it.
    This is done once, in your own terminal:

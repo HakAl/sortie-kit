@@ -368,7 +368,13 @@ def run(home=None, *, which=shutil.which, terminal=signing.terminal, spawn=subpr
     try:
         tty = terminal()  # the check a start makes before it signs, and before anything else here
     except (OSError, ValueError) as exc:
-        raise Refused("sortie setup is run by a person in their own terminal: " + str(exc)) from exc
+        # What is missing, and nothing on who may run it: the check is the one a start
+        # makes, and the words of a start are about signing with a real key.
+        missing = getattr(exc, "missing", None) or (
+            "the terminal could not be opened or checked (" + (exc.strerror or str(exc)) + ")"
+            if isinstance(exc, OSError) else "the check of the terminal failed")
+        raise Refused("sortie setup needs a terminal and has none it can use: " + missing + ". It starts ssh-keygen, "
+                      "which asks for the new key's passphrase there") from exc
     try:
         return work(home, which, tty, spawn)
     finally:
@@ -432,7 +438,7 @@ def work(home, which, tty, spawn):
                                    "changed by this command. Run sortie setup again to have what is there now checked")
                 return lines + ["The key pair and the trust file are already there: " + str(key) + " and " + str(trust)
                                 + ". Nothing was changed.",
-                                "sortie start finds both there; no --trust or --key flag is needed."]
+                                *trust_init.start_words(trust, key, config.parent.parent)]
             lines.append("The key pair at " + str(key) + " was already there and was kept.")
             kept = "The key pair at " + str(key) + " was kept and nothing else was changed"
         else:
@@ -477,4 +483,4 @@ def work(home, which, tty, spawn):
             except OSError:
                 pass
     return lines + ["Trust file written: " + str(trust) + " (identity developer). It names that key and " + tool + ".",
-                    "sortie start finds both there; no --trust or --key flag is needed."]
+                    *trust_init.start_words(trust, key, config.parent.parent)]
