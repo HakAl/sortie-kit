@@ -193,6 +193,10 @@ def start(request: Request, *, prepare_only=False, sign_only=False, trust_path=N
         from . import turn_temp
         notes += [] if wake is None else [wake.plan()]
         notes += [] if temp is None else [turn_temp.words(repo)]
+    # What a pin does not cover, for a seat whose pinned file is a script: read from the
+    # files as they are now and, like the two lines above, no part of the grant.
+    from . import agents
+    notes += agents.launcher_words(seats)
     sign(shift, trust, key, raw, seconds=request.seconds, sources=sources, note=notes or None)
     if sign_only:
         return shift

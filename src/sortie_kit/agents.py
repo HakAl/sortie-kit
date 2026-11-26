@@ -234,6 +234,54 @@ def pin_executable(profile, repo, *, search=None):
     return hash_executable(os.path.realpath(found), repo)
 
 
+def launcher(pin):
+    """True when the file at the pinned path begins with `#!`: a script, which an
+    interpreter runs and which may go on to start a program the pin does not cover.
+
+    Read from the file as it is now, two bytes, and never run. False for a path that is
+    not text as a signed pin has it, and for a file that cannot be opened or is no
+    regular file: admission refuses that on its own."""
+    try:
+        if not isinstance(pin["path"], str):
+            return False
+        fd = os.open(pin["path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            return stat.S_ISREG(os.fstat(stream.fileno()).st_mode) and stream.read(2) == b"#!"
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+
+
+def launcher_words(seats):
+    """Lines for the signer, one for each pinned file that is a script, naming the seats
+    that have it. Not part of what is signed: the grant holds `{path, sha256, bytes}` and
+    not what kind of file that is. `#!` shows a script, not what it starts, so neither its
+    interpreter nor a program behind it is named; and "as every pin" is there so that a
+    seat without a line is not read as pinned beyond its one file.
+
+    The host looks at a seat's file before each start of that seat. A builder and a
+    reviewer are started again and again, so a rewrite ends their work; the driver is
+    started once, and the line promises no next start for it. Seats of a shape no grant
+    has give no line and raise nothing: this is a note, and the grant is checked elsewhere."""
+    by_path = {}
+    for role in ("driver", "builder", "reviewer"):
+        seat = seats.get(role) if isinstance(seats, dict) else None
+        pin = seat.get("executable") if isinstance(seat, dict) else None
+        if launcher(pin):
+            by_path.setdefault(pin["path"], []).append("the " + role)
+    told = lambda roles: roles[0] if len(roles) == 1 else ", ".join(roles[:-1]) + " and " + roles[-1]
+    lines = []
+    for path, roles in by_path.items():
+        again = [role for role in roles if role != "the driver"]
+        lines.append("Pinned script: the pinned file of " + told(roles) + ", " + path + ", is a script. Its pin, as "
+                     "every pin, covers that one file and not its interpreter or any program the script starts. "
+                     + ("An update of the CLI that writes this file again ends the work of " + told(again) + " in "
+                        "this shift: the host refuses the next start. " if again else "")
+                     + ("The driver is started once, when the shift begins: a rewrite after that is not looked at "
+                        "for it. " if "the driver" in roles else "")
+                     + "An update that leaves this file as it is goes unseen by the host.")
+    return lines
+
+
 def check_executable(pin, repo):
     """Admission-time recheck of the signed pin; returns the observation to compare before each spawn."""
     current, seen = hash_executable(pin["path"], repo)

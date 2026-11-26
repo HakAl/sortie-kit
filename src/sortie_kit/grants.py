@@ -566,12 +566,17 @@ class Admission:
             cwd = where
 
         def unchanged():
+            # A look at the file, not at its bytes: device, inode, size and two times. A file
+            # written again with the same bytes is refused as any other replacement, and the
+            # words say what was compared, since for a launcher script the rewrite is all the
+            # host can see of an update of the program behind it.
             try:
                 if agents.observe(seat["executable"]["path"]) == self.executables[role]:
                     return
             except OSError:
-                pass
-            raise Refused(role + " agent executable changed after admission")
+                raise Refused(role + " agent executable cannot be looked at after admission") from None
+            raise Refused(role + " agent executable replaced or rewritten after admission: the file at the pinned "
+                          "path is another file or has other size or times; its bytes were not read again")
 
         unchanged()
         argv = agents.render_argv(seat, prompt=prompt, cwd=cwd)

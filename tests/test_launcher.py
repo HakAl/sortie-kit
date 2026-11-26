@@ -702,6 +702,29 @@ class LauncherTests(LocalTest):
         self.assertIn("fixture-agent", str(raised.exception))
         self.assertFalse((self.target / ".sortie").exists())
 
+    def test_a_seat_whose_pinned_file_is_a_script_is_said_to_the_signer_outside_what_is_signed(self):
+        import os
+        fixture = agent_fixture(self.root, self.target)
+        kwargs = dict(home=fixture["home"], trust_path=self.root / "t", key=self.root / "k", choices=fixture["choices"])
+        seen = {}
+        with patch("sortie_kit.signing.terminal", side_effect=lambda: os.open(os.devnull, os.O_RDONLY)), \
+                patch("sortie_kit.grants.Trust"), \
+                patch("sortie_kit.grants.make_grant", return_value=b"{}"), \
+                patch("sortie_kit.signing.sign", side_effect=lambda *a, **kw: seen.update(kw)):
+            start(self.request, sign_only=True, **kwargs)
+        line, = seen["note"]
+        self.assertTrue(line.startswith("Pinned script: the pinned file of the driver, the builder and the reviewer, "
+                                        + str(fixture["program"]) + ", is a script."), line)
+        # A program that is no script gets no line, and then nothing is said beside the summary.
+        fixture["program"].write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 64)
+        fixture["program"].chmod(0o755)
+        with patch("sortie_kit.signing.terminal", side_effect=lambda: os.open(os.devnull, os.O_RDONLY)), \
+                patch("sortie_kit.grants.Trust"), \
+                patch("sortie_kit.grants.make_grant", return_value=b"{}"), \
+                patch("sortie_kit.signing.sign", side_effect=lambda *a, **kw: seen.update(kw)):
+            start(self.request, sign_only=True, **kwargs)
+        self.assertIsNone(seen["note"])
+
     def test_no_path_under_a_skills_directory_is_looked_up(self):
         for name in ("review_script", "SKILL_ROOTS", "reviewer"):
             self.assertFalse(hasattr(launcher, name), name)

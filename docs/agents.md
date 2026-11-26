@@ -132,16 +132,53 @@ unchangeable file: keep agent programs where seats and other processes cannot
 replace them.
 
 An agent CLI that updates itself is such a replacement. The grant signs the
-bytes of each agent's program, so once a CLI has updated itself after the
-grant is signed, the host refuses the next start of that seat. For a builder
-it refuses each new turn with `builder agent executable changed after
-admission`: the shift builds nothing further, the driver is told why, and
-the report gives the reason once the shift is closed. This has happened once
-on a real shift, with `agy`, before anything was built, and the driver closed
-the shift. A reviewer that changed fails its reviews, which blocks the task,
-and a program that changed before the shift was admitted stops the start with
-a message and no report; neither has been seen on a real shift. The remedy is
-to start a newly signed shift, which pins the program as it then is.
+bytes of the file at each seat's path, so once a CLI has written that file
+again after the shift was admitted, the host refuses the next start of that
+seat. For a builder it refuses each new turn with `builder agent executable
+replaced or rewritten after admission: the file at the pinned path is
+another file or has other size or times; its bytes were not read again`: the
+shift builds nothing further, the driver is told why, and the report gives
+the reason once the shift is closed. A file that can no longer be looked at
+is refused with `builder agent executable cannot be looked at after
+admission`. A reviewer that changed fails its reviews, which blocks the
+task, and a program that changed before the shift was admitted stops the
+start with a message and no report; neither has been seen on a real shift.
+The remedy is to start a newly signed shift, which pins the program as it
+then is.
+
+The words say what was compared because the bytes are not. Before a start
+the host does not read the program again, which for some agent CLIs is
+several hundred megabytes: it looks at the file, and a file written again
+with the very same bytes is another file or has other times, and is refused
+like any other. That is meant. This has ended two real shifts. In the first
+`agy` replaced its program seconds after the driver started, before anything
+was built. In the second the pinned file of `codex` was a launcher script
+that an update wrote again with the same bytes, while the program it starts
+went to a new version: the rewrite was all the host could see of that
+change, and a host that had hashed the script again and gone on would have
+run a program nobody signed. Builds from before this one gave the reason as
+`builder agent executable changed after admission` in both cases.
+
+When a seat's pinned file is a script, one that begins with `#!`, the lines
+under the signing summary that are marked as not signed say so: which seats
+have it, that the pin covers that one file and not its interpreter or any
+program the script starts, that an update of the CLI which writes the file
+again ends the work of a builder or a reviewer in the shift, and that an
+update which leaves the file as it is goes unseen by the host. The host
+looks at a seat's file before each start of that seat, and the driver is
+started once, when the shift begins: a rewrite of the driver's file after
+that is not looked at, and the line says so. The line is read from the file as it is when the
+summary is shown, the file is not run, and nothing of it is in the grant.
+Two limits: `#!` shows that the file is a script, not what runs it or what
+it starts, so neither is named; and a seat without such a line is not pinned
+any further than its one file either, since a native program can load other
+files.
+
+An agent CLI can be updated by another session of the same CLI on the
+machine, or by a package manager, and not only by a seat of the shift. So:
+do not update agent CLIs while a shift runs, and where a CLI has a setting
+that turns its own updates off, turn them off for the length of a shift.
+sortie-kit sets nothing of the kind for the seats.
 
 ## What the built-in seats can reach
 

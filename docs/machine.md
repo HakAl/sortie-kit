@@ -55,10 +55,20 @@ sortie-kit neither reads nor limits that configuration.
 
 ## An agent CLI that updates itself
 
-The grant signs the bytes of each agent's program. Once an agent CLI has
-updated itself after you sign, the host refuses the next start of that seat,
-and the shift can do no more work with it. The report gives the reason; see
+The grant signs the bytes of the file at each agent's path. Once an agent
+CLI has written that file again after the shift was admitted, the host refuses the next
+start of that seat, and the shift can do no more work with it: also when the
+file has the same bytes as before, since the host looks at the file before a
+start and does not read it again. The report gives the reason; see
 [the executable pin](agents.md#executable-pin). Start a newly signed shift.
+
+This has ended two real shifts. Another session of the same CLI on the
+machine can set the update off, so do not update agent CLIs while a shift
+runs, and turn their own updates off for its length where the CLI has such a
+setting. When a seat's pinned file is a script that starts the real program,
+the pin covers the script alone: a line under the signing summary says so,
+and an update that leaves the script as it is goes unseen. The driver is
+started once, so a rewrite of its file after that start is not looked at.
 
 ## The driver
 

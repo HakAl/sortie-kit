@@ -57,6 +57,14 @@ what it does not claim.
   shift still runs and says `same-family review` wherever it names the review.
 - Nothing else. No skill, no review script and no other tool has to be
   installed.
+- Agent CLIs that stay as they are while a shift runs. An agent CLI that
+  updates itself during a shift ends the work of a builder or a reviewer
+  that uses it: the host refuses that seat's next start, and the shift
+  builds or reviews nothing further with it.
+  Another session of the same CLI on the machine can set the update off.
+  This has cost two real shifts. Do not update agent CLIs while a shift
+  runs, and turn their own updates off for its length where the CLI has such
+  a setting ([the executable pin](docs/agents.md#executable-pin)).
 - A Git repository to work in. Use one you can afford to have changed; see
   [what a shift can do to your machine](#what-a-shift-can-do-to-your-machine).
 

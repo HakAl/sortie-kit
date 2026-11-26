@@ -43,6 +43,55 @@ class AgentTests(LocalTest):
         with self.assertRaisesRegex(Refused, pattern):
             call(*args, **kwargs)
 
+    def test_a_pinned_file_that_is_a_script_is_told_from_one_that_is_not_without_running_it(self):
+        pin = lambda path: {"path": str(path), "sha256": "0" * 64, "bytes": 1}
+        native = self.outside / "native-agent"
+        native.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 64)
+        short = self.outside / "short"
+        short.write_bytes(b"#")
+        link = self.outside / "link"
+        link.symlink_to(self.program)
+        self.program.write_text("#!/bin/sh\ntouch " + str(self.root / "ran") + "\n")
+        self.assertIs(agents.launcher(pin(self.program)), True)
+        for other in (native, short, link, self.outside / "absent", self.outside):
+            self.assertIs(agents.launcher(pin(other)), False, other)
+        # A path is text, as a signed pin has it: nothing else is opened.
+        for odd in ({}, {"path": None}, None, {"path": self.program}, {"path": os.fsencode(self.program)}, {"path": 0}):
+            self.assertIs(agents.launcher(odd), False, odd)
+        self.assertFalse((self.root / "ran").exists())
+
+    def test_the_signer_is_told_which_seats_have_a_script_pinned_and_what_that_pin_does_not_cover(self):
+        native = self.outside / "native-agent"
+        native.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 64)
+        seat = lambda path: {"executable": {"path": str(path), "sha256": "0" * 64, "bytes": 1}}
+        head = lambda who, path: ("Pinned script: the pinned file of " + who + ", " + str(path) + ", is a script. Its pin, "
+                                  "as every pin, covers that one file and not its interpreter or any program the "
+                                  "script starts. ")
+        again = lambda who: ("An update of the CLI that writes this file again ends the work of " + who + " in this "
+                             "shift: the host refuses the next start. ")
+        once = "The driver is started once, when the shift begins: a rewrite after that is not looked at for it. "
+        unseen = "An update that leaves this file as it is goes unseen by the host."
+        every = ("driver", "builder", "reviewer")
+        line, = agents.launcher_words({"driver": seat(self.program), "builder": seat(self.program), "reviewer": seat(native)})
+        self.assertEqual(line, head("the driver and the builder", self.program) + again("the builder") + once + unseen)
+        other = self.outside / "other-agent"
+        other.write_text("#!/usr/bin/env node\n")
+        first, second = agents.launcher_words({"driver": seat(native), "builder": seat(other), "reviewer": seat(self.program)})
+        self.assertEqual(first, head("the builder", other) + again("the builder") + unseen)
+        self.assertEqual(second, head("the reviewer", self.program) + again("the reviewer") + unseen)
+        one, = agents.launcher_words({role: seat(self.program) for role in every})
+        self.assertEqual(one, head("the driver, the builder and the reviewer", self.program)
+                         + again("the builder and the reviewer") + once + unseen)
+        # A driver alone is started once: no next start is promised for it.
+        alone, = agents.launcher_words({"driver": seat(self.program), "builder": seat(native), "reviewer": seat(native)})
+        self.assertEqual(alone, head("the driver", self.program) + once + unseen)
+        self.assertEqual(agents.launcher_words({role: seat(native) for role in every}), [])
+        # Seats of another shape give no line and raise nothing: the lines are a note, and the grant is checked elsewhere.
+        for odd in (None, [], {}, {"driver": None}, {"driver": {}, "builder": {"executable": None}, "reviewer": seat(native)},
+                    {role: {"executable": {"path": self.program}} for role in every}):
+            self.assertEqual(agents.launcher_words(odd), [], odd)
+        self.assertEqual(len(agents.launcher_words({"builder": seat(self.program)})), 1)
+
     def test_packaged_profiles_are_valid_and_each_can_take_any_seat(self):
         self.assertEqual(agents.available(self.target, home=self.home), ["agy", "claude", "codex"])
         pin = {"path": "/x/program", "sha256": "0" * 64, "bytes": 1}

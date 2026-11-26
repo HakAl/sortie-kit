@@ -459,6 +459,10 @@ class LiveStartTests(test_grants.GrantTests):
                       "starts, outside the repository and open to your user alone. As things are now that would be "
                       "under " + os.path.dirname(temp["path"]) + "; the place is looked at again then", aside)
         self.assertNotIn("Temporary files", shown.split("\nExact bytes being signed:\n")[1].split("\n")[0])
+        # The fixture agent is a script: the signer is told what its pin does not cover, last and not signed.
+        self.assertIn("\n  Pinned script: the pinned file of the driver, the builder and the reviewer, ", aside)
+        self.assertLess(aside.index("Temporary files: "), aside.index("Pinned script: "))
+        self.assertNotIn("Pinned script", shown.split("\nExact bytes being signed:\n")[1].split("\n")[0])
         self.assertTrue(window["wake"]["asked"])
         if sys.platform == "darwin":
             self.assertEqual((window["wake"]["whole"], window["wake"]["refusals"], window["wake"]["gaps"]), (True, [], []))

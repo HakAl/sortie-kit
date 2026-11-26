@@ -428,7 +428,7 @@ class GrantTests(LocalTest):
             self.assertTrue(admitted.seat_start('reviewer', 'go', cwd=str(made)))
             self.assertTrue(admitted.seat_start('builder', 'go'))
             other.write_text('#!/bin/sh\nexit 2\n')
-            with self.assertRaisesRegex(Refused, 'reviewer agent executable changed after admission'):
+            with self.assertRaisesRegex(Refused, 'reviewer agent executable replaced or rewritten after admission'):
                 admitted.seat_start('reviewer', 'go', cwd=str(made))
             self.assertTrue(admitted.seat_start('builder', 'go'))  # the other seats' programs are as signed
 
@@ -613,8 +613,10 @@ class GrantTests(LocalTest):
 
     def test_seat_start_refuses_after_withdrawal_or_an_executable_change(self):
         changes = {
-            'executable changed': self.replace_program,
-            'agent executable changed': self.fixture['program'].unlink,
+            # The same bytes in another file: the host compares the file and reads no byte, and says so.
+            'builder agent executable replaced or rewritten after admission: the file at the pinned path is '
+            'another file or has other size or times; its bytes were not read again$': self.replace_program,
+            'builder agent executable cannot be looked at after admission$': self.fixture['program'].unlink,
             'withdrawn': lambda: grants.stop(self.shift),
             'option': None,
         }
@@ -668,7 +670,7 @@ class GrantTests(LocalTest):
             return argv
         with self.admit() as admitted:
             with patch.object(agents, 'render_argv', rendered):
-                with self.assertRaisesRegex(Refused, 'executable changed'):
+                with self.assertRaisesRegex(Refused, 'executable replaced or rewritten after admission'):
                     admitted.seat_start('builder', 'go')
 
     def test_admission_refuses_an_executable_replaced_during_later_pin_checks(self):

@@ -35,6 +35,14 @@ They have shown:
   after admission`, the driver closed the shift, and the report gave that
   reason with nothing built. The same command, started and signed again,
   ran the shift in the entry above.
+- An agent CLI whose pinned file was written again with the same bytes,
+  once: the pinned file of `codex` is a launcher script, and an update of
+  the CLI during a shift wrote it again unchanged while the program it
+  starts went to a new version. Other sessions of that CLI were running on
+  the machine. The host refused the builder's next turn with the same words
+  as above, in a repair round, and the shift ended with nothing accepted.
+  The words of the refusal were changed after it to say what the host
+  compares; see [the executable pin](agents.md#executable-pin).
 - One shift with the developer's review skills switched off in the agent's
   settings for the repository, with `claude` in all three seats, on a copy
   of a real project: four tasks accepted, with eight reviews run by the
