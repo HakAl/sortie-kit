@@ -704,8 +704,13 @@ build receipt, the host begins the review of that plan or candidate itself:
   file whose name is not made of plain parts, or that the host holds no
   copy of, is not shown. Whatever is not shown has a line in `HOST.md` with
   the reason, and none of it fails the review. The instructions tell the
-  reviewer that proof which is not in the directory is a limit to state
-  under `not_examined`, not a finding to raise or to keep open. The
+  reviewer that proof the directory cannot hold (a file `HOST.md` says is
+  not shown, a run the reviewer cannot make) is a limit to state under
+  `not_examined`, and that its absence alone is no new finding. An earlier
+  finding that rested only on such absence is resolved, with the limit
+  named in its reason; one that named a fault stays unresolved until the
+  correction can be checked. What the brief requires and the plan, the
+  change or a shown receipt leaves out is a finding as before. The
   entry of a receipt taken by `consume` or `stop-evidence` on the task in
   `driver-state.json` has `at`, the time the host took it; the entries of
   the host's own review receipts, and entries written before this, have
