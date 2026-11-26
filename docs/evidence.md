@@ -14,6 +14,10 @@ They have shown:
 - A `CHANGES` round on a plan, settled: the review had one finding, the
   builder answered it, and the next review accepted with that finding
   marked resolved.
+- A `CHANGES` round on a commit, settled, once: the first review of a
+  task's candidate asked for changes with one major finding, which named a
+  requirement that the same answer marked as not met; the builder repaired
+  it in one round and the next review accepted.
 - `claude` driving, with `codex` as the builder and with `claude` as the
   builder; in one of the latter the reviewer was picked from another family
   without a flag. Two tasks accepted in one shift, several times.
@@ -73,8 +77,6 @@ hosted checks, and by nothing else:
   exit; the cause is not known and it has not happened since. The report
   now says so and gives a command to look for what is left, and that
   wording has not been seen on a real shift.
-- A review that asks for changes on a commit. The changes rounds seen were
-  on plans.
 - A machine with a single agent CLI, where the reviewer is the builder's
   own CLI without any flag.
 - A review whose end could not be saved in time.

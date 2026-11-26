@@ -1948,6 +1948,11 @@ class SetAsideTests(LifecycleFixture):
         # The same identity is not briefed again, and nothing is started for it.
         self.assertEqual(self.brief("task")["status"], "invalid")
         self.assertEqual(len(self.spawn.started), started)
+        # The answer says what is used up, the identity, and that the work is not: a driver read
+        # "it cannot be briefed again" as the work being lost for the shift.
+        self.assertIn("task task is set aside and not accepted; its task_id cannot be used again in this shift. "
+                      "The next task can be briefed, and so can the same work under a new task_id", result["detail"])
+        self.assertNotIn("it cannot be briefed again", result["detail"])
         # The next task is, with a builder turn of its own.
         self.assertEqual(self.brief("next")["status"], "recorded")
         self.assertEqual((self.state()["active"], len(self.spawn.started)), ("next", started + 1))

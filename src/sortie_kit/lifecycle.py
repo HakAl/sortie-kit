@@ -1542,7 +1542,8 @@ class Driver:
             # The driver leaves a task that cannot go on, at any stage and before any
             # repair round is used, so that the next can be briefed. No turn and no review
             # is open here (see above): the command stops no seat. The task is not accepted,
-            # keeps its identity, which cannot be briefed again, and the host judges no reason.
+            # keeps its identity, which cannot be used again (the same work can be briefed under
+            # another), and the host judges no reason.
             with asked():
                 if task["stage"] == "accepted":
                     raise Refused("the task is accepted and is not set aside; send close")
@@ -1556,8 +1557,9 @@ class Driver:
                 "set aside by the driver at " + left + ", repair round " + str(task["round"]) + held + ": "
                 + reason)[:2000])
             state["active"] = None
-            return "recorded", ("task " + task["id"] + " is set aside and not accepted; it cannot be briefed again "
-                                "in this shift. " + ("The next task can be briefed" if self.active_seconds() > 0 else
+            return "recorded", ("task " + task["id"] + " is set aside and not accepted; its task_id cannot be used "
+                                "again in this shift. " + ("The next task can be briefed, and so can the same work "
+                                                           "under a new task_id" if self.active_seconds() > 0 else
                                                      "wind-down: no new brief is taken. Send finish with what is "
                                                      "left and who is next"))
         if op == "progress":

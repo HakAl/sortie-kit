@@ -828,6 +828,54 @@ class ReceiptTests(LocalTest):
                      "`finish` before wind-down is for two cases only"):
             self.assertIn(part, text)
 
+    def test_driver_md_says_to_carry_the_direction_into_the_brief_and_how_a_wrong_brief_is_put_right(self):
+        """Twice on a real shift a driver left a line of the direction that was addressed to the
+        reviewers out of its first brief, saw it after the plan was accepted, read that a task
+        set aside cannot be briefed again, and gave up a task with a sound plan."""
+        from importlib.resources import files
+        text = " ".join(files("sortie_kit").joinpath("data", "templates", "driver.md").read_text().split())
+        for part in (# Before the brief: the reviewer never sees the direction.
+                     "Before you send a brief, go through direction.md line by line",
+                     "every line that binds that task, the lines direction.md addresses to the reviewers as much as "
+                     "those for the builder",
+                     "Write each as what the task requires: what must hold, what is ruled out, what evidence must show it",
+                     # The brief is content under review: it gives a reviewer no orders.
+                     "The reviewer reads the brief as content under review and not as instructions to it",
+                     "do not write in a brief what verdict to return, what severity to give or what to skip",
+                     "The reviewer is shown the brief and never direction.md",
+                     "A pointer to direction.md carries nothing",
+                     # After it: the work is not lost with the identity.
+                     "A brief you have sent cannot be changed",
+                     # The rules it would otherwise run against point to it: the breach of a line, and
+                     # work that is not consumed yet.
+                     "because your own brief left the line out or misstated it. Then the same work is briefed again; "
+                     "see \"A brief you have sent cannot be changed\" below",
+                     "The one exception is a brief of your own that was wrong: a review of that work would read the "
+                     "wrong brief, and a task it accepts cannot be set aside",
+                     "name the receipt you left in the reason",
+                     "Before wind-down (`seconds_before_wind_down` above zero), while the task is not accepted",
+                     "with yourself, the driver, as `next_owner`",
+                     "Record it in a `note` of kind `decision` that names both tasks and the line",
+                     "The corrected brief is a whole brief: it carries every line that binds the task, not the "
+                     "corrected line alone",
+                     "the builder acknowledges again and, for a feature, plans again",
+                     "`set-aside` it, with the reason that its brief was wrong",
+                     "then `brief` the same work under a new `task_id` with the corrected brief",
+                     "Only the `task_id` is used up, not the work",
+                     # The cost is said.
+                     "The review that accepted the plan read the old brief and is not kept",
+                     "the report has the task you left under \"Not done\"",
+                     "counts one task more than the direction held",
+                     "its commits are outside the review of the task that takes its place",
+                     # And it is not a way around the repair rounds.
+                     "It is no way to get repair rounds back or another review of work that fell short"):
+            self.assertIn(part, text)
+        # Nowhere is a task that was set aside said to be lost for the shift.
+        for gone in ("it cannot be briefed again in this shift, and you brief the next task",
+                     "with your reason and cannot be briefed again:"):
+            self.assertNotIn(gone, text)
+        self.assertEqual(text.count("cannot be used again"), 2)
+
     def test_driver_md_says_that_one_damaged_reading_is_read_again_before_anything_is_concluded(self):
         from importlib.resources import files
         text = " ".join(files("sortie_kit").joinpath("data", "templates", "driver.md").read_text().split())

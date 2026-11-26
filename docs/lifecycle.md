@@ -527,8 +527,18 @@ other task unstarted.
 reason and a next owner. The task is recorded with the stage `blocked`, the
 stage and repair round it was left at and the driver's reason; it is not
 accepted, and the report has it under "Not done" with that reason and that
-owner. Its identity stays taken, so it cannot be briefed again in the shift.
-The next `brief` is free. Nothing the builder committed for the task is
+owner. Its identity stays taken, so that `task_id` cannot be briefed again
+in the shift. The next `brief` is free, and it may be the same work under a
+new identity: that is how a driver puts right a brief it sent with a line of
+the direction missing, since no command changes a brief and none sends an
+accepted plan back. Nothing of the task that was left is carried over. Its
+acknowledgment, its plan and the review that accepted the plan were of the
+old brief, so the builder plans again and the host reviews that plan; the
+report has the task that was left under "Not done" and counts one task more
+than the direction held; and the host links the two tasks nowhere, so only
+the driver's reason and the new brief say that one took the other's place.
+A defect has no plan, so there only the acknowledgment is made again.
+Nothing the builder committed for the task is
 undone: what is in the repository stays there, and the review of the next
 task is of the change from where the repository is at its `brief`.
 
@@ -545,11 +555,19 @@ not reviewed" in its reason, which is where the report then has it.
 `driver.md` tells a driver when to use it. A task that a repair can put
 right is repaired. A task is set aside when it cannot be put right in the
 shift, and the next is briefed only when it can be done from the repository
-as it then is. A candidate the host accepted and the driver holds to break a
+as it then is. A task whose brief the driver itself got wrong, with a line
+of the direction left out or misstated, is set aside before wind-down and
+briefed again under a new identity with a whole corrected brief; `driver.md`
+says that this is for a wrong brief only, and no way to get repair rounds
+back or another review of work that fell short. A candidate the host accepted and the driver holds to break a
 line of the direction is neither closed nor set aside: the driver finishes
 with the developer as next owner.
 
-Limits. The host does not judge the reason. The host puts nothing back: a
+Limits. The host does not judge the reason. It cannot tell work briefed
+again for a wrong brief from work briefed again to start over: a new
+identity begins at repair round 0 with no earlier finding to answer, and
+only the words of `driver.md` stand against that use; the report shows both
+tasks, each with its reviews. The host puts nothing back: a
 commit the builder made for the task is in the history the next task builds
 on and is outside that task's review, and what the builder left uncommitted
 is still in the working tree when the next builder starts. That is so for

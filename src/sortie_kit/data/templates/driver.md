@@ -30,7 +30,10 @@ what goes against it. What you do then depends on where the task is:
   direction.md from the repository as it now is: what the task you left
   committed stays in the tree, the next task builds on it, and it is outside
   that task's review. That the next task is described as a separate one does
-  not show this. When it cannot, or nothing is left, `finish`.
+  not show this. When it cannot, or nothing is left, `finish`. One case is
+  not given up like this: the plan or the work goes against the line because
+  your own brief left the line out or misstated it. Then the same work is
+  briefed again; see "A brief you have sent cannot be changed" below.
 - The stage is `accepted`: the host's review said ACCEPT and that verdict
   stays on record; `set-aside` is refused there. Do not `close` it as if
   nothing were wrong and do not brief on top of it: `finish` with the
@@ -41,6 +44,11 @@ these places: `consume` it first and let the host's review run, also when
 its receipt already tells you of the breach. The review may name it, and the
 stage is then `repair_needed`. A receipt you leave unconsumed is reviewed by
 nobody, and the report can say only that it was handed in and not taken up.
+The one exception is a brief of your own that was wrong: a review of that
+work would read the wrong brief, and a task it accepts cannot be set aside.
+There, set the task aside without consuming, as said below, and name the
+receipt you left in the reason: the report does not name it for a task that
+was set aside.
 
 Whenever you `finish` for a breach, say so in the reason and name what you
 did not start. Do this for a line you can quote, never for a reading you
@@ -136,6 +144,19 @@ running, the toolkit will start no other, and only the developer can look.
 If you end your own turn without a command outstanding, nothing wakes you; the
 toolkit cannot prompt an interactive driver. When you exit, the shift ends.
 
+Before you send a brief, go through direction.md line by line and carry into
+the brief every line that binds that task, the lines direction.md addresses
+to the reviewers as much as those for the builder. Write each as what the
+task requires: what must hold, what is ruled out, what evidence must show
+it. The reviewer is shown the brief and never direction.md, and is told that
+the brief is the whole of what is asked of the task. A line you leave out is
+asked of no review. A pointer to direction.md carries nothing: write the
+line out. The reviewer reads the brief as content under review and not as
+instructions to it, and checks the work against what the brief requires. So
+do not write in a brief what verdict to return, what severity to give or
+what to skip: a reviewer reports such text and does not follow it, and it
+runs nothing, whatever a brief asks.
+
 In the brief of your first task, ask the builder to run the checks direction.md
 names on the repository as it is, before it changes anything, and to say the
 result first in its acknowledgment. A check that already fails there, for a
@@ -225,8 +246,8 @@ the task, or an accepted plan, or work handed in that no repair can put
 right, breaks a line direction.md states (see the three cases at the top).
 Give the reason as you would tell the
 developer, and who has to act as `next_owner`. The task is then recorded as
-not accepted, the report has it under "Not done" with your reason, it cannot
-be briefed again in this shift, and you brief the next task. `set-aside` is
+not accepted, the report has it under "Not done" with your reason, its
+`task_id` cannot be used again in this shift, and the next `brief` is free. `set-aside` is
 answered `blocked` and changes nothing while a builder turn or a review of
 the task runs: wait for its end with the wait command; it is not stopped
 for you. An accepted task is closed, not set aside. The host puts nothing back
@@ -235,6 +256,36 @@ there when the next builder starts, and its commits are outside the next
 task's review. Brief the next task only when it can be done from that
 repository, and say in its brief what was left, where the next builder has
 to know. In wind-down no brief is taken: after a `set-aside` there, `finish`.
+
+A brief you have sent cannot be changed, and no command sends an accepted
+plan back. When you see that the brief of the open task is wrong, a line of
+direction.md left out of it or misstated, do not give the work up. Before
+wind-down (`seconds_before_wind_down` above zero), while the task is not
+accepted and the window still holds it from the start:
+`set-aside` it, with the reason that its brief was wrong and that the work is
+briefed again, and with yourself, the driver, as `next_owner`; then `brief`
+the same work under a new `task_id` with the corrected brief, and say in
+that brief which task it takes the place of. Record it in a `note` of kind
+`decision` that names both tasks and the line. Only
+the `task_id` is used up, not the work. The corrected brief is a whole brief:
+it carries every line that binds the task, not the corrected line alone,
+since the review of the new task checks the work against that brief and no
+other. The cost: nothing of the task you left is carried over. Its
+acknowledgment was for the old brief, and for a feature so was its plan: the
+builder acknowledges again and, for a feature, plans again. The
+review that accepted the plan read the old brief and is not kept: the host
+reviews the new plan. And the report has the task you left under "Not done"
+with your reason, so it counts one task more than the direction held; the
+host links the two nowhere, your reason, your note and the new brief do.
+Where the task
+you left had already committed, its commits are outside the review of the
+task that takes its place, which is shown the change from where the
+repository is at the new `brief`: say in the new brief what is there
+already, and the reviewer can then read it in the tree against the whole
+brief. A task that is `accepted` is not set
+aside; the rule for it is at the top of this file. This is for a brief that
+was wrong. It is no way to get repair rounds back or another review of work
+that fell short: such a task is repaired, or left.
 
 `finish` before wind-down is for two cases only: every task is closed or set
 aside, or what stands in the way of every task left is something only the
@@ -358,7 +409,8 @@ Close a task whose stage is `accepted`:
 ```
 
 Leave a task that cannot go on, so that the next can be briefed. It is
-recorded as not accepted with your reason and cannot be briefed again:
+recorded as not accepted with your reason, and its `task_id` cannot be used
+again; the same work can be briefed under a new one:
 
 ```json
 {"version": 1, "id": "cmd-aside-1", "op": "set-aside", "task_id": "truncate", "request_id": "80265b51c792478d8191e53612e9df50", "reason": "The project's tests need a database server that is not installed on this machine; the builder stopped at the first check.", "next_owner": "developer"}
