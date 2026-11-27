@@ -25,8 +25,6 @@ class ReviewFixture(test_lifecycle.LifecycleFixture):
         patched.start()
         self.addCleanup(patched.stop)
 
-
-class HostReviewTests(ReviewFixture):
     def review_receipt(self, state=None):
         last = (state or self.state())["last_review"]
         return decode((self.shift / last["receipt"]["path"]).read_bytes())
@@ -34,6 +32,8 @@ class HostReviewTests(ReviewFixture):
     def directory(self):
         return self.shift / self.state()["review"]["running"]["directory"]
 
+
+class HostReviewTests(ReviewFixture):
     def test_the_reviewer_is_shown_the_receipts_the_host_took_for_the_task_and_the_files_they_name(self):
         """A reviewer held a finding open through three rounds because the acknowledgment the
         brief asked for, which the host had taken, was not in front of it."""
@@ -520,12 +520,9 @@ class HostReviewTests(ReviewFixture):
         self.assertEqual(self.state()["review"]["running"]["limit_seconds"], 600)
         self.assertEqual(self.end_review()["tasks"]["task"]["stage"], "accepted")
 
-    def test_showing_evidence_never_takes_the_time_in_which_a_review_may_still_start(self):
-        """In wind-down a review starts only while its whole limit fits. Evidence is given
-        no more than the time by which it fits, less what the host allows the work between
-        the directory and the start (the look at the repository, the marks, the seat's
-        start, the writes), and none when that leaves nothing: the review then starts as
-        it did before evidence was shown."""
+    def given_to_make(self, seconds):
+        """What `review_dir.make` was given for the review of a build handed in `seconds` into the
+        shift of `wind_down_at`."""
         given = []
         make = review_dir.make
 
@@ -533,25 +530,164 @@ class HostReviewTests(ReviewFixture):
             given.append((named["evidence"], named["evidence_seconds"]))
             return make(*args, **named)
         with mock.patch.object(review_dir, "make", seen):
-            result = self.wind_down_at(382)  # the limit fits with eight seconds over
+            result = self.wind_down_at(seconds)
         self.assertEqual(result["status"], "advanced", result)
+        return given
+
+    def test_evidence_is_shown_in_the_reviews_own_time_less_what_the_start_is_allowed(self):
+        """Whether a review may start is decided when it is begun, and its end is fixed then.
+        Preparing it, the evidence too, comes out of its own time. Evidence is given that
+        time less what the host allows the work between the directory and the start (the
+        look at the repository, the marks, the seat's start, the writes)."""
+        given = self.given_to_make(382)  # in wind-down; the limit of 600 seconds fits with eight over
         self.assertEqual(len(given[0][0]), 2)
         self.assertEqual(START_RESERVE, 5 + 0.25 + 2 * WRITE_RESERVE + 1)
-        self.assertEqual(given[0][1], 8 - START_RESERVE)
+        self.assertEqual(given[0][1], 600 - START_RESERVE)
         self.assertTrue((self.directory() / "evidence" / "HOST.md").exists())
 
-    def test_with_no_time_over_a_review_starts_without_evidence(self):
-        given = []
+    def test_in_wind_down_a_review_whose_limit_only_just_fits_is_shown_the_evidence_too(self):
+        """Until the begin decided, evidence was held to the time by which the limit still fit,
+        and a review with seven seconds over got none."""
+        given = self.given_to_make(383)
+        self.assertEqual((len(given[0][0]), given[0][1]), (2, 600 - START_RESERVE))
+        self.assertTrue((self.directory() / "evidence" / "HOST.md").exists())
+        self.assertEqual(self.state()["review"]["running"]["limit_seconds"], 600)
+
+    def slow_make(self, seconds, also=lambda: None):
+        """`review_dir.make` that takes `seconds` of the fixture's clock, as an export of a large repository does."""
         make = review_dir.make
 
-        def seen(*args, **named):
-            given.append(named["evidence"])
-            return make(*args, **named)
-        with mock.patch.object(review_dir, "make", seen):
-            result = self.wind_down_at(383)  # seven seconds over: less than the start may take
-        self.assertEqual((result["status"], given), ("advanced", [None]))
+        def slow(*args, **named):
+            made = make(*args, **named)
+            self.clock.sleep(seconds)
+            also()
+            return made
+        return mock.patch.object(review_dir, "make", slow)
+
+    def test_a_review_begun_in_wind_down_while_its_limit_fit_starts_though_preparing_it_took_seconds(self):
+        """The limit fit when the review was begun. That preparing the directory took three
+        seconds does not lose the review: it ends when it would have, and runs that much shorter."""
+        with self.slow_make(3):
+            result = self.wind_down_at(390)  # exactly 600 seconds of working time are left
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertIn("started by the host", result["detail"])
+        self.assertEqual(self.driver.work_seconds(), 597)
+        self.assertEqual(self.state()["review"]["running"]["limit_seconds"], 600)
+        self.assertEqual(self.driver.turn_end, self.clock.now() + 597)  # fixed at the begin: not a second later
+        self.assertEqual(self.end_review()["tasks"]["task"]["stage"], "accepted")
+
+    def test_a_review_begun_before_wind_down_starts_though_wind_down_came_while_it_was_prepared(self):
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=100)
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(196)
+        self.assertEqual((self.driver.active_seconds(), self.driver.work_seconds()), (4, 94))
+        with self.slow_make(6):
+            result = self.consume_phase()
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertIn("started by the host", result["detail"])
+        self.assertEqual(self.driver.active_seconds(), 0)
+        self.assertEqual(self.state()["review"]["running"]["limit_seconds"], 94)
+        self.assertEqual(self.driver.turn_end, self.clock.now() + 88)
+        self.assertTrue((self.directory() / "evidence" / "HOST.md").exists())
+
+    def not_started(self, result, why):
+        state = self.state()
+        self.assertEqual((state["last_review"]["outcome"], state["review"]), ("FAILED", None), result)
+        attempts = state["tasks"]["task"]["reviews"][-1]["attempts"]  # as the state keeps them, receipt or none
+        self.assertEqual([item["ended_by"] for item in attempts], ["not started"])
+        self.assertIn(why, attempts[0]["reasons"][0])
+        self.assertEqual(len(self.spawn.started), 1)  # the builder turn of the brief and no reviewer
+
+    def test_a_review_whose_own_time_ran_out_while_it_was_prepared_is_not_started(self):
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=10)
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(289)
+        self.assertEqual((self.driver.active_seconds(), self.driver.work_seconds()), (1, 6))
+        with self.slow_make(6):
+            result = self.consume_phase()
+        # Its own time ends with the working time here, and with that the time of the command it was prepared
+        # under: whichever of the checks finds it first, no reviewer is started.
+        self.not_started(result, "not started: ")
+
+    def test_a_review_whose_own_time_is_over_after_preparing_is_not_started_though_the_shift_has_time(self):
+        """The review's own end alone: the command it was prepared under and the working time
+        of the shift both have seconds left, and the review's limit of five is used up."""
+        self.driver = Driver(self.admission, self.spawn, seconds=1000, wind_down=700)
+        self.driver.review_limit = 5
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(980)
+        self.assertEqual((self.driver.active_seconds(), self.driver.work_seconds()), (0, 10))
+        with self.slow_make(6):
+            result = self.consume_phase()
+        self.assertEqual(self.driver.work_seconds(), 4)
+        self.not_started(result, "the time for the review ran out while it was prepared")
+
+    def slept_in_the_export(self, left):
+        """The files are exported in half a second of the clock that runs while the machine is awake,
+        and the machine slept meanwhile: `left` seconds of working time remain after it."""
+        export = review_dir.export
+
+        def slow(*args, **named):
+            done = export(*args, **named)
+            self.clock.sleep(0.5)
+            self.admission.budget.end = self.clock.now() + left + self.driver.closing
+            return done
+        return mock.patch.object(review_dir, "export", slow)
+
+    def test_evidence_does_not_take_the_working_time_that_is_left_after_the_machine_slept_in_the_export(self):
+        """Found by the merge gate with a probe: what evidence may take was worked out before the
+        export from the review's own time, which is of the clock that runs while the machine is
+        awake. The machine sleeps in the export, four seconds of working time are left after
+        it, evidence takes five within what it was given, and the reviewer that the required
+        files alone would have had is not started. Evidence is held to the working time as it
+        is after the export: with less than the start is allowed, none is shown."""
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=100)
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(196)
+        self.assertEqual(self.driver.work_seconds(), 94)
+        show, shown = review_dir.show, []
+
+        def five_seconds(*args, **named):
+            shown.append(1)
+            done = show(*args, **named)
+            self.clock.sleep(5)
+            return done
+        with self.slept_in_the_export(4), mock.patch.object(review_dir, "show", five_seconds):
+            result = self.consume_phase()
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertIn("started by the host", result["detail"])
+        self.assertEqual((shown, self.driver.work_seconds()), ([], 4))
         self.assertFalse((self.directory() / "evidence").exists())
-        self.assertTrue((self.directory() / "tree").is_dir())
+        self.assertIn("The host did not show the builder's receipts to this review",
+                      " ".join((self.directory() / "REVIEW.md").read_text().split()))
+        self.assertEqual(self.driver.reviewing["evidence"], "late")
+
+    def test_evidence_is_shown_after_a_sleep_in_the_export_that_left_working_time_beyond_what_the_start_is_allowed(self):
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=100)
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(196)
+        with self.slept_in_the_export(20):
+            result = self.consume_phase()
+        self.assertIn("started by the host", result["detail"])
+        self.assertEqual(self.driver.reviewing["evidence"], "shown")
+        self.assertTrue((self.directory() / "evidence" / "HOST.md").exists())
+
+    def test_a_review_is_not_started_when_the_signed_deadline_came_closer_while_it_was_prepared(self):
+        """The end of a review is fixed on the clock that only runs while the machine is awake.
+        The signed deadline is a time of day. When the machine slept while a review was
+        prepared, the working time can be over although the review's own time is not, and
+        no reviewer is started into the time kept for the stop and the report."""
+        def slept():
+            self.admission.budget.end = self.clock.now() + self.driver.closing
+        with self.slow_make(1, slept):
+            result = self.wind_down_at(380)  # the limit fits, and of the review's own time one second is used
+        self.assertEqual(self.driver.work_seconds(), 0)
+        self.not_started(result, "the time for the review ran out while it was prepared")
 
     def test_in_wind_down_a_review_that_does_not_fit_is_not_started_and_the_work_stays_handed_in(self):
         started = len(self.spawn.started) + 1  # the builder turn of the brief
@@ -1575,6 +1711,186 @@ class RequirementsReportTests(ReviewFixture):
                          (True, ["met", "not_checked", "not_checked"]))
         self.assertEqual(doc["issues"], [])
 
+    UNSEEN = "no time was left for it before this review had to start"
+
+    def begun_at(self, seconds, *, window=300, wind_down=100):
+        """A build handed in `seconds` into a shift of `window` seconds whose last `wind_down` are wind-down."""
+        self.driver = Driver(self.admission, self.spawn, seconds=window, wind_down=wind_down)
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(seconds)
+        result = self.consume_phase()
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertIn("started by the host", result["detail"])
+
+    def host_log(self):
+        path = self.shift / "logs" / "host.log"
+        return path.read_text() if path.exists() else ""
+
+    def test_a_review_begun_four_seconds_before_wind_down_as_on_a_real_shift(self):
+        """Seen on a real shift of five minutes: the candidate's review began four seconds before
+        wind-down, the host showed it none of the builder's receipts, and nothing said so. Its
+        REVIEW.md described evidence/, the reviewer answered five requirements not_checked and
+        the candidate was accepted. The evidence was held to the time by which a review may
+        still start; it is shown in the review's own time now, of which there were 94 seconds."""
+        self.begun_at(196)
+        self.assertEqual((self.driver.active_seconds(), self.driver.work_seconds()), (4, 94))
+        where = self.directory()
+        self.assertEqual(sorted(p.name for p in (where / "evidence" / "receipts").iterdir()),
+                         sorted(item["path"].split("/")[1] for item in self.task_state()["receipts"]))
+        self.assertTrue((where / "evidence" / "HOST.md").exists())
+        told = " ".join((where / "REVIEW.md").read_text().split())
+        self.assertIn("`evidence/`: the builder's receipts", told)
+        state = self.accept(self.need(), self.need("the baseline ran first", "not_checked", ""))
+        self.assertEqual(state["last_review"]["outcome"], "ACCEPT")
+        self.assertEqual(self.review_receipt(state)["data"]["attempts"][-1]["evidence"], "shown")
+        self.assertNotIn("was not shown", self.host_log())
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        self.assertEqual(doc["issues"], [])
+        self.assertNotIn("did not show", text)
+
+    def test_a_review_with_less_of_its_own_time_than_the_start_is_allowed_is_told_that_it_was_shown_none(self):
+        """What is left of the silence found on that shift: a review whose own time is shorter
+        than what the host allows the start is shown none of the builder's receipts. It reads
+        so in REVIEW.md, and the receipt, the host's log and the report each say it."""
+        self.begun_at(289, wind_down=10)
+        self.assertEqual((self.driver.active_seconds(), self.driver.work_seconds()), (1, 6))
+        where = self.directory()
+        self.assertFalse((where / "evidence").exists())
+        told = " ".join((where / "REVIEW.md").read_text().split())
+        self.assertNotIn("`evidence/`: the builder's receipts", told)
+        self.assertIn("The host did not show the builder's receipts to this review: " + self.UNSEEN, told)
+        self.assertIn("Answer a requirement that rests on a receipt or a log `not_checked`.", told)
+        line = "review 1 of task task, attempt 1: the reviewer was not shown the builder's receipts (" + self.UNSEEN + ")"
+        self.assertEqual(self.host_log().count(line), 1)
+        state = self.accept(self.need(), self.need("the baseline ran first", "not_checked", ""))
+        self.assertEqual(state["last_review"]["outcome"], "ACCEPT")
+        attempt = self.review_receipt(state)["data"]["attempts"][-1]
+        self.assertEqual(attempt["evidence"], "no_time")
+        self.assertEqual(state["tasks"]["task"]["reviews"][-1]["attempts"][-1]["evidence"], "no_time")
+        self.assertEqual(self.host_log().count("was not shown"), 1)
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        self.assertEqual(doc["issues"], [])
+        self.assertEqual(doc["tasks"][0]["receipts"][-1]["data"]["attempts"][-1]["evidence"], "no_time")
+        task = text.split("### task (")[1].split("\n### ")[0].split("\n## ")[0]
+        self.assertIn("  - **The host did not show this review the builder's receipts**: " + self.UNSEEN
+                      + ". Answers of `not_checked` in it may rest on that.\n", task)
+        self.assertIn("- **The host did not show review 1 the builder's receipts**: " + self.UNSEEN + ". An answer of "
+                      "`not_checked` below may rest on that and not on what the builder left out.\n"
+                      "- What the brief asks for, as review 1 that ended in ACCEPT answered it:\n", task)
+
+    def test_a_review_that_was_shown_the_receipts_says_so_in_its_receipt_and_nowhere_else(self):
+        self.reach_review()
+        self.assertTrue((self.directory() / "evidence" / "HOST.md").exists())
+        self.assertIn("`evidence/`: the builder's receipts", " ".join((self.directory() / "REVIEW.md").read_text().split()))
+        state = self.accept(self.need(), self.need("the baseline ran first", "not_checked", ""))
+        self.assertEqual(self.review_receipt(state)["data"]["attempts"][-1]["evidence"], "shown")
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        self.assertEqual(doc["tasks"][0]["receipts"][-1]["data"]["attempts"][-1]["evidence"], "shown")
+        self.assertNotIn("did not show", text)
+        self.assertNotIn("was not shown", self.host_log())
+
+    def test_a_receipt_that_does_not_say_what_became_of_the_evidence_is_read_as_before(self):
+        """A shift kept from before the host said it has attempts without the key. Its receipt
+        keeps the shape, and the report says nothing of evidence and keeps no key for it. A
+        value that is none of the host's four is no receipt of the host's."""
+        from sortie_kit import report
+        from sortie_kit.layout import Refused
+        from sortie_kit.receipt_schema import validate_shape
+        self.reach_review()
+        state = self.accept(self.need())
+        value = self.review_receipt(state)
+        validate_shape(value, "receipt")
+        attempt = value["data"]["attempts"][-1]
+        self.assertEqual(attempt.pop("evidence"), "shown")
+        validate_shape(value, "receipt")  # as an earlier build wrote it
+        self.assertNotIn("evidence", report.review_kept(value["data"])["attempts"][-1])
+        self.assertIsNone(report.unshown_words(attempt))
+        for wrong in (None, "none", "", 1, ["late"]):
+            attempt["evidence"] = wrong
+            with self.assertRaises(Refused):
+                validate_shape(value, "receipt")
+            # A retained file changed by hand: the report takes no words from it.
+            self.assertNotIn("evidence", report.review_kept(value["data"])["attempts"][-1])
+            self.assertIsNone(report.unshown_words(attempt))
+            self.assertNotIn("did not show", report.attempt_words(dict(attempt, status="failed")))
+        for known in ("no_time", "late", "failed"):
+            attempt["evidence"] = known
+            validate_shape(value, "receipt")
+            self.assertEqual(report.review_kept(value["data"])["attempts"][-1]["evidence"], known)
+            self.assertIn("The host did not show this run the builder's receipts: ",
+                          report.attempt_words(dict(attempt, status="failed", reasons=["nothing usable"])))
+
+    def test_a_plan_review_shown_no_evidence_is_told_so_without_the_answer_it_does_not_have(self):
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=10)
+        self.begin("feature")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(289)
+        result = self.consume_phase()  # the plan is handed in and the host starts its review
+        self.assertEqual(result["status"], "advanced", result)
+        told = " ".join((self.directory() / "REVIEW.md").read_text().split())
+        self.assertIn("The host did not show the builder's receipts to this review: " + self.UNSEEN, told)
+        self.assertNotIn("not_checked", told)
+        state = self.end_review()
+        self.assertEqual(self.review_receipt(state)["data"]["attempts"][-1]["evidence"], "no_time")
+        text, _ = self.report()
+        self.assertIn("  - **The host did not show this review the builder's receipts**: " + self.UNSEEN + ".\n", text)
+        self.assertNotIn("not_checked` in it may rest", text)
+
+    def test_an_attempt_whose_directory_never_came_back_says_nothing_of_evidence_and_one_that_did_says_it_first(self):
+        """An attempt that fails before its directory is made knows nothing of evidence: the key
+        is left out, since the receipt's shape takes one of four words or none. One that fails
+        after it says what it knows, and its line in the host's log stands before the next attempt's."""
+        from sortie_kit.layout import Refused
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=10)
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(289)  # one second before wind-down, six of working time: less than the start is allowed
+        make, calls = review_dir.make, []
+
+        def first_fails(*args, **named):
+            calls.append(1)
+            if len(calls) == 1:
+                raise Refused("the repository could not be exported")
+            return make(*args, **named)
+        with mock.patch.object(review_dir, "make", first_fails):
+            result = self.consume_phase()
+        self.assertEqual(result["status"], "advanced", result)
+        self.assertEqual(self.host_log().count("was not shown"), 1)
+        self.assertIn("attempt 2: the reviewer was not shown", self.host_log())
+        state = self.accept(self.need())
+        first, second = self.review_receipt(state)["data"]["attempts"]
+        self.assertEqual((first["ended_by"], "evidence" in first, second["evidence"]), ("not started", False, "no_time"))
+        self.assertNotIn("evidence", state["tasks"]["task"]["reviews"][-1]["attempts"][0])
+
+    def test_a_first_attempt_that_did_not_start_after_its_directory_was_made_is_in_the_log_before_the_second(self):
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=10)
+        self.begin("defect")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.clock.sleep(289)  # one second before wind-down, six of working time: less than the start is allowed
+        snapshot, calls = review_dir.snapshot, []
+
+        def first_fails(*args, **named):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("the repository could not be read")
+            return snapshot(*args, **named)
+        with mock.patch.object(review_dir, "snapshot", first_fails):
+            result = self.consume_phase()
+        self.assertEqual(result["status"], "advanced", result)
+        lines = [line.split(" ", 1)[1] for line in self.host_log().splitlines() if "was not shown" in line]
+        self.assertEqual([line.split(":")[0] for line in lines],
+                         ["review 1 of task task, attempt 1", "review 1 of task task, attempt 2"])
+        state = self.accept(self.need())
+        self.assertEqual([item["evidence"] for item in self.review_receipt(state)["data"]["attempts"]],
+                         ["no_time", "no_time"])
+        text, _ = self.report()
+        self.assertIn("  - Attempt 1: failed (not started): not started: the repository could not be read. The host did "
+                      "not show this run the builder's receipts: " + self.UNSEEN + ".\n", text)
+
     TOLD = "- Requirements accepted as said to be not delivered: "
 
     def test_a_requirement_accepted_as_disclosed_is_counted_in_the_outcome_and_listed_under_the_task(self):
@@ -2058,6 +2374,10 @@ class RepeatedFindingTests(ReviewFixture):
                 "read the findings file and the builder's last receipt",
                 "it is an ordinary repair",
                 "put the proof where the reviewer sees it",
+                # The showing is conditional, and a repair that points at a log again can leave the proof unseen.
+                "The receipts are shown within the host's bounds of time and files: `evidence/HOST.md` in the "
+                "review's directory says what was not shown, the report says when a review was shown none, and "
+                "short proof can go into the plan, the builder's answers or the committed tree.",
                 "`set-aside` it with the developer as `next_owner`",
                 "names the finding and what the builder and the reviewer each say",
                 "You never waive a finding and never call it resolved",

@@ -78,7 +78,8 @@
           ],
           "not_examined": []
         },
-        "repository": "unchanged"
+        "repository": "unchanged",
+        "evidence": "shown"
       }
     ]
   }

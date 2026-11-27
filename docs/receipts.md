@@ -184,7 +184,15 @@ review is open, `invalid` when none is). Its `data`:
   object as parsed) and `repository` (`unchanged`, `changed` or `not
   checked`). `unchanged` means the commit, Git's status lines and the
   listing of `receipts/` were the same before and after the run; it does not
-  say that no byte of an already modified file changed.
+  say that no byte of an already modified file changed. An attempt may also
+  have `evidence`, what the host did with the builder's receipts for that
+  run: `shown` (under `evidence/` of the directory, with the host's
+  statement), `no_time`, `late` or `failed` (see
+  [the lifecycle](lifecycle.md)). It is the one field of an attempt that is
+  not required: an attempt that failed before its directory was made has no
+  such key, and neither has a receipt kept from before the host said it. A
+  build from before this field refuses a receipt that has it, so a shift is
+  reported by the build that ran it or a later one.
 
 What the check makes of it, whoever presents it:
 

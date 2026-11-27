@@ -20,7 +20,8 @@ class ReviewDirectoryTests(test_receipts.ReceiptTests):
                      plan=None, prior=[], findings=[], answers=[], nonce=NONCE, seconds=20)
         given.update(changed)
         with receipts.session(self.shift, 30) as view:
-            return review_dir.make(view, name, **given)
+            path, sha, self.shown = review_dir.make(view, name, **given)
+            return path, sha
 
     def test_a_commit_review_gets_instructions_brief_patch_and_a_plain_export(self):
         path, sha = self.make()
@@ -28,7 +29,10 @@ class ReviewDirectoryTests(test_receipts.ReceiptTests):
         where = self.shift / path
         self.assertEqual(sorted(p.name for p in where.iterdir()), ["REVIEW.md", "brief.md", "change.patch", "tree"])
         told = (where / "REVIEW.md").read_text()
-        self.assertEqual(told, review.instructions("commit", dict(kind="commit", commit=self.candidate), NONCE))
+        # No receipt was given to show: the instructions say that the host showed none.
+        self.assertEqual(told, review.instructions("commit", dict(kind="commit", commit=self.candidate), NONCE,
+                                                   evidence="no_time"))
+        self.assertEqual(self.shown, "no_time")
         self.assertEqual(sha, hashlib.sha256(told.encode()).hexdigest())
         self.assertEqual((where / "brief.md").read_text(), "Pad the cell.\n")
         patch = (where / "change.patch").read_text()
@@ -227,6 +231,100 @@ class ReviewDirectoryTests(test_receipts.ReceiptTests):
         said = " ".join((self.shift / path / "evidence" / "HOST.md").read_text().split())
         self.assertIn(review_dir.LATE, said)
         self.assertEqual((self.shift / path / "tree" / "source.txt").read_text(), "after\n")
+
+    def test_the_reviewer_is_told_in_its_instructions_what_became_of_the_evidence(self):
+        """A review on a real shift got no evidence/ four seconds before wind-down, and its
+        REVIEW.md described the directory all the same. The instructions are written after
+        the evidence, from what became of it, and `make` says which it was."""
+        item, target = self.taken(), dict(kind="commit", commit=self.candidate)
+
+        def told(path, shown):
+            self.assertEqual(self.shown, shown)
+            text = (self.shift / path / "REVIEW.md").read_text()
+            self.assertEqual(text, review.instructions("commit", target, NONCE, evidence=shown))
+            return " ".join(text.split())
+        path, sha = self.make(evidence=[item])
+        said = told(path, "shown")
+        self.assertIn("`evidence/`: the builder's receipts", said)
+        self.assertNotIn("did not show the builder's receipts", said)
+        self.assertTrue((self.shift / path / "evidence" / "HOST.md").exists())
+        self.assertEqual(sha, hashlib.sha256((self.shift / path / "REVIEW.md").read_bytes()).hexdigest())
+        # None given to show: the caller had no time for it.
+        path, sha = self.make("request-2")
+        said = told(path, "no_time")
+        self.assertNotIn("`evidence/`: the builder's receipts", said)
+        self.assertIn("The host did not show the builder's receipts to this review: no time was left for it", said)
+        self.assertIn("the host's doing and not the builder's, and no finding", said)
+        self.assertFalse((self.shift / path / "evidence").exists())
+        self.assertEqual(sha, hashlib.sha256((self.shift / path / "REVIEW.md").read_bytes()).hexdigest())
+        # Given, and no time was left once the files were exported.
+        path, _ = self.make("request-3", evidence=[item], evidence_seconds=0)
+        self.assertIn("no time was left for it", told(path, "late"))
+        self.assertFalse((self.shift / path / "evidence").exists())
+        # Begun, and it could not be written.
+        with mock.patch.object(review_dir, "show", side_effect=OSError("no space left")):
+            path, _ = self.make("request-4", evidence=[item])
+        self.assertIn("could not be written in full", told(path, "failed"))
+        # The receipts were written and the host's statement was not: they lie there without it.
+        put = review_dir.put
+
+        def no_statement(folder, parts, raw):
+            if parts == ["HOST.md"]:
+                raise OSError("no space left")
+            return put(folder, parts, raw)
+        with mock.patch.object(review_dir, "put", no_statement):
+            path, _ = self.make("request-5", evidence=[item])
+        self.assertIn("what lies there has no statement of the host", told(path, "failed"))
+        self.assertTrue((self.shift / path / "evidence" / "receipts").is_dir())
+        self.assertFalse((self.shift / path / "evidence" / "HOST.md").exists())
+
+    def test_evidence_is_held_to_what_the_caller_says_is_left_after_the_export_and_while_it_is_shown(self):
+        """The caller's bound in seconds is counted from its call on one clock. A caller whose time
+        is also a time of day gives a question instead, asked after the export and before each
+        piece: when the answer is nothing, no further piece is read or written."""
+        many = self.held("build-1", [("logs/n-%d.log" % n, b"%d\n" % n) for n in range(8)])
+        asked = []
+
+        def nothing():
+            asked.append(1)
+            return 0
+        with mock.patch.object(review_dir, "show", side_effect=AssertionError("called with nothing left")):
+            path, _ = self.make(evidence=[many], evidence_seconds=5, evidence_left=nothing)
+        self.assertEqual((self.shown, asked), ("late", [1]))
+        self.assertFalse((self.shift / path / "evidence").exists())
+        left = [3.0]
+        put = review_dir.put
+
+        def used_up(folder, parts, raw):
+            if parts[0] == "files":
+                left[0] -= 1  # each file shown costs the caller a second it did not count on
+            return put(folder, parts, raw)
+        with mock.patch.object(review_dir, "put", used_up):
+            path, _ = self.make("request-2", evidence=[many], evidence_seconds=5, evidence_left=lambda: left[0])
+        where = self.shift / path / "evidence"
+        self.assertEqual(self.shown, "shown")
+        self.assertEqual(len(list((where / "files" / "logs").iterdir())), 3)
+        said = " ".join((where / "HOST.md").read_text().split())
+        self.assertIn("it is not shown: " + review_dir.LATE, said)
+
+    def test_a_callers_question_that_fails_costs_the_evidence_and_not_the_review(self):
+        """What goes wrong in the showing of evidence stays there. The caller's question of
+        what is left is part of it: when it cannot be answered the directory is still made
+        whole, with instructions that say the evidence was not written in full, and when no
+        time was left before it would be asked it is not asked."""
+        item = self.held("build-1", [("logs/n.log", b"1\n")])
+
+        def broken():
+            raise OSError("the clock cannot be read")
+        path, sha = self.make(evidence=[item], evidence_seconds=5, evidence_left=broken)
+        self.assertEqual(self.shown, "failed")
+        said = " ".join((self.shift / path / "REVIEW.md").read_text().split())
+        self.assertIn("could not be written in full", said)
+        self.assertFalse((self.shift / path / "evidence").exists())
+        self.assertEqual(sha, hashlib.sha256((self.shift / path / "REVIEW.md").read_bytes()).hexdigest())
+        path, _ = self.make("request-2", evidence=[item], evidence_seconds=0, evidence_left=broken)
+        self.assertEqual(self.shown, "late")
+        self.assertFalse((self.shift / path / "evidence").exists())
 
     def test_evidence_ends_at_the_callers_bound_and_not_at_its_share_of_the_time(self):
         """The caller says by when it needs the directory back, counted from its call. Time

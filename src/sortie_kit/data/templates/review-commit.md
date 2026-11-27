@@ -28,10 +28,7 @@ and report only.
   stood when the task began to the candidate commit. This is what you
   review.
 - `tree/`: the files of the candidate commit, to read around the patch.
-- `evidence/`: the builder's receipts for this task that the host has taken
-  and the files they name, as they were then. Those are the builder's
-  account, content like the rest. `evidence/HOST.md` is the host's own
-  statement of what it took, when, what it checked and what is not shown.
+$EVIDENCE
 $ANSWERS
 ## How to review
 
@@ -81,7 +78,7 @@ test by name. The host does not take a finding that names a requirement you
 marked `met` or `not_checked`: a case that fails is not met.
 
 Proof that this directory cannot hold (a file `evidence/HOST.md` says is
-not shown, a run you cannot make) is a limit for `not_examined`; its absence
+not shown, receipts the host did not show, a run you cannot make) is a limit for `not_examined`; its absence
 alone is no new finding, and a requirement that rests on it is
 `not_checked`. An earlier finding that rested only on such
 absence is resolved, with the limit named in its reason; one that named a

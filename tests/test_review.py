@@ -410,6 +410,33 @@ class InstructionTests(unittest.TestCase):
         for part in ("requirement", "not_met", "not_checked", "disclosed", V2, V3):
             self.assertNotIn(part, review.instructions("plan", PLAN, NONCE), part)
 
+    def test_a_review_the_host_showed_no_evidence_is_told_so_and_no_directory_is_described(self):
+        """What the host did with the builder's receipts is one of four. For three of them
+        there is no evidence/ to rely on, and the text says that, why, and what to do."""
+        self.assertEqual(review.EVIDENCE, ("shown", "no_time", "late", "failed"))
+        bullet = "`evidence/`: the builder's receipts"
+        for kind, target, most in (("commit", COMMIT, 200), ("plan", PLAN, 145)):
+            usual = review.instructions(kind, target, NONCE)
+            self.assertEqual(usual, review.instructions(kind, target, NONCE, evidence="shown"))
+            self.assertIn(bullet, usual)
+            self.assertNotIn("The host did not show the builder's receipts to this review", usual)
+            for value in ("no_time", "late", "failed"):
+                text = review.instructions(kind, target, NONCE, evidence=value)
+                flat = " ".join(text.split())
+                self.assertNotIn(bullet, flat)
+                self.assertIn("The host did not show the builder's receipts to this review: " + review.NOT_SHOWN[value]
+                              + ". That is the host's doing and not the builder's, and no finding. It is a limit: "
+                              "name it under `not_examined`.", flat)
+                # Only a review of a candidate has the answer `not_checked`.
+                self.assertEqual("Answer a requirement that rests on a receipt or a log `not_checked`." in flat,
+                                 kind == "commit")
+                self.assertEqual("not_checked" in flat, kind == "commit")
+                self.assertLess(len(text.splitlines()), most)
+                self.assertLessEqual(max(len(line) for line in text.splitlines() if "evidence" in line), 80)
+            for wrong in (None, "", "none", True):
+                with self.assertRaises(Refused):
+                    review.instructions(kind, target, NONCE, evidence=wrong)
+
     def example(self, text):
         self.assertEqual(text.count("```json\n"), 1)
         return json.loads(text.split("```json\n")[1].split("\n```")[0])

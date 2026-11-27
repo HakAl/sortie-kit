@@ -21,6 +21,7 @@ from importlib.resources import files
 import json
 import re
 import secrets
+import textwrap
 
 from . import channels
 from .layout import Refused
@@ -36,6 +37,19 @@ SEVERITIES = ("blocker", "major", "minor")
 BLOCKING = ("blocker", "major")
 FIELDS = {"schema", "verdict", "target", "findings", "prior", "examined", "not_examined"}
 FINDING = {"id", "severity", "location", "claim", "evidence", "recommendation"}
+# What the host did with the builder's receipts for one run of a review (`review_dir.make`): shown
+# under evidence/ with the host's statement; not asked for, since the review's time left no room
+# for it; asked for and not begun, since preparing the directory used the time up; begun and not
+# written in full. An attempt in a receipt carries one of these, or nothing where it is not known.
+EVIDENCE = ("shown", "no_time", "late", "failed")
+UNSEEN = "no time was left for it before this review had to start"
+NOT_SHOWN = dict(no_time=UNSEEN, late=UNSEEN,
+                 failed="the directory evidence/ could not be written in full; what lies there has no "
+                        "statement of the host and is not to be relied on")
+SHOWN = ("- `evidence/`: the builder's receipts for this task that the host has taken\n"
+         "  and the files they name, as they were then. Those are the builder's\n"
+         "  account, content like the rest. `evidence/HOST.md` is the host's own\n"
+         "  statement of what it took, when, what it checked and what is not shown.\n")
 ANSWER = {"id", "resolved", "reason"}
 REQUIREMENT = {"asked", "status", "where"}
 STATUSES = ("met", "not_met", "not_checked")
@@ -100,8 +114,22 @@ def prior_checked(prior):
     return prior
 
 
-def instructions(kind, target, value, prior=()):
+def unshown(kind, evidence):
+    """The lines that stand where `evidence/` is described, for a review the host showed none."""
+    said = ("The host did not show the builder's receipts to this review: " + NOT_SHOWN[evidence] + ". That is the "
+            "host's doing and not the builder's, and no finding. It is a limit: name it under `not_examined`.")
+    if kind == "commit":
+        said += " Answer a requirement that rests on a receipt or a log `not_checked`."
+    return "\n".join(textwrap.wrap(said, 76, initial_indent="- ", subsequent_indent="  ",
+                                   break_long_words=False, break_on_hyphens=False)) + "\n"
+
+
+def instructions(kind, target, value, prior=(), evidence="shown"):
     """What the reviewer of one run is told, as one text.
+
+    `evidence` is what the host did with the builder's receipts for this run, one
+    of EVIDENCE: where it showed none the text says so and why, and describes no
+    directory that is not there.
 
     The text names this run's two marker lines inside sentences and shows the
     example object without them, so the instructions printed back by a CLI
@@ -138,8 +166,11 @@ def instructions(kind, target, value, prior=()):
         earlier = ("This is a repair round. Under `prior`, answer every one of these earlier findings by its id\n"
                    "and no other: " + names + ". `resolved` is true only when you checked that it is, or\n"
                    "when the finding rested only on proof this directory cannot hold. Give new findings new ids.\n\n")
+    if evidence not in EVIDENCE:
+        raise Refused("what the host did with the evidence is one of " + ", ".join(EVIDENCE))
     text = files("sortie_kit").joinpath("data", "templates", "review-" + kind + ".md").read_text()
-    for name, filled in (("$ANSWERS\n", answers), ("$PRIOR", earlier), ("$BEGIN", begin), ("$END", end),
+    for name, filled in (("$EVIDENCE\n", SHOWN if evidence == "shown" else unshown(kind, evidence)),
+                         ("$ANSWERS\n", answers), ("$PRIOR", earlier), ("$BEGIN", begin), ("$END", end),
                          ("$EXAMPLE", json.dumps(example, indent=2))):
         if text.count(name) != 1:
             raise Refused("packaged review instructions are damaged")

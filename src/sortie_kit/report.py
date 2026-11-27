@@ -8,7 +8,7 @@ import time
 from . import channels, grants, receipts, repo_state
 from .layout import Refused
 from .receipt_schema import decode, validate_shape
-from .review import SCHEMA as UNLISTED, LISTED, SCHEMA_V3 as NAMING
+from .review import SCHEMA as UNLISTED, LISTED, SCHEMA_V3 as NAMING, EVIDENCE as SHOWING, NOT_SHOWN
 from .report_metrics import delta, metric, timestamp, unknown
 
 SCHEMA = 'sortie-kit.report.v2'
@@ -201,6 +201,10 @@ def review_kept(data):
         item = {k: attempt.get(k) for k in ('attempt', 'status', 'verdict', 'ended_by', 'exit_status', 'started', 'ended',
                                              'elapsed_seconds', 'repository', 'directory', 'stdout', 'stderr',
                                              'output_dropped_bytes', 'marker')}
+        if isinstance(attempt.get('evidence'), str) and attempt['evidence'] in SHOWING:
+            # Only where the receipt says it: a receipt from before the host said it has no such key, and
+            # what the report keeps of it is what it kept before.
+            item['evidence'] = attempt['evidence']
         item.update(reasons=[short(reason, 400) for reason in attempt.get('reasons') or []][:4],
                     target=record.get('target'), findings_count=len(record.get('findings') or []),
                     findings=[dict(id=f.get('id'), severity=f.get('severity'), location=short(f.get('location'), 200),
@@ -1224,6 +1228,11 @@ def requirement_words(task):
     parts += [('Answered otherwise', other, True)] if other else []
     out = ['- Requirements of the brief when ' + name + ' accepted: ' + str(len(said)) + '. ' + ' '.join(
         ('**%s: %d.**' if number and loud else '%s: %d.') % (label, number) for label, number, loud in parts)]
+    runs = get(row, 'data', 'attempts')
+    why = unshown_words(runs[-1]) if isinstance(runs, list) and runs and isinstance(runs[-1], dict) else None
+    if why:
+        out += ["- **The host did not show " + name + " the builder's receipts**: " + why + '. An answer of '
+                '`not_checked` below may rest on that and not on what the builder left out.']
     out += ['- What the brief asks for, as ' + name + ' that ended in ACCEPT answered it:']
     for need in needs:
         status, where = need.get('status'), need.get('where')
@@ -1471,6 +1480,17 @@ def count_words(number, noun):
     return str(number) + ' ' + noun + ('' if number == 1 else 's')
 
 
+def unshown_words(attempt):
+    """Why the host did not show the builder's receipts to this run of a reviewer, or None:
+    it showed them, or the attempt does not say (a receipt from before the host said it,
+    an attempt that failed before its directory was made, a value that is none of the host's)."""
+    value = get(attempt, 'evidence')
+    return NOT_SHOWN.get(value) if isinstance(value, str) else None
+
+
+UNSHOWN = "the host did not show this run the builder's receipts: "
+
+
 def attempt_words(attempt):
     """One run of the reviewer, as the host recorded how it ended."""
     line = 'Attempt ' + plain(get(attempt, 'attempt')) + ': ' + plain(get(attempt, 'status'))
@@ -1485,6 +1505,8 @@ def attempt_words(attempt):
     line += ' (' + ended + ')' + (': ' + plain('; '.join(reasons), 400).rstrip('.') if reasons else '') + '.'
     if get(attempt, 'repository') == 'changed':
         line += " **the repository or the shift's receipts changed while this attempt ran**."
+    if unshown_words(attempt):
+        line += ' ' + UNSHOWN[0].upper() + UNSHOWN[1:] + unshown_words(attempt) + '.'
     return line
 
 
@@ -1524,6 +1546,11 @@ def review_words(review, kept):
                  'was taken from it.')
     else:
         line += '.'
+    if outcome in ('ACCEPT', 'CHANGES') and unshown_words(last):
+        # Of the run that gave the outcome. A reader has to be able to tell a reviewer that did not
+        # look from a host that did not show.
+        extra.append("**The host did not show this review the builder's receipts**: " + unshown_words(last) + '.'
+                     + (' Answers of `not_checked` in it may rest on that.' if stage == 'review' else ''))
     if len(attempts) > 1 or any(get(a, 'status') != 'complete' for a in attempts):
         extra += [attempt_words(a) for a in attempts]
     if get(review, 'receipt', 'path'):

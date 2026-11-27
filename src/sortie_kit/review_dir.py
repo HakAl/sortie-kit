@@ -198,7 +198,7 @@ def put(folder, parts, raw):
         os.close(fd)
 
 
-def show(view, folder, items, *, kind, base, commit, already, until):
+def show(view, folder, items, *, kind, base, commit, already, until, room=None):
     """Write evidence/ into the open review directory `folder`: the receipts of
     `items` (the task's entries for the builder's receipts the host took), the files
     they name and the host's statement.
@@ -209,19 +209,24 @@ def show(view, folder, items, *, kind, base, commit, already, until):
     `already` maps the SHA-256 of what the directory holds anyway (the brief, the
     plan) to its name there. Whatever cannot be shown gets a line in the statement
     with the reason. Nothing is read or written once the evidence's clock passes
-    `until`, or read once as many files are shown as may be. Only the end of the
-    session's time leaves here as an error that is not the directory's own."""
+    `until` or the caller's `room`, asked before each piece, says that no time is
+    left, or read once as many files are shown as may be. Only the end of the
+    session's time leaves here as an error that is not the directory's own.
+    Returns whether the host's statement was written."""
     os.mkdir(EVIDENCE, 0o700, dir_fd=folder)
     where = os.open(EVIDENCE, DIRECTORY, dir_fd=folder)
     state = dict(count=0, total=0)
     used = {}  # name under evidence/files: the SHA-256 of what is shown there
+
+    def over():
+        return moment() >= until or (room is not None and room() <= 0)
 
     def read(path, limit):
         """The bytes, or the reason there are none. Read in pieces, with a look at the
         evidence's own clock before each, so a slow file costs no more than one piece."""
         if state["count"] >= EVIDENCE_FILES:
             return None, "full"
-        if moment() >= until:
+        if over():
             return None, "late"
         try:
             with view.parent(path) as (parent, leaf):
@@ -234,7 +239,7 @@ def show(view, folder, items, *, kind, base, commit, already, until):
                     return None, "large"
                 pieces, size = [], 0
                 while True:
-                    if moment() >= until:
+                    if over():
                         return None, "late"
                     piece = os.read(fd, 65536)
                     if not piece:
@@ -256,7 +261,7 @@ def show(view, folder, items, *, kind, base, commit, already, until):
         """None when written, or why not."""
         if state["count"] >= EVIDENCE_FILES:
             return FULL
-        if moment() >= until:
+        if over():
             return LATE
         if state["total"] + len(raw) > EVIDENCE_TOTAL:
             return "with it more than " + str(EVIDENCE_TOTAL) + " bytes would be shown, which is the most"
@@ -348,7 +353,8 @@ def show(view, folder, items, *, kind, base, commit, already, until):
         try:
             put(where, ["HOST.md"], statement(lines, kind=kind, base=base, commit=commit).encode())
         except OSError:
-            pass  # the review goes on without the statement; nothing else here speaks for the host
+            return False  # the review goes on without the statement, and is told that it has none
+        return True
     finally:
         os.close(where)
 
@@ -410,7 +416,7 @@ def statement(lines, *, kind, base, commit):
 
 
 def make(view, name, *, kind, target, base, brief, plan, prior, findings, answers, nonce, seconds,
-         evidence=None, evidence_seconds=None):
+         evidence=None, evidence_seconds=None, evidence_left=None):
     """Make reviews/NAME in the shift for one run of one review and fill it.
 
     `view` is the shift's open evidence view. `target` is the reviewed thing as
@@ -423,15 +429,24 @@ def make(view, name, *, kind, target, base, brief, plan, prior, findings, answer
     `show`); None makes no such directory. `evidence_seconds`, counted from the
     call, is the caller's own bound on the showing of evidence, beside the share
     of this call's time that it gets: the time by which the caller needs the
-    directory back. When no time is left for evidence no evidence/ is made.
-    Returns the directory's path relative
-    to the shift and what the instructions' SHA256 is.
+    directory back. `evidence_left` is that bound as a question, for a caller
+    whose time is not all of one clock: a call that gives the seconds evidence
+    may still take, asked after the files are exported and before each piece of
+    evidence. When no time is left for evidence no evidence/ is made.
+    REVIEW.md is written last, from what became of the evidence, so that it
+    describes no directory that is not there. Returns the directory's path
+    relative to the shift, what the instructions' SHA256 is, and what was done
+    with the evidence, one of `review.EVIDENCE`: `shown`; `no_time` (none was
+    given to show); `late` (no time was left for it once the files were
+    exported); `failed` (evidence/ or the host's statement in it could not be
+    written, or the caller's question could not be answered; receipts or files
+    may lie there without the statement).
     """
     end = time.monotonic() + seconds
     if not NAME.fullmatch(name):
         raise Refused("a review directory has a plain name")
-    text = review.instructions(kind, target, nonce, prior)
-    files = {"REVIEW.md": text.encode(), "brief.md": view.artifact(brief)}
+    review.instructions(kind, target, nonce, prior)  # refused here, before anything is made, when it cannot be written
+    files = {"brief.md": view.artifact(brief)}
     if kind == "plan":
         files["plan.md"] = view.artifact(target["artifact"])
         commit = head(view.repo, end - time.monotonic())
@@ -470,6 +485,7 @@ def make(view, name, *, kind, target, base, brief, plan, prior, findings, answer
         export(view.repo, commit, os.path.join(where, "tree"), end - time.monotonic())
     else:
         os.mkdir(os.path.join(where, "tree"), 0o700)  # a repository without a commit has no files to show
+    outcome = "no_time"
     if evidence is not None:
         # After everything a review cannot do without, in a share of the time that is
         # left, and with whatever goes wrong in it kept here: a review ran without
@@ -478,14 +494,28 @@ def make(view, name, *, kind, target, base, brief, plan, prior, findings, answer
         left = max(0, end - time.monotonic()) * EVIDENCE_SHARE
         if evidence_seconds is not None:
             left = min(left, max(0, end - seconds + evidence_seconds - time.monotonic()))
+        outcome = "failed"
         try:
-            if left > 0:  # with no time nothing of it is made, not the directory either
+            if left > 0 and evidence_left is not None:
+                # Asked now and not taken from before the export: the export took time, and
+                # a time of day can have come closer in it by more than the clock here ran.
+                # Asked in here, since the question is the caller's and can go wrong too.
+                left = min(left, evidence_left())
+            if left > 0:
                 with view.parent(relative + "/" + EVIDENCE) as (folder, _):
-                    show(view, folder, evidence, kind=kind, base=base, commit=commit, already=already,
-                         until=moment() + left)
+                    if show(view, folder, evidence, kind=kind, base=base, commit=commit, already=already,
+                            until=moment() + left, room=evidence_left):
+                        outcome = "shown"
+            else:
+                outcome = "late"  # with no time nothing of it is made, not the directory either
         except Elapsed:
             raise
         except (Refused, OSError, ValueError):
             pass
+    # The same one write as before evidence was shown, now after it: nothing above reads
+    # this file, and what the reviewer is told of evidence/ is what is there.
+    told = review.instructions(kind, target, nonce, prior, outcome).encode()
+    with view.parent(relative + "/REVIEW.md") as (folder, leaf):
+        put(folder, [leaf], told)
     view.guard()
-    return relative, hashlib.sha256(files["REVIEW.md"]).hexdigest()
+    return relative, hashlib.sha256(told).hexdigest(), outcome

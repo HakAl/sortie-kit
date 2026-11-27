@@ -738,16 +738,36 @@ build receipt, the host begins the review of that plan or candidate itself:
   the host's own review receipts, and entries written before this, have
   none. Evidence is written after the export of the files, in at most
   half of the time then left for preparing the review and never past the
-  time by which the review may still start, less the 7.25 seconds the host
+  review's own time, whose end is fixed when the review is begun, nor past
+  the working time of the shift, each less the 7.25 seconds the host
   allows the work between the directory and the start (the look at the
   repository, the listing of `receipts/`, the reviewer's start, the
-  writes); what that leaves is named as not shown. When no such time is
-  over, the review starts without `evidence/`: so it is for a review begun
-  in the last eight seconds before wind-down, and in wind-down for one whose
-  limit fits with less than that over. Every receipt is shown before any file, and then
+  writes); what that leaves is named as not shown. The host asks what is
+  left of both again once the files are exported and before each piece of
+  evidence, since the signed deadline is a time of day and comes closer
+  while a machine sleeps. When no such time is over, the review starts
+  without `evidence/`: so it is for a review with less than eight seconds
+  of its own time, which only one begun in the last seconds of the working
+  time has, and for one prepared on a machine that slept until no more
+  than those 7.25 seconds were left of the working time. Every receipt is
+  shown before any file, and then
   one file of each receipt in turn from the latest receipt back, so a
   receipt that names many files takes the place of no other. If
-  `evidence/` cannot be made at all, the review runs without it. What is
+  `evidence/` cannot be made at all, the review runs without it.
+  `REVIEW.md` is written after the evidence, from what became of it. A
+  review that was shown none reads there, in place of the lines on
+  `evidence/`, that the host did not show the builder's receipts and why,
+  that this is the host's doing and not the builder's and no finding, that
+  it is a limit to state under `not_examined` and, in a review of a
+  candidate, that a requirement resting on a receipt or a log is answered
+  `not_checked`. Each attempt in the review receipt says under `evidence`
+  which it was: `shown`; `no_time`, the host gave none to show because the
+  time above left no room; `late`, preparing the directory used the time
+  up before evidence began; `failed`, `evidence/` or the `HOST.md` in it
+  could not be written, and receipts or files may lie there without the
+  host's statement. For an attempt that was not shown them the host writes
+  one line to `logs/host.log`, and the report says it under the review
+  (see [reports](reports.md)). What is
   in `evidence/` is given to the reviewer's CLI: with a reviewer of another
   family the receipts and the files they name go to another provider, as
   the files of the repository already do. A log is not in the repository,
@@ -896,7 +916,34 @@ and the same test is made for its second attempt. When it does not fit, none
 is started, the receipt that was handed in stays taken, and the report says
 the work was handed in and not reviewed. With the default limit of ten
 minutes that is every review in the wind-down of a shift of thirty minutes or
-less. `consume`, `close`, `set-aside`, `progress`,
+less.
+
+That test is made once, when the review or its second attempt is begun, and
+the time the review ends is fixed in the same moment. The host then prepares
+the review's directory, which takes up to the time of one command, fifteen
+seconds, and usually under one. It does not ask again afterwards whether the
+review may start. Two things follow, and both are meant:
+
+- A review begun shortly before wind-down can have its reviewer started
+  after wind-down began, by up to fifteen seconds.
+- A review begun in wind-down, while its whole limit fit, can have its
+  reviewer started when up to fifteen seconds less than the limit are left.
+  It runs that much shorter. The signed limit is the most a review may
+  take, not a time it is owed.
+
+The fifteen seconds are counted on the clock that runs while the machine is
+awake. They are not a bound on the time of day: when the machine sleeps
+while a review is prepared and working time is left when it wakes, the
+reviewer is started that much later after wind-down began, with as much
+less of the working time left, and is stopped with the working time as any
+review is.
+
+Neither review ends later than it would have, since its end was fixed
+before it was prepared. Two checks are made after the directory is
+prepared, and a review that fails one is not started and is a failed
+attempt: its own time must not be over, and the working time of the shift
+must not be over, which can happen without the first when the machine slept
+while the review was prepared. `consume`, `close`, `set-aside`, `progress`,
 `stop-evidence`, `note` and `finish` are served as before, so the driver can take what
 that turn hands in and write its last statement. The host begins to stop all
 work a short closing margin before the signed deadline: ten seconds, or half

@@ -233,7 +233,16 @@ clickable. If the readable part cannot be built from what was kept, a short
   unless a list was asked). A requirement answered `met` is the reviewer's statement and was
   not checked by anything. A kept finding of a commit review in which each
   finding names its requirement carries `requirement`, a position in that
-  list or `null`; one of an earlier review has no such key.
+  list or `null`; one of an earlier review has no such key. A kept attempt
+  carries `evidence` where its receipt has it as one of `shown`, `no_time`,
+  `late` and `failed`, and no such key otherwise. When the attempt that gave
+  a review its outcome was not shown the builder's receipts, `report.md`
+  says under that review that the host did not show them and why, and for a
+  review of a candidate that answers of `not_checked` in it may rest on
+  that; the list under a task of what its accepting review answered begins
+  with the same statement; and the line of a failed attempt says it of that
+  attempt. Nothing is said of evidence for an attempt whose receipt does
+  not say.
 - `requirements_disclosed`: what a brief asked for that the review which
   accepted the task answered `disclosed`: not delivered, with the brief, as
   that review read it, allowing that to be said in place of the work. The

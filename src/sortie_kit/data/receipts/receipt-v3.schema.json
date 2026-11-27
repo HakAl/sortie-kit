@@ -533,6 +533,16 @@
             "changed",
             "not checked"
           ]
+        },
+        "evidence": {
+          "description": "What the host did with the builder's receipts for this attempt. Not required: absent where it is not known.",
+          "type": "string",
+          "enum": [
+            "shown",
+            "no_time",
+            "late",
+            "failed"
+          ]
         }
       },
       "required": [

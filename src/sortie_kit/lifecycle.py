@@ -50,7 +50,7 @@ NOT_BEGUN = ("no time was left to begin this command: the wait for the shift's l
 SEAT_START = 1  # seconds allowed for making the reviewer's start (two guards, two looks at the admission)
 # What the host allows the work between a review directory and the reviewer's start: the
 # look at the repository (5 s), the marks of receipts/ (0.25 s), the seat's start and
-# the two writes. Evidence is shown only in time that is over beyond this.
+# the two writes. Evidence is shown only in time of the review's own that is over beyond this.
 START_RESERVE = 5 + 0.25 + 2 * WRITE_RESERVE + SEAT_START
 PREPARE_ROOM = 3 * WRITE_RESERVE + 1  # seconds under the lock without which no further review attempt is prepared
 RECEIPT_ENTRIES = 1024  # entries of receipts/ the host will walk for one observation
@@ -65,6 +65,18 @@ HELD = ("wind-down: the review's signed limit does not fit in the working time l
 WINDING = ("What a turn already handed in can still be taken with consume and close; then send finish "
            "with what is left and who is next. The host stops everything shortly before the signed deadline.")
 DROPPED = ("GIT_", "SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_AGENT_PID", "GIT_ASKPASS", "SUDO_ASKPASS")
+
+
+def summed(item):
+    """What the driver's state keeps of one attempt of a review: how it went, and what
+    the host did with the builder's receipts for it where the attempt says."""
+    kept = {name: item[name] for name in ("attempt", "status", "verdict", "ended_by", "reasons", "started", "ended",
+                                          "elapsed_seconds", "repository")}
+    if "evidence" in item:
+        kept["evidence"] = item["evidence"]
+    return kept
+
+
 COMMANDS = {
     "brief": ({"task_id", "kind", "brief", "next_owner"}, {"turn_seconds"}),
     "consume": ({"task_id", "request_id", "receipt"}, {"target"}),
@@ -589,8 +601,13 @@ class Driver:
         return "a " + what + " is already running" if what == "builder turn" else "a review is running; wait for it to end"
 
     def may_review(self):
-        """Whether a review may start now: at any time before wind-down, and in
-        wind-down only when its whole signed limit fits in the working time left."""
+        """Whether a review may be begun now: at any time before wind-down, and in
+        wind-down only when its whole signed limit fits in the working time left.
+        Asked when a review or a further attempt of one is begun, and not again after
+        its directory is prepared: the attempt's end is fixed at its begin, so the
+        preparing comes out of the review's own time and no review ends later for it.
+        A reviewer can therefore be started up to the time of one command after
+        wind-down began, or with that much less than its signed limit left."""
         return self.active_seconds() >= 1 or self.work_seconds() >= max(1, self.review_limit)
 
     def start_review(self, view, state, task):
@@ -662,7 +679,7 @@ class Driver:
                                "ran out before the start (" + str(exc)[:300] + "). Send `continue` at this stage.")
         # An earlier attempt's end is on disk with this one's intent: nothing of it is held.
         self.kind, self.reviewing, self.observed = "turn", None, None
-        opened, made, sha = [], None, None
+        opened, made, sha, shown = [], None, None, None
         try:
             if seconds < 1:
                 raise Refused("no working time is left for a review")
@@ -672,20 +689,25 @@ class Driver:
             # Under the coordination lock, which is short: what is left of it, less the
             # time the writes after it need. A repository that cannot be exported in
             # that time cannot be reviewed, and the attempt says so.
-            # The builder's receipts are shown to the reviewer when that costs the review
-            # nothing: within the time by which this review may still start (`may_review`)
-            # and by which its own time has not run out, less all that the work between
-            # the directory and the start is allowed (START_RESERVE). With no such time
-            # the review starts without them, as it did before.
-            over = min(max(self.active_seconds() - 1, self.work_seconds() - max(1, self.review_limit)),
-                       cutoff - self.clock()) - START_RESERVE
-            made, sha = review_dir.make(
+            # The builder's receipts are shown to the reviewer in the review's own time,
+            # whose end is fixed above, and in the working time of the shift: what is left
+            # of the shorter less all that the work between the directory and the start is
+            # allowed (START_RESERVE). With no such time the review starts without them
+            # and is told so. The review's end is of the clock that runs while the machine
+            # is awake and the working time is also a time of day, so what is left is
+            # asked again after the files are exported and before each piece of evidence:
+            # a machine that slept in the export leaves evidence none of the time the
+            # start needs.
+            def spare():
+                return min(cutoff - self.clock(), self.work_seconds()) - START_RESERVE
+            over = spare()
+            made, sha, shown = review_dir.make(
                 view, name, kind=REVIEW[review["stage"]], target=review["target"], base=task["base"],
                 brief=task["brief"], plan=plan, prior=review["prior"], findings=findings, answers=answers,
                 nonce=running["marker"], seconds=view.budget.remaining() - 3 * WRITE_RESERVE,
                 evidence=[item for item in task["receipts"] if isinstance(item, dict)
                           and item.get("status") == "satisfied" and item.get("stage") in PHASE] if over > 0 else None,
-                evidence_seconds=max(0, over))
+                evidence_seconds=max(0, over), evidence_left=spare)
             for path in (running["stdout"], running["stderr"]):
                 # The host creates both files and keeps these descriptors for the whole
                 # review; what it later reads back is read through them.
@@ -696,7 +718,10 @@ class Driver:
             marks = receipt_marks(view)
             cwd = os.path.join(str(self.shift), made)
             argv = self.admission.seat_start("reviewer", reviewer_prompt(cwd), cwd=cwd)
-            if self.clock() >= cutoff or not self.may_review():
+            # The review's own time, and the working time: `cutoff` is of the clock that
+            # runs only while the machine is awake, and the signed deadline is a time of
+            # day. No reviewer is started into the time kept for the stop and the report.
+            if self.clock() >= cutoff or self.work_seconds() <= 0:
                 raise Refused("the time for the review ran out while it was prepared")
             if self.stopped or self.halt():
                 raise Refused("the host is stopping")
@@ -707,7 +732,7 @@ class Driver:
             # verdict is taken from these bytes alone: the logs are files in the shift,
             # which another seat can write to while the review runs.
             self.reviewing = dict(attempt=number, argv=[str(item) for item in argv], before=before, marks=marks,
-                                  instructions=sha,
+                                  instructions=sha, evidence=shown,
                                   printed=dict(stdout=bytearray(), stderr=bytearray()))
             self.child = self.spawn_review(argv, cwd=cwd, env=builder_env(self.shift, temp=self.temp_path()))
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
@@ -715,12 +740,14 @@ class Driver:
                 os.close(fd)
             self.kind, self.reviewing = "turn", None
             why = "not started: " + (str(exc)[:500] or type(exc).__name__)
+            # Before the attempt is kept: a second attempt may be run from there, and its line comes after this one.
+            self.unshown(review, task, number, shown)
             try:
-                return self.attempt_done(view, state, task, dict(
+                return self.attempt_done(view, state, task, self.with_evidence(dict(
                     attempt=number, directory=made, instructions_sha256=sha, marker=running["marker"], argv=[],
                     started=running["started"], ended=self.now().isoformat(), elapsed_seconds=None, exit_status=None,
                     ended_by="not started", stdout=None, stderr=None, output_dropped_bytes=0, status="failed",
-                    verdict=None, reasons=[why], record=None, repository="not checked"))
+                    verdict=None, reasons=[why], record=None, repository="not checked"), shown))
             except Elapsed:
                 # No process was started and none is held. The time under this lock ran
                 # out before a receipt for the failed review could be recorded. Raised
@@ -739,8 +766,27 @@ class Driver:
             stream = getattr(self.child, name, None)
             if stream is not None:
                 os.set_blocking(stream.fileno(), False)
+        self.unshown(review, task, number, shown)  # after the start, which it costs nothing
         return "recorded", ("review of the " + REVIEW[review["stage"]] + " started by the host (attempt " + str(number)
                             + " of at most " + str(REVIEW_TRIES) + ", limit " + str(seconds) + " seconds); wait for it")
+
+    @staticmethod
+    def with_evidence(entry, shown):
+        """The attempt's entry with what the host did with the builder's receipts for it,
+        where that is known. Where it is not (nothing of the directory came back), the
+        entry has no such key: the receipt's shape takes one of the four words or none."""
+        if isinstance(shown, str) and shown in contract.EVIDENCE:
+            entry["evidence"] = shown
+        return entry
+
+    def unshown(self, review, task, number, shown):
+        """One line in the host's log for an attempt whose reviewer was not shown the
+        builder's receipts. Never waits and never fails the review."""
+        if not isinstance(shown, str) or shown not in contract.NOT_SHOWN:
+            return
+        from .launcher import host_log  # at the call: the launcher imports this module
+        host_log(self.shift, "review " + str(review["review"]) + " of task " + str(task["id"]) + ", attempt "
+                 + str(number) + ": the reviewer was not shown the builder's receipts (" + contract.NOT_SHOWN[shown] + ")")
 
     def review_ended(self, view, state, outcome, code, reaped, dropped, seen):
         """The running review attempt is over: say what it gave. A verdict is taken only
@@ -815,7 +861,7 @@ class Driver:
             reasons.append("whether the review changed the repository or receipts/ could not be checked")
         complete = not reasons and result is not None and result["status"] == "complete"
         elapsed = seen[0] if seen else None
-        return self.attempt_done(view, state, task, dict(
+        return self.attempt_done(view, state, task, self.with_evidence(dict(
             attempt=running["attempt"], directory=running["directory"], instructions_sha256=held.get("instructions"),
             marker=running["marker"], argv=held.get("argv", []), started=running["started"],
             ended=self.now().isoformat(), elapsed_seconds=elapsed if type(elapsed) is int else None,
@@ -823,7 +869,7 @@ class Driver:
             ended_by=str(outcome)[:600] or "unknown", stdout=kept.get("out"), stderr=kept.get("err"),
             output_dropped_bytes=lost, status="complete" if complete else "failed",
             verdict=result["verdict"] if complete else None, reasons=[item[:600] for item in reasons[:8]],
-            record=result["record"] if complete else None, repository=repository))
+            record=result["record"] if complete else None, repository=repository), held.get("evidence")))
 
     def attempt_done(self, view, state, task, entry):
         """Keep one attempt of the review. A complete one settles the review. A failed
@@ -923,9 +969,7 @@ class Driver:
         tried = len(review["attempts"])
         summary = dict(review=review["review"], stage=stage, round=task["round"], request_id=review["request_id"],
                        target=review["target"], outcome=outcome, receipt=None, findings=[],
-                       attempts=[{name: item[name] for name in ("attempt", "status", "verdict", "ended_by", "reasons",
-                                                                "started", "ended", "elapsed_seconds", "repository")}
-                                 for item in review["attempts"]])
+                       attempts=[summed(item) for item in review["attempts"]])
         failures = "; ".join(item["reasons"][0] for item in review["attempts"] if item["reasons"])[:1200]
 
         def done(status, detail):
@@ -1047,9 +1091,7 @@ class Driver:
         task["reviews"].append(dict(
             review=review["review"], stage=review["stage"], round=review["round"], request_id=review["request_id"],
             target=review["target"], outcome=outcome, receipt=None, findings=[], detail=detail,
-            attempts=[{name: item[name] for name in ("attempt", "status", "verdict", "ended_by", "reasons", "started",
-                                                     "ended", "elapsed_seconds", "repository")}
-                      for item in review["attempts"]]))
+            attempts=[summed(item) for item in review["attempts"]]))
         state["last_review"] = dict(task_id=task["id"], stage=review["stage"], round=review["round"], outcome=outcome,
                                     receipt=None, findings=[], detail=detail)
         state["review"] = None

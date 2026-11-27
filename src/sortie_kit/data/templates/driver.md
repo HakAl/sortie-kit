@@ -256,7 +256,11 @@ read the findings file and the builder's last receipt:
   put the proof where the reviewer sees it: the reviewer is shown the brief,
   the plan or the patch, the committed tree, the builder's answers to the
   findings, and under `evidence/` the receipts the host took for the task
-  and the files they name, and nothing else of the shift.
+  and the files they name, and nothing else of the shift. The receipts are
+  shown within the host's bounds of time and files: `evidence/HOST.md` in
+  the review's directory says what was not shown, the report says when a
+  review was shown none, and short proof can go into the plan, the
+  builder's answers or the committed tree.
 - When that gives the same result again, or there is no way to show more,
   or no repair round is left, the task cannot be put right in this shift:
   `set-aside` it with the developer as `next_owner` and a reason that names
