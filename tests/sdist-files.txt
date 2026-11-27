@@ -25,6 +25,7 @@ src/sortie_kit/bounds.py
 src/sortie_kit/builder_verification.py
 src/sortie_kit/channels.py
 src/sortie_kit/cli.py
+src/sortie_kit/cli_words.py
 src/sortie_kit/data/agents/agy.json
 src/sortie_kit/data/agents/claude.json
 src/sortie_kit/data/agents/codex.json
@@ -87,6 +88,7 @@ tests/sdist-files.txt
 tests/support.py
 tests/test_agents.py
 tests/test_bounds_supervisor.py
+tests/test_cli_words.py
 tests/test_doctor.py
 tests/test_foreground.py
 tests/test_grants.py

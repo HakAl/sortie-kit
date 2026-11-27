@@ -27,7 +27,8 @@ commands remain host/developer-owned.
 shift ended and how long it ran, repeats the direction, and for each task says
 whether it was accepted and at which commit, what each consumed receipt
 reported (plan, review verdict, tool, model and findings, build commit and
-checks), each builder turn with its exit and log, the notes the driver left, what was not done and why,
+checks), each builder turn with its exit and log and, for a turn or a run of the reviewer whose CLI ended by itself
+and not well, the last lines that CLI wrote and what a person can change, the notes the driver left, what was not done and why,
 what was left uncommitted in the repository, which driver commands were answered `blocked` or `invalid`, any problem with
 the evidence, what the kept grant says about starting the seats, what the
 host saw of its processes, and who is next. The grant is called "kept", not
@@ -243,6 +244,29 @@ clickable. If the readable part cannot be built from what was kept, a short
   with the same statement; and the line of a failed attempt says it of that
   attempt. Nothing is said of evidence for an attempt whose receipt does
   not say.
+- `said`, on a builder turn and on a kept attempt of a review: the last lines
+  the seat's CLI wrote before it ended by itself and not well, as a list, and
+  no such key otherwise. A turn's lines are the host's, kept in
+  `driver-state.json` when the turn ended. An attempt's lines are not in the
+  review receipt: the report makes them, by the host's own rule, from the two
+  logs the receipt names, and only from bytes that are the ones the receipt
+  gives, read from the log or, where the log is gone or changed, from the
+  host's kept copy. Where neither holds those bytes nothing is quoted. Nor is
+  anything quoted of an attempt whose log the host found written to by
+  something else while the review ran, or of one that printed more than the
+  log holds: such a log is not what the reviewer printed last.
+  `report.md` shows the lines under the turn or the attempt as inert text,
+  marked as the CLI's own words, with the sentences that name what a person
+  can change; those sentences stand there without lines too, where the CLI
+  ended by itself and not well and nothing is quoted. Under an attempt that the host ended at its limit it shows no
+  lines and says how long one run may take, and names `--review-limit` and
+  the reviewer's model. Beside `Driver process:` it says, for a driver whose
+  CLI ended by itself and not well, that the host kept nothing of what the
+  driver wrote, and names what can be changed. What is quoted is bounded and
+  passed through masks for what has the shape of a credential; the masks are
+  a filter by shape and no proof that no secret is shown, see "What a CLI
+  wrote last" in [the lifecycle](lifecycle.md). Read those lines before you
+  pass a report on.
 - `requirements_disclosed`: what a brief asked for that the review which
   accepted the task answered `disclosed`: not delivered, with the brief, as
   that review read it, allowing that to be said in place of the work. The

@@ -4,9 +4,9 @@ How far sortie-kit has been tried on real shifts, and what has never
 happened on one. [Development](development.md#where-they-have-been-run) says
 where the tests have been run.
 
-Every real shift so far was run on macOS by the project's own developers,
-with keys made for testing, and most on small practice repositories.
-They have shown:
+Every real shift of this first list was run on macOS by the project's own
+developers, with keys made for testing, and most on small practice
+repositories. They have shown:
 
 - Each of the three built-in review forms doing the reviews of a shift:
   `claude` picked, `codex` named and running `gpt-6.1-sol`, `agy` named.
@@ -61,13 +61,41 @@ They have shown:
   while a real shift ran, gone after it, and recorded as held for the whole
   shift. Other programs on that machine held assertions of their own the
   whole time.
+- A review run by the host that fails, its second run, and a task blocked
+  after two failures, in two shifts. Both failures were caused on purpose.
+  In one the reviewer was `codex` with a model name that does not exist:
+  the plan review failed on both runs, each ending with status 1 in about 3
+  seconds, the task was blocked, and the report quotes the CLI's error under
+  each attempt. In the other the reviewer was `agy` with a review limit of
+  one minute: the host ended both runs at 60 seconds, the task was blocked,
+  the second task was not briefed for that reason, and shutdown was
+  confirmed. A review that failed on its own, with nothing arranged to make
+  it fail, has still not been seen.
 
-None of the following has happened on a real shift. The host's part in
+Others than the project's developers have run real shifts too, on a build
+that has `sortie doctor`, and told the project what they saw. Those shifts
+were on macOS as well, as told. Each of them was signed with a key the agent
+that ran it had made itself, so its signature is no proof that a person was
+present, and the project did not run them. As told:
+
+- `codex` as both the driver and the builder of one shift, with `claude` as
+  the reviewer: two of two tasks accepted. The project's own developers have
+  not run that combination.
+- A task set aside after its builder had already committed. The driver set
+  the task aside and said in its reason, which the report quotes, that the
+  commit was on the branch with no build receipt and no review. The host's
+  own lines in the report said of `HEAD` that it is not a commit the shift
+  accepted. The host compares the commit at `HEAD` alone and keeps no account
+  of other commits on the branch; see [shift reports](reports.md).
+
+None of the following has happened on a real shift that the project ran or
+was told of. The host's part in
 each is exercised by fixture tests, on macOS and in the Ubuntu jobs of the
 hosted checks, and by nothing else:
 
-- A review run by the host that fails, its second run, and a task blocked
-  after two failures. Under an earlier version, where the builder ran a
+- A review run by the host that fails on its own, with nothing arranged to
+  make it fail; the two shifts above were given a model name that does not
+  exist and a short limit. Under an earlier version, where the builder ran a
   separate review tool, one review timed out and the task was left
   unaccepted.
 - A review in wind-down, started when its limit still fits and held when
@@ -83,14 +111,13 @@ hosted checks, and by nothing else:
 - A lapse in the hold against idle sleep, and a hold that is refused or
   dropped.
 
-None of the following has happened on a real shift either, and no test can
+None of the following has happened on such a shift either, and no test can
 show it, since no test starts a real agent CLI, signs with a real key or
 sleeps a machine, and the tests that have run on Linux ran on a hosted runner
 with stand-ins in every seat:
 
-- `codex` as both the driver and the builder of one shift.
 - A shift signed with a key the person uses for anything else. Every key so
-  far was made for the test.
+  far was made for the test, or by the agent that ran the shift.
 - A machine that is put to sleep in the middle of a shift.
 - The hold against idle sleep on a machine that nothing else keeps awake.
 - Anything at all on Linux. The tests of the Linux path for the hold use a

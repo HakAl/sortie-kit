@@ -113,6 +113,20 @@ found out, such as a help that did not end, is a line of the list like
 anything else. On a machine with an agent CLI and no key yet, the list has
 exactly one line, to run `sortie setup`.
 
+Doctor is the half before a start. It asks no model anything, so it cannot
+show a sign-in that ran out or a model name the CLI does not have. That half
+comes after a start: when a seat's CLI ends by itself in failure, the answer
+the driver gets and the report quote the last lines the CLI wrote, and name
+what you can change for the next shift: the model in `--agent ROLE=NAME:MODEL`,
+the options in the profile, or the CLI's own sign-in and settings. When
+the options are the question, run doctor again: it shows which of them the
+CLI's help lists today. A review that the host ended at its limit is another
+case, with no words of the CLI to go by: there the two things to change are
+`--review-limit` and the reviewer's model. The quoted lines are a CLI's
+output, bounded and with what looks like a credential left out; that is a
+filter by shape, so read them before you pass a report on. See "What a CLI
+wrote last" in [the lifecycle](lifecycle.md).
+
 ## The builder
 
 What the default `codex` builder is started to do, in plain words:

@@ -249,7 +249,11 @@ only when its whole limit still fits in the working time left; when it does
 not, the report says the work was handed in and not reviewed. With the default
 limit of ten minutes no review starts in the wind-down of a shift of thirty
 minutes or less; a shorter `--review-limit` changes that. The summary shown
-before signing states these times.
+before signing states these times. When the limit you are about to sign does
+not fit in the working time of the wind-down, the summary says so under the
+reviewer: that no review starts in that last stretch and how long it is, the
+limit and the working time left then, what a plan or commit handed in then
+meets, and what changes it.
 
 Shortly before the signed deadline (ten seconds before it, less in a shift of
 under a minute) the host begins to stop whatever still runs, and then writes

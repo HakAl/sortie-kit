@@ -528,6 +528,55 @@ class ReadableScopeTests(LocalTest):
         self.assertIn("              given with --agent reviewer=\n              /opt/tools/claude ", text)
         self.assertNotIn("same-family", text)
         self.assertIn("One run may take at most 2m 30s;", signing.summary(self.value(review_limit_seconds=150)))
+
+    def test_summary_says_when_no_review_can_start_in_the_last_part_of_the_window(self):
+        """A review started in wind-down must fit whole in its working time. Where the limit
+        does not, no review starts there, and the signer is told before signing."""
+        from sortie_kit import signing
+        import datetime as dt
+        until = lambda seconds: (dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc)
+                                 + dt.timedelta(seconds=seconds)).isoformat()
+        said = lambda seconds, **changes: signing.summary(self.value(until=until(seconds), **changes))
+        # Six minutes, as the shift in which no review could start: 600 s against 120 s less 10.
+        self.assertIn(
+            "              One run may take at most 10m; a run that gives nothing usable is\n"
+            "              made once more, and a second failure blocks that task.\n"
+            "              No review starts in the last 2m of this shift: a review must fit whole,\n"
+            "              the limit is 10m and only 1m 50s of working time is left then.\n"
+            "              A plan or commit handed in then stays not reviewed, and its task is not accepted.\n"
+            "              A shorter --review-limit or a longer --for changes that.\n"
+            "  What the builder may do:\n", said(360))
+        self.assertIn("No review starts in the last 10m of this shift: a review must fit whole,\n"
+                      "              the limit is 10m and only 9m 50s of working time is left then.\n", said(1800))
+        # The limit fits: 610 s of wind-down less 10, and any longer window.
+        for seconds, changes in ((1830, {}), (2700, {}), (360, dict(review_limit_seconds=60)),
+                                 (360, dict(review_limit_seconds=110)), (7200, dict(review_limit_seconds=1190))):
+            self.assertNotIn("No review starts", said(seconds, **changes), (seconds, changes))
+        self.assertIn("No review starts", said(360, review_limit_seconds=111))
+        # A wind-down is never longer than twenty minutes: above its working time no longer window helps.
+        text = said(7200, review_limit_seconds=1800)
+        self.assertIn("No review starts in the last 20m of this shift: a review must fit whole,\n"
+                      "              the limit is 30m and only 19m 50s of working time is left then.\n", text)
+        self.assertIn("              Only a --review-limit of 19m 50s or less changes that.\n", text)
+        self.assertNotIn("longer --for", text)
+        # Finding 5 of the agy read. Such a limit in a shorter shift: that much less is not enough there.
+        text = said(1800, review_limit_seconds=1800)
+        self.assertIn("the limit is 30m and only 9m 50s of working time is left then.\n", text)
+        self.assertIn("              A --review-limit of 9m 50s or less changes that, or one of 19m 50s or less\n"
+                      "              with a longer --for.\n", text)
+        # And a shift so short that no limit a person can sign fits: the shortest is 30 seconds.
+        text = said(60)
+        self.assertIn("No review starts in the last 20s of this shift: a review must fit whole,\n"
+                      "              the limit is 10m and only 10s of working time is left then.\n", text)
+        self.assertIn("              Only a longer --for changes that: no --review-limit is shorter than 30s.\n", text)
+        self.assertIn("Only a longer --for changes that", said(60, review_limit_seconds=30))
+        self.assertIn("Only a longer --for changes that", said(60, review_limit_seconds=1190))
+        # Second Minor of the merge gate: with a limit above what any wind-down holds, a longer shift alone does not.
+        for limit in (1191, 3600):
+            text = said(60, review_limit_seconds=limit)
+            self.assertIn("              Only a longer --for together with a --review-limit of 19m 50s or less changes that.\n", text)
+            self.assertNotIn("Only a longer --for changes that", text)
+        self.assertIn("A shorter --review-limit or a longer --for changes that.", said(120))  # 30 s of working time
         # A path that is shown with escapes is not the path, so no ready command is offered for it.
         odd = signing.summary(self.value(repo="/work/r\u00e9po"))
         self.assertIn("Shift:      /work/r\\u00e9po/.sortie/shifts/20300101T000000Z-abc\n", odd)

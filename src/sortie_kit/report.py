@@ -5,7 +5,7 @@ import re
 import shlex
 import time
 
-from . import channels, grants, receipts, repo_state
+from . import channels, cli_words, grants, receipts, repo_state
 from .layout import Refused
 from .receipt_schema import decode, validate_shape
 from .review import SCHEMA as UNLISTED, LISTED, SCHEMA_V3 as NAMING, EVIDENCE as SHOWING, NOT_SHOWN
@@ -229,6 +229,46 @@ def review_kept(data):
                                           'outcome', 'prior')}, attempts=attempts)
 
 
+def checked_bytes(reader, ref):
+    """The bytes a receipt names, as `Reader.references` has just read and checked them:
+    from the path where it holds them still, or from the host's kept copy. None where
+    neither does. Nothing is read here."""
+    if not isinstance(ref, dict) or not isinstance(ref.get('path'), str) or not isinstance(ref.get('sha256'), str):
+        return None
+    for path in (ref['path'], receipts.kept_path(ref['sha256'])):
+        if path in reader.cache and get(reader.inputs.get(path), 'sha256') == ref['sha256']:
+            return reader.cache[path]
+    return None
+
+
+def review_quotes(reader, data, kept):
+    """Put on each kept attempt of a review what its reviewer's CLI wrote last (`said`),
+    where the attempt ended by the CLI's own doing and not well and its logs are the
+    bytes the receipt names. The receipt itself holds no such lines: they are made
+    here, by the rule the host has for its answer to the driver (`cli_words`).
+
+    The host quotes what came through the pipe; the report has the logs alone. So
+    nothing is quoted of an attempt whose log the host found to be other than what
+    the reviewer printed (something wrote to it while the review ran; the receipt
+    names the log as it is and says so in a reason), and nothing of one that
+    printed more than the log holds, whose end is not the end of what was printed."""
+    if not isinstance(kept, dict):
+        return kept
+    for item, attempt in zip(kept['attempts'], data['attempts']):
+        if not isinstance(attempt, dict) or attempt.get('status') == 'complete':
+            continue
+        reasons = attempt.get('reasons') if isinstance(attempt.get('reasons'), list) else []
+        if (attempt.get('output_dropped_bytes') != 0
+                or any(isinstance(reason, str) and reason.startswith(cli_words.ALTERED) for reason in reasons)):
+            continue
+        said = cli_words.review_said(attempt.get('ended_by'), attempt.get('exit_status'), True,
+                                     checked_bytes(reader, attempt.get('stdout')),
+                                     checked_bytes(reader, attempt.get('stderr')))
+        if said:
+            item['said'] = said
+    return kept
+
+
 def receipt_summary(reader, ref, task, shift_id, ledger):
     out = dict(reference=ref, integrity='unavailable', consumed=False, phase=None, data=None)
     out['changed'], out['kept'] = reader.changed, reader.kept = [], []
@@ -257,7 +297,8 @@ def receipt_summary(reader, ref, task, shift_id, ledger):
         slot = receipts.digest(receipts.encoded([value[k] for k in ('shift_id', 'task_id', 'request_id', 'role', 'phase', 'round')]))
         consumed = any(e.get('receipt_id') == value['receipt_id'] and e.get('slot') == slot
                        and e.get('sha256') == ref['sha256'] and e.get('satisfies_phase') is True for e in ledger)
-        data = reader.retain(review_kept(value['data']) if hosted else value['data'], ref['path'])
+        data = reader.retain(review_quotes(reader, value['data'], review_kept(value['data'])) if hosted
+                             else value['data'], ref['path'])
         out.update(phase=phase, round=value['round'], request_id=value['request_id'],
                    data=data, consumed=consumed, integrity='matched' if good and data is not None else 'damaged')
         if value['version'] == 3:
@@ -1510,10 +1551,49 @@ def attempt_words(attempt):
     return line
 
 
-def review_words(review, kept):
+WROTE = ' CLI wrote last (its own words, shown as text; what looks like a credential is left out):'
+
+
+def said_lines(value):
+    """The kept last lines of a CLI as inert text, or none where there are none."""
+    return [plain(line, cli_words.LINE) for line in value if isinstance(line, str)][:cli_words.LINES] \
+        if isinstance(value, list) else []
+
+
+def attempt_more(attempt, seat, limit):
+    """Lines under one failed run of the reviewer: for a run the host ended at its limit,
+    how long a run may take and what a person can change; for a run whose CLI ended by
+    itself and not well, the last lines it wrote and what a person can change."""
+    if get(attempt, 'status') == 'complete':
+        return []
+    out = []
+    if cli_words.at_limit(get(attempt, 'ended_by')):
+        out.append('- The host ended this run at the limit of one run. ' + cli_words.limit_words(seat, limit, plain))
+    said = said_lines(get(attempt, 'said'))
+    if said:
+        out += ["- The reviewer's" + WROTE] + ['  - ' + line for line in said]
+    if said or cli_words.own_failure(get(attempt, 'ended_by'), get(attempt, 'exit_status')):
+        out.append('- ' + cli_words.knobs('reviewer', seat, plain))
+    return out
+
+
+def turn_more(turn, seat):
+    """Lines under a builder turn whose CLI ended by itself and not well: the last lines
+    it wrote, where the host kept any, and what a person can change."""
+    if not isinstance(turn, dict):
+        return []
+    said = said_lines(turn.get('said'))
+    if not said and not cli_words.own_failure(turn.get('outcome'), turn.get('exit')):
+        return []
+    return ((["- The builder's" + WROTE] + ['  - ' + line for line in said] if said else [])
+            + ['- ' + cli_words.knobs('builder', seat, plain)])
+
+
+def review_words(review, kept, seat=None):
     """The lines for one review the host ran: its outcome, what it found, and every
     attempt when there was more than one or one failed. `kept` is the task's
-    receipts as read, for the reviewer's own words where the receipt is intact."""
+    receipts as read, for the reviewer's own words where the receipt is intact.
+    `seat` is the reviewer's seat as the kept grant has it."""
     stage, outcome = get(review, 'stage'), get(review, 'outcome')
     line = ('Review ' + plain(get(review, 'review')) + ', '
             + {'plan_review': 'of the plan', 'review': 'of the candidate'}.get(stage, plain(stage))
@@ -1551,8 +1631,11 @@ def review_words(review, kept):
         # look from a host that did not show.
         extra.append("**The host did not show this review the builder's receipts**: " + unshown_words(last) + '.'
                      + (' Answers of `not_checked` in it may rest on that.' if stage == 'review' else ''))
+    below = []
     if len(attempts) > 1 or any(get(a, 'status') != 'complete' for a in attempts):
-        extra += [attempt_words(a) for a in attempts]
+        limit = get(data, 'limit_seconds')
+        for a in attempts:
+            below += ['  - ' + attempt_words(a)] + ['    ' + line for line in attempt_more(a, seat, limit)]
     if get(review, 'receipt', 'path'):
         line += ' Receipt: ' + plain(get(review, 'receipt', 'path')) + '.'
         if receipt is None or receipt.get('integrity') != 'matched':
@@ -1560,7 +1643,7 @@ def review_words(review, kept):
                      '"Problems with the evidence".**')
     else:
         line += ' No receipt of it is on record.'
-    return [line] + ['  - ' + item for item in extra]
+    return [line] + ['  - ' + item for item in extra] + below
 
 
 def unreviewed_words(task):
@@ -1758,9 +1841,10 @@ def unbacked_words(task):
     return line[:1].lower() + line[1:]
 
 
-def task_words(task, headless=False, policy=None):
+def task_words(task, headless=False, policy=None, seats=None):
     """`policy` is the kept grant's review policy: with a reviewer seat in it the
-    reviews are the host's and are worded as that."""
+    reviews are the host's and are worded as that. `seats` are the seats of the kept
+    grant, for the words that name what a person can change about one."""
     accepted, recorded = task.get('acceptance') == ACCEPTED, task.get('acceptance') == UNBACKED
     host_reviews = hosted(policy)
     lines = ['### ' + plain(task.get('id')) + ' (' + plain(task.get('kind')) + '): '
@@ -1818,13 +1902,14 @@ def task_words(task, headless=False, policy=None):
             lines.append('- Reviews, started by the host with the signed reviewer (' + plain(get(policy, 'review_agent'))
                          + ', model ' + plain(policy.get('review_model')) + ', family ' + plain(policy.get('review_family')) + '):')
             for review in reviews:
-                first, *below = review_words(review, receipts_kept)
+                first, *below = review_words(review, receipts_kept, get(seats, 'reviewer'))
                 lines += ['  - ' + first] + ['  ' + line for line in below]
         lines += requirement_words(task)
     turns = task.get('turns') if isinstance(task.get('turns'), list) else []
     if turns:
         lines.append('- Builder turns: ' + str(len(turns)) + '.')
-        lines += ['  - ' + turn_words(turn) for turn in turns]
+        for turn in turns:
+            lines += ['  - ' + turn_words(turn)] + ['    ' + line for line in turn_more(turn, get(seats, 'builder'))]
     else:
         lines.append('- Builder turns: none recorded.')
     lines.append('- Builder stop: ' + stop_words(task, headless))
@@ -2228,7 +2313,7 @@ def markdown(doc, sha):
     headless = get(grant, 'seats', 'builder', 'mode') == 'headless'
     shown = dict(policy, review_agent=get(grant, 'seats', 'reviewer', 'agent')) if hosted(policy) else policy
     for task in tasks:
-        out += task_words(task, headless, shown)
+        out += task_words(task, headless, shown, get(grant, 'seats'))
     if not tasks:
         out += ['No task was briefed.', '']
     out += open_section + notes_section
@@ -2298,6 +2383,8 @@ def markdown(doc, sha):
                    + ('; the builder ran headless, so those processes are all there was of it. For the driver, a '
                       'process ending is not the seat saying it stopped.' if headless
                       else '. A process ending is not a seat saying it stopped.'))
+        out += ['  - ' + line for line in cli_words.driver_words(processes.get('driver'), get(grant, 'seats', 'driver'),
+                                                                 plain, terminal=False)]
     elif window.get('source'):
         out.append('- The closeout records no process observation.')
     else:

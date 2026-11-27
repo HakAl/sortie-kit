@@ -119,7 +119,10 @@ unless you name it. Nothing asks who reviews.
 The signing summary shows the reviewer with how it was chosen (`picked: the
 first installed agent of another family than the builder`, `picked: no agent
 of another family is installed`, or `given with --agent reviewer=`), its full
-command, the limit of one run, and what it can reach.
+command, the limit of one run, and what it can reach. When that limit is
+longer than the working time of the shift's wind-down, it also says that no
+review starts in that last stretch
+([how a shift ends](walkthrough.md#how-a-shift-ends)).
 
 ## Executable pin
 

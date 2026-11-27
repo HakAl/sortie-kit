@@ -845,6 +845,34 @@ class LauncherTests(LocalTest):
                 self.assertIn("Preliminary report", text)
                 self.assertIn("sortie report --shift " + str(shift), text)
 
+    def test_cli_says_where_the_words_of_a_driver_that_failed_are_and_what_can_be_changed(self):
+        """From the signed seat that the start returns, so with or without a report."""
+        from sortie_kit import cli_words
+        shift = self.root / "shift"; shift.mkdir()
+        args = ["start", "--repo", str(self.target), "--direction", str(self.request.direction), "--for", "1m",
+                "--agent", "driver=claude:m", "--agent", "builder=codex:m", "--trust", "t", "--key", "k"]
+        seat = dict(agent="claude", model="no-such\x1b[31m-model")
+
+        def said(seen, *more):
+            ended = (shift, 0, "driver exited", seen, False) + more
+            with patch("sortie_kit.cli.start", return_value=ended), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(args), 0)
+            return out.getvalue()
+        first, second = cli_words.driver_words("exited on its own with status 1", seat, cli.safe)
+        self.assertIn("above in this terminal", first)
+        self.assertIn("--agent driver=claude:no-such\\x1b[31m-model", second)
+        self.assertNotIn("\x1b", second)
+        text = said("exited on its own with status 1; the terminal was restored", None, seat)
+        self.assertIn("\nDriver process: exited on its own with status 1; the terminal was restored\n" + first + "\n"
+                      + second + "\nNo report was written; run: ", text)
+        self.assertIn("\n" + first + "\n", said("ended on its own by signal 9", None, seat))
+        # A start that returned no seat still says where the words are.
+        self.assertIn("--agent driver=NAME:MODEL", said("exited on its own with status 1"))
+        for seen in ("exited on its own with status 0", "stopped by the host", "not started"):
+            text = said(seen, None, seat)
+            self.assertIn("\nDriver process: " + seen + "\nNo report was written", text)
+            self.assertNotIn("What a person can change", text)
+
     def test_cli_last_lines_say_the_tasks_and_the_shutdown_apart(self):
         import hashlib
         from sortie_kit import report

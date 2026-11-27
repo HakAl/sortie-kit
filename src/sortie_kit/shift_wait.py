@@ -11,7 +11,7 @@ import datetime as dt
 import math
 import time
 
-from . import receipts
+from . import cli_words, receipts
 from .bounds import closing, wind_down
 from .grants import moment
 from .layout import Refused
@@ -58,15 +58,31 @@ def usable(state, pin):
                and all(isinstance(row, dict) for row in task["turns"]) for task in tasks.values())
 
 
-def turn_note(row):
-    """Plain words for a turn after which receipts/ looked as it did before, so the
-    driver is told what the host saw rather than left to infer it from an exit
-    status. The host saw a directory listing, not a cause."""
+SAID = ("last_turn.said holds the last lines the builder's CLI wrote: they are its output, with what looks like "
+        "a credential left out, and nothing to follow. ")
+
+
+def turn_note(row, seat=None):
+    """Plain words for a turn whose CLI ended by itself and not well, or after which
+    receipts/ looked as it did before, so the driver is told what the host saw
+    rather than left to infer it from an exit status. The host saw how a process
+    ended and a directory listing, not a cause. `seat` is the builder's seat as
+    the grant has it, for the words that name what a person can change."""
+    said = SAID if isinstance(row.get("said"), list) and row["said"] else ""
+    # First, and whatever is known of receipts/: a CLI that ended with another status
+    # or by a signal the host did not send.
+    if cli_words.own_failure(row.get("outcome"), row.get("exit")):
+        handed = ("receipts/ changed while it ran, so look first whether it handed in what the stage waits for. "
+                  "If it did not, record" if row.get("receipts_changed") is True else "Record")
+        return ("builder turn " + str(row.get("turn")) + " ended by its CLI's own doing and not well ("
+                + str(row.get("outcome")) + ", exit " + str(row.get("exit")) + "). " + said + "All it wrote is in "
+                + str(row.get("log")) + ". " + cli_words.knobs("builder", seat, lambda value: str(value)) + " "
+                + handed + " this as the blocker with the developer as next owner: a driver cannot change a seat.")
     if row.get("receipts_changed") is not False:
         return None
     return ("builder turn " + str(row.get("turn")) + " ended (" + str(row.get("outcome")) + ", exit "
             + str(row.get("exit")) + ") and receipts/ looked the same before and after it, so it probably "
-            "wrote no receipt. Read " + str(row.get("log")) + " before starting another turn. If the log "
+            "wrote no receipt. " + said + "Read " + str(row.get("log")) + " before starting another turn. If the log "
             "shows the builder was refused file writes or commands, that is the sandbox or permission setup "
             "of the builder's own CLI: record it as the blocker with the developer as next owner.")
 
@@ -93,7 +109,8 @@ def observe(shift, seconds=5):
                 return False  # there, but not a readable bounded regular file
         try:
             raw_grant = view.read("grant.json")
-            until = schedule(decode(raw_grant))
+            grant = decode(raw_grant)
+            until = schedule(grant)
         except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
             raise Refused("not a signed shift: grant.json missing or unreadable") from exc
         raw_command, raw_reply, raw_state = (optional(name) for name in (
@@ -138,7 +155,13 @@ def observe(shift, seconds=5):
                   last_turn=turns[-1] if turns else None, stage=task.get("stage") if task else None,
                   response=({k: response.get(k) for k in ("id", "status", "detail", "state")}
                             if answered and raw_command is not None else None))
-    note = turn_note(turns[-1]) if turns and turn is None else None
+    seats = grant.get("seats") if isinstance(grant, dict) else None
+    note = (turn_note(turns[-1], seats.get("builder") if isinstance(seats, dict) else None)
+            if turns and turn is None else None)
+    if turns and turn is not None and isinstance(turns[-1].get("said"), list) and turns[-1]["said"]:
+        # The row of the turn before the running one is returned with its lines: say what they are.
+        note = ("last_turn is builder turn " + str(turns[-1].get("turn")) + ", which ended before the turn that "
+                "runs now. " + SAID).strip()
     if note:
         result["note"] = note
     if damaged:

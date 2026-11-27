@@ -201,10 +201,11 @@ configuration allows without asking. Read
 
 ## Status
 
-An alpha. Every real shift so far was run on macOS by the project's own
-developers, with keys made for testing, and most on small practice
-repositories. No real shift has been run on Linux or with a key the person
-uses for anything else; see
+An alpha. The project's own developers have run real shifts on macOS, with
+keys made for testing, and most on small practice repositories. Others have
+run some too and told the project of them, signed with keys their agents had
+made. No real shift that the project ran or was told of was on Linux or
+signed with a key the person uses for anything else; see
 [what real shifts have shown](docs/evidence.md), and what none has.
 
 ## License

@@ -113,6 +113,38 @@ SAME = {"picked-same-family": "because no agent of another family is installed",
         "picked-other-family": ""}
 
 
+def late_review(window, limit):
+    """Lines for the signer when the review limit does not fit in the working time of
+    the last part of the window, or none: no review can then start in that part. A
+    review must fit whole there (`Driver.may_review`), and that working time is the
+    wind-down less the time the host keeps for stopping. A wind-down is never longer
+    than twenty minutes, so above its working time no longer window helps."""
+    from .bounds import WIND_DOWN, closing, wind_down
+    reserve = wind_down(window)
+    work = reserve - closing(reserve)
+    if type(limit) is not int or limit <= work:
+        return []
+    from .grants import REVIEW_LIMITS
+    most, least = int(WIND_DOWN - closing(WIND_DOWN)), REVIEW_LIMITS[0]
+    if work < least and limit > most:
+        # No limit a person can sign fits in this shift's last part, and this one fits in no shift's.
+        knob = ["Only a longer --for together with a --review-limit of " + span(most) + " or less changes that."]
+    elif work < least:
+        # No limit a person can sign fits in this shift's last part.
+        knob = ["Only a longer --for changes that: no --review-limit is shorter than " + span(least) + "."]
+    elif limit <= most:
+        knob = ["A shorter --review-limit or a longer --for changes that."]
+    elif work >= most:
+        knob = ["Only a --review-limit of " + span(most) + " or less changes that."]
+    else:
+        # Above what any wind-down holds, in a shift whose own holds less still.
+        knob = ["A --review-limit of " + span(work) + " or less changes that, or one of " + span(most) + " or less",
+                "with a longer --for."]
+    return ["No review starts in the last " + span(reserve) + " of this shift: a review must fit whole,",
+            "the limit is " + span(limit) + " and only " + span(work) + " of working time is left then.",
+            "A plan or commit handed in then stays not reviewed, and its task is not accepted."] + knob
+
+
 def summary(value):
     """What the developer is about to sign, in plain words. Built only from the
     decoded grant; the exact bytes are shown after it and are what counts."""
@@ -155,6 +187,7 @@ def summary(value):
               "              REVIEW stands for the directory the host makes for each run of a review.",
               "              One run may take at most " + span(limit) + "; a run that gives nothing usable is",
               "              made once more, and a second failure blocks that task."]
+    lines += ["              " + line for line in late_review(window, limit)]
     lines.append("  What the builder may do:")
     lines += ["    - " + shown(line) for line in agents.reach("builder", value["seats"]["builder"])]
     lines.append("  What the reviewer can reach:")

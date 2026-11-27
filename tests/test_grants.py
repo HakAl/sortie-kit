@@ -85,6 +85,11 @@ POLICY = grants.review_policy('fixture-model', 'fixture-family', 'fixture-review
 POLICY_3 = dict(builder_model='fixture-model', builder_family='fixture-family', review_tool='agy-review',
                 review_model='fixture-review-model', review_family='gemini', same_family_review=False)
 PANES = {'driver': {'pane': 'driver', 'runtime': 'codex'}, 'builder': {'pane': 'builder', 'runtime': 'claude'}}
+# The window of the fixture's grant. No test here is about its length: those about expiry, a stale
+# admission or the cutoff make a grant of their own and give its clock. It is an hour and not a minute
+# because `sortie verify` as a child and `grants.verify` without a clock read the time of day, and a
+# machine that slept in the suite ended a window of 60 seconds under a test that asked nothing of it.
+WINDOW = 3600
 
 
 class GrantTests(LocalTest):
@@ -104,12 +109,18 @@ class GrantTests(LocalTest):
         self.trust_path = self.protected / 'trust.json'
         self.write_trust()
         self.trust = grants.Trust(self.trust_path, self.repo_path)
-        self.request = Request(self.repo_path, self.repo_path / 'direction.md', 60)
+        self.request = Request(self.repo_path, self.repo_path / 'direction.md', WINDOW)
         # The profile lives under the fixture HOME so a child CLI process finds it too.
         self.fixture = agent_fixture(self.root, self.repo_path, home=self.protected)
         self.fresh_shift()
-        self.raw = grants.make_grant(self.shift, self.trust, self.seats, 60, policy=POLICY)
+        self.began = dt.datetime.now(dt.timezone.utc)
+        self.raw = self.grant()
         self.sign_crypto(self.raw)
+
+    def grant(self):
+        """A grant of the present shift and seats that starts at the moment `setUp` signed, which is
+        the clock `admit` hands an admission: its start is never after that clock."""
+        return grants.make_grant(self.shift, self.trust, self.seats, WINDOW, policy=POLICY, now=self.began)
 
     def fresh_shift(self):
         self.shift = prepare(self.request, Sources())
@@ -130,6 +141,10 @@ class GrantTests(LocalTest):
                        env=self.env, capture_output=True, check=True, timeout=10)
 
     def admit(self, **kwargs):
+        # The moment of `setUp` and not the time of day, unless the test gives a clock: however late
+        # the test gets here, the window and the admission cutoff of a grant from `grant` are open.
+        # The 60 seconds are the admission's own duration on the monotonic clock, from here.
+        kwargs.setdefault('now', lambda: self.began)
         return grants.Admission(self.shift, self.trust, seconds=60,
                                 expected_seats=self.seats, **kwargs)
 
@@ -145,13 +160,30 @@ class GrantTests(LocalTest):
                              ['local-work', 'spawn-builder', 'spawn-driver', 'spawn-reviewer'])
             self.assertEqual(admitted.seat_start('builder', 'go')[0], str(self.fixture['program']))
 
+    def test_the_fixtures_grant_admits_by_the_clock_of_setup_however_late_the_admission_comes(self):
+        """A machine that slept in the suite for 51 minutes ended the fixture's window of 60 seconds
+        of the time of day, and a test that had nothing to do with expiry failed."""
+        real = dt.datetime
+
+        class Late(real):
+            @classmethod
+            def now(cls, tz=None):
+                return real.now(tz) + dt.timedelta(hours=2)
+        with patch.object(dt, 'datetime', Late):
+            # By the time of day the grant is over, which is what a test of expiry asks about.
+            with self.assertRaisesRegex(Refused, 'grant not current'):
+                grants.verify(self.shift, self.trust)
+            with self.admit() as admitted:
+                self.assertEqual(admitted.guard(), '')
+                self.assertTrue(admitted.seat_start('builder', 'go'))
+
     def test_a_grant_signed_with_arguments_the_profile_no_longer_has_still_verifies_and_starts_as_signed(self):
         # What an earlier version signed for a built-in builder: one headless form with an option the
         # profile has since lost, under that version's profile hash. Nothing reads the profile again.
         option = ['-c', 'sandbox_workspace_write.network_access=true']
         self.seats['builder'] = dict(self.seats['builder'], profile_sha256='1' * 64,
                                      argv=['run'] + option + self.seats['builder']['argv'][1:])
-        self.raw = grants.make_grant(self.shift, self.trust, self.seats, 60, policy=POLICY)
+        self.raw = self.grant()
         self.sign_crypto(self.raw)
         self.assertEqual(grants.verify(self.shift, self.trust)[0], self.raw)
         with self.admit() as admitted:
@@ -492,7 +524,7 @@ class GrantTests(LocalTest):
         shutil.copy(self.fixture['program'], other)
         pin, _ = agents.hash_executable(os.path.realpath(other), self.repo_path)
         self.seats = dict(self.seats, reviewer=dict(self.seats['reviewer'], executable=pin))
-        raw = grants.make_grant(self.shift, self.trust, self.seats, 60, policy=POLICY)
+        raw = self.grant()
         self.sign_crypto(raw)
         other.write_text('#!/bin/sh\nexit 1\n')
         with self.assertRaisesRegex(Refused, 'differs from the signed pin'):
@@ -500,7 +532,7 @@ class GrantTests(LocalTest):
         self.fresh_shift()
         shutil.copy(self.fixture['program'], other)
         self.seats = dict(self.seats, reviewer=dict(self.seats['reviewer'], executable=pin))
-        self.sign_crypto(grants.make_grant(self.shift, self.trust, self.seats, 60, policy=POLICY))
+        self.sign_crypto(self.grant())
         with self.admit() as admitted:
             made = self.shift / 'reviews' / 'r'
             made.mkdir(parents=True)
@@ -531,7 +563,7 @@ class GrantTests(LocalTest):
 
     def test_stale_admission_and_copied_shift_refused(self):
         old = grants.make_grant(self.shift, self.trust, self.seats, 3600, policy=POLICY,
-                                now=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=3))
+                                now=self.began - dt.timedelta(minutes=3))
         self.sign_crypto(old)
         with self.assertRaisesRegex(Refused, 'stale'):
             self.admit()
@@ -619,7 +651,7 @@ class GrantTests(LocalTest):
             self.assertTrue(admitted.guard())
         # A separate fresh shift is needed even after clean close.
         self.fresh_shift()
-        self.raw = grants.make_grant(self.shift, self.trust, self.seats, 60, policy=POLICY)
+        self.raw = self.grant()
         self.sign_crypto(self.raw)
         with self.admit() as admitted:
             temp = self.shift / 'new-grant'
@@ -663,7 +695,7 @@ class GrantTests(LocalTest):
             clock.sleep(3)
             self.assertIn('elapsed', admitted.guard())
         self.fresh_shift()
-        self.raw = grants.make_grant(self.shift, self.trust, self.seats, 60, policy=POLICY)
+        self.raw = self.grant()
         self.sign_crypto(self.raw)
         source = self.root / 'sources'
         source.mkdir()
@@ -702,7 +734,7 @@ class GrantTests(LocalTest):
         for message, change in changes.items():
             with self.subTest(message=message):
                 self.fresh_shift()
-                self.sign_crypto(grants.make_grant(self.shift, self.trust, self.seats, 60, policy=POLICY))
+                self.sign_crypto(self.grant())
                 with self.admit() as admitted:
                     self.assertTrue(admitted.seat_start('builder', 'go'))
                     if change:

@@ -417,8 +417,12 @@ def main(argv=None):
         # process did: both are shown as inert text. The first line break is there
         # because the driver may have left the cursor after its last output.
         said = closing_lines(raw if state == "final" else None, code, safe, more[0] if more else None, seen)
+        # A driver whose CLI ended by itself and not well: where its words are, and what
+        # a person can change. From the signed seat, so it needs no report.
+        from . import cli_words
+        failed = cli_words.driver_words(seen, more[1] if len(more) > 1 else None, safe)
         print("\nShift ended: " + safe(reason) + "\n" + "\n".join(said)
-              + "\nDriver process: " + safe(seen) + "\n" + {
+              + "\nDriver process: " + safe(seen) + "\n" + "".join(line + "\n" for line in failed) + {
             "final": "Report: " + str(report),
             "preliminary": "Preliminary report, from before the host finished stopping its processes: "
                            + str(report) + "\nThe final one was not written; run: " + again,

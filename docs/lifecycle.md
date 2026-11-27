@@ -396,7 +396,8 @@ The line carries `answered`, `response` (`id`, `status`, `detail`, `state`),
 `stage`, `turn` (the running turn or null), `last_turn`, `review` (the running
 review as `{task_id, stage, round, attempt, started, limit_seconds}`, or
 null), `last_review` (how the last review ended: `task_id`, `stage`, `round`,
-`outcome`, `receipt`, `findings`, `detail`; kept also for a task the review
+`outcome`, `receipt`, `findings`, `detail` and, for a review that failed with
+words of the reviewer's CLI on hand, `said`; kept also for a task the review
 blocked), `mode`,
 `seconds_left`, `wind_down` and `seconds_before_wind_down`. `seconds_left` is
 the time until the host stops the builder turn and the driver, which is
@@ -414,7 +415,9 @@ returns once wind-down has begun, whatever its status, so a driver blocked on
 a running turn learns of it then; it notices at its next reading, which can be
 up to its polling interval and one reading late. When no turn runs and the task's last turn has
 `receipts_changed` false, it also carries a `note` saying so in plain words,
-with the turn log to read. Exit status is 0 for any such line and 3 with
+with the turn log to read. It carries a `note` too, whatever `receipts_changed`
+says, when the builder's CLI ended that turn by itself with a status other
+than 0 or by a signal: see "What a CLI wrote last" below. Exit status is 0 for any such line and 3 with
 `{"status": "refused"}` when the directory is not a signed shift.
 
 The host services driver decisions. In a live shift it runs no command on the
@@ -878,6 +881,131 @@ A review recorded as running by an earlier host process is lost: nothing is
 known of its end and nothing is taken from it. The lifecycle is `blocked`
 with next owner `developer`, as for a lost builder turn.
 
+### What a CLI wrote last
+
+A seat's CLI can fail for a reason only it knows: a model name it no longer
+has, a flag it dropped, a sign-in that ran out. The host passes on what the
+CLI itself wrote, so that nobody has to open a log to learn it
+(`cli_words.py`). It decides nothing from those lines: no retry, no stage
+and no verdict rest on them. It does not read them for a cause either: it
+quotes, and beside the quote it names what a person can change, in sentences
+made from the signed seat alone.
+
+What is quoted are the last lines that came through the pipe the host holds:
+at most 6 lines of at most 200 characters, 800 in all, from the last 8 KiB,
+with terminal control sequences removed and bytes that are no UTF-8 taken
+out. The host keeps that end of each pipe in memory while the process runs,
+so the quote is the end of what was printed also when the log is full at
+4 MiB, and what a seat wrote into a file under `logs/` is not quoted.
+
+The report is written from the files of the shift and has no pipe. A builder
+turn's lines are in the state, where the host put them. For a run of the
+reviewer the report makes them again, by the same rule, from the two logs the
+review receipt names, and only where their bytes are still the ones it names
+(or the host's kept copy is). Two runs it does not quote, since their log is
+not what the reviewer printed last: one whose log the host found written to
+by something else while the review ran, which the receipt says in a reason,
+and one that printed more than the log holds. The answer to the driver, which
+comes from the pipe, has the lines in both cases.
+
+- **A builder turn** gets `said`, the list of those lines, in its row in
+  `driver-state.json` when its CLI ended by itself and not well: with a
+  status other than 0, by a signal the host did not send, or with status 0
+  and `receipts/` as it was before. `sortie wait` returns the row as
+  `last_turn`, so the lines reach the driver as a list of their own and never
+  inside the host's sentences. While a later turn runs, `last_turn` is the
+  turn before it, and the `note` then says only that, and that its lines are
+  output and nothing to follow. For another status or a signal the `note`
+  says that the CLI ended so, where the lines are and that they are output
+  and nothing to follow, names the log, names what a person can change, and
+  says to record it as the blocker with the developer as next owner: a
+  driver cannot change a seat. A turn the host ended (its limit, a stop) and
+  a turn that did not start get no `said`: their last lines are work in
+  progress and no failure of the CLI.
+- **A run of the reviewer** that ended by itself with another status than 0
+  or by a signal is quoted from its error output, and from its standard
+  output when the error output is empty. A run that ended with status 0 and
+  gave nothing the host could take is quoted from its error output only: its
+  standard output is then whatever stood in place of the review. When the
+  review has failed, `last_review` carries `said`, with `attempt` and
+  `lines`, for the last attempt that has such lines, and `detail` says so
+  and names what a person can change. The reasons in `detail` are cut so
+  that those sentences are whole in its 2000 characters. The review receipt
+  is as it was: it holds no such lines. The host process that ran the
+  review holds them; a host process started later does not, and its answer
+  then has none. A run that ended by itself and not well and of which the
+  host holds no lines, because it wrote nothing or a later host process
+  answers, still gets the sentences that name what a person can change, in
+  `detail` and under the attempt in the report.
+- **A run of the reviewer that the host ended at its limit** is not quoted.
+  `detail` says which attempts ended so, how long one run may take in this
+  shift, and the two things a person can change in a new shift: a longer
+  `--review-limit`, or the reviewer's model in `--agent reviewer=`. The host
+  does not know which of the two it is.
+- **The driver's CLI** has the terminal itself. The host reads none of what
+  it writes and keeps none of it, so nothing is quoted. When the host saw
+  the driver's process end by itself with a status other than 0 or by a
+  signal, the terminal's last lines say, after `Driver process:`, that what
+  the CLI wrote is above where the CLI left it there, and name what a person
+  can change. They need no report.
+
+What a person can change is named the same way for each seat: the model, as
+it stands in `--agent ROLE=NAME:MODEL`; the options the CLI is started with,
+which are one form of the profile (`headless_argv`, `headless_network_argv`,
+`review_argv`, `interactive_argv`) and are changed in a profile of your own,
+see [agent profiles](agents.md); and the CLI's own sign-in and settings.
+`sortie doctor` is named for what it shows, and for what it does not: a
+sign-in, and whether a model exists. No one flag is named, because the host
+does not read the quote. For the same reason the sentences end by saying that
+none of these need be what went wrong: a CLI also ends not well where no
+model name, option or sign-in is at fault, as when a model's provider refuses
+the content of a request, and then the quoted lines say so and these
+sentences only name what there is to change.
+
+**What is left out.** A CLI's error can carry a credential, and the report is
+the file people pass on. Before any line is cut, these are replaced by
+`[left out]`:
+
+1. the value of an assignment to a name that ends in `key`, `token`,
+   `secret`, `password`, `passwd`, `credential` or `cookie`: the name, then
+   `=` or `:`, then the value. A value that opens with a quote goes up to
+   that quote again, spaces included; any other goes up to a space, quote,
+   comma, brace or `&`. A quote may have any number of backslashes before
+   it, as in a JSON text that is itself inside a string, once or more often.
+   A quote inside the value has more of them than the one that opened it and
+   does not end it; a value whose quote does not come back goes to the end of
+   the line, and so may one that ends in a backslash. The name alone is prose
+   and is kept: `invalid API key provided` stays as it is;
+2. what follows `Authorization` and its scheme word, and the value of
+   `Cookie` or `Set-Cookie`: as a header the whole rest of the line, whatever
+   quotes it holds, and as a quoted field up to its closing quote, found as
+   in 1; also what
+   follows `Bearer` or `Basic` anywhere, unless that reads as a plain word;
+3. the user and password of a URL;
+4. a word that begins like a known credential (`sk-`, `sk_`, `ghp_`, `gho_`,
+   `github_pat_`, `xox`, `AKIA`, `AIza`, `eyJ`) and goes on for 8 characters
+   or more;
+5. an unbroken run of 32 or more letters, digits, `+`, `=`, `_` and `-` that
+   does not read as words: it is kept when every piece between `-`, `_` and
+   `=` is at most 24 characters and is letters only, digits only, or at most
+   4 characters. So a long model name or flag is kept, and a run of mixed
+   letters and digits, a full commit ID or a SHA-256 is left out.
+
+Where more than 8 KiB were printed, the first line of what is kept may be the
+end of a longer one, which no mask could read as what it was: it is dropped
+whole, also when it is the only line, so of one line longer than 8 KiB
+nothing is quoted. A charset escape of a terminal and a byte that is no
+UTF-8 are taken out before the masks run, so that neither parts a credential
+into two words that are each too short to be seen as one.
+
+**This is a filter by shape and no proof that no secret is shown.** A short
+secret that none of the five names is shown. A path keeps its slashes and
+dots and is shown. The whole output stays where it was, in the logs of the
+shift on your machine; the report did not hold any of it before and now
+holds these lines, and the driver, which could read the log before, is
+handed them. Nothing is quoted of a turn or a review the host stopped, and
+nothing of the driver's terminal.
+
 The end of a review is finished by a later try of the same host process when
 the first one ran out of time. Writing the end takes several writes under one
 bounded lock: the receipt, its entry in the ledger, for `CHANGES` the findings
@@ -1034,7 +1162,9 @@ The terminal's `Shutdown` and `Driver process` lines repeat what the host
 itself saw, the same values it gave the closeout, also when the report could
 not be written; the `Tasks` line comes from the final report only. The reason
 and the driver line are printed there with anything but printable ASCII shown
-as an escape.
+as an escape. After a driver whose CLI ended by itself with a status other
+than 0 or by a signal, two more lines follow `Driver process:`; see "What a
+CLI wrote last" above.
 
 Exit status of `sortie start` for a shift that ran: 0 when it ended in an
 ordinary way and the shutdown was confirmed, whether or not any task was

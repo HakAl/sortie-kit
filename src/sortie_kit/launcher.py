@@ -147,7 +147,8 @@ def start(request: Request, *, prepare_only=False, sign_only=False, trust_path=N
           key=None, choices=None, same_family=False, review_seconds=None, builder_network=False,
           home=None, search=None, wake=None, temp=None):
     """--prepare-only and --sign-only return the shift. With neither, run the whole
-    shift and return (shift,) with what `run` returns.
+    shift and return (shift,) with what `run` returns and, last, the driver's seat as
+    it was signed.
 
     `choices` names the driver and the builder and may name the reviewer
     (`--agent reviewer=`); without one the reviewer is picked, see
@@ -205,7 +206,9 @@ def start(request: Request, *, prepare_only=False, sign_only=False, trust_path=N
     sign(shift, trust, key, raw, seconds=request.seconds, sources=sources, note=notes or None)
     if sign_only:
         return shift
-    return (shift,) + run(shift, trust, seats, request.seconds, sources=sources, wake=wake, temp=temp)  # see run for the rest
+    # See run for the rest. The driver's seat is last: the lines for a driver whose CLI
+    # ended by itself are made from it, with or without a report.
+    return (shift,) + run(shift, trust, seats, request.seconds, sources=sources, wake=wake, temp=temp) + (seats["driver"],)
 
 
 def driver_prompt(shift, value):

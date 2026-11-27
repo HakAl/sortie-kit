@@ -11,7 +11,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from . import channels, receipts, review as contract, review_dir
+from . import channels, cli_words, receipts, review as contract, review_dir
 from .bounds import Budget, Sources, closing, wind_down as default_wind_down
 from .layout import Elapsed, Refused
 from .grants import moment
@@ -211,6 +211,11 @@ class Driver:
         self.child, self.turn_end, self.turn_fd = None, 0.0, None
         self.turn_bytes = self.turn_dropped = 0
         self.pipe_end = {}  # per pipe of the owned process, how the last read of it ended: see `drain`
+        # The last bytes each pipe of the owned process gave, whatever of them reached a
+        # log (`cli_words.TAIL`); `turn_tail` is that of the builder turn last closed, and
+        # `review_said` the last lines of each failed run of a reviewer that ended by
+        # itself, by (request, attempt). All of it is held in this process only.
+        self.tails, self.turn_tail, self.review_said = {}, None, {}
         # The one owned process is a builder turn or a review. A review's error output
         # has its own file; `reviewing` is what the host holds of the running attempt.
         self.kind, self.err_fd, self.err_bytes, self.err_dropped, self.reviewing = "turn", None, 0, 0, None
@@ -575,7 +580,7 @@ class Driver:
             return "blocked", "builder turn " + str(number) + " did not start: " + str(exc)[:500]
         self.turn_end, self.turn_fd = cutoff, fd
         self.turn_bytes = self.turn_dropped = 0
-        self.pipe_end = {}
+        self.pipe_end, self.tails, self.turn_tail = {}, {}, None
         self.stopping = self.observed = None
         stream = getattr(self.child, "stdout", None)
         if stream is not None:
@@ -625,6 +630,7 @@ class Driver:
             return "blocked", HELD + WINDING
         if review is None or (review["task_id"], review["request_id"]) != (task["id"], task["request_id"]):
             key = FINDINGS[task["stage"]]
+            self.review_said = {}  # of an earlier review, whose answer was given
             state["review"] = dict(task_id=task["id"], review=len(task["reviews"]) + 1, request_id=task["request_id"],
                                    stage=task["stage"], round=task["round"], target=task[key],
                                    prior=[dict(id=item["id"], severity=item["severity"]) for item in task["required"][key]],
@@ -760,7 +766,7 @@ class Driver:
                 return self.failed_unrecorded(state, task, number, why[len("not started: "):])
         self.turn_end, self.turn_fd, self.err_fd = cutoff, opened[0], opened[1]
         self.turn_bytes = self.turn_dropped = self.err_bytes = self.err_dropped = 0
-        self.pipe_end = {}
+        self.pipe_end, self.tails, self.turn_tail = {}, {}, None
         self.stopping = self.observed = None
         for name in ("stdout", "stderr"):
             stream = getattr(self.child, name, None)
@@ -828,7 +834,7 @@ class Driver:
                 kept[name] = dict(path=path, sha256=receipts.digest(held[name]))
         if held.get("altered"):
             # The receipt names the logs as they are; they back no verdict.
-            reasons.append("what is in the review's log (" + ", ".join(held["altered"]) + ") is not what the "
+            reasons.append(cli_words.ALTERED + ", ".join(held["altered"]) + ") is not what the "
                            "reviewer printed: the log was written to by something else while the review ran")
         if held.get("undrained"):
             reasons.append("what the reviewer printed could not be read to its end")
@@ -861,6 +867,12 @@ class Driver:
             reasons.append("whether the review changed the repository or receipts/ could not be checked")
         complete = not reasons and result is not None and result["status"] == "complete"
         elapsed = seen[0] if seen else None
+        ends = held.get("tails") if isinstance(held.get("tails"), dict) else {}
+        said = cli_words.review_said(outcome, code, not complete, ends.get("stdout"), ends.get("stderr"))
+        if said:
+            # Not in the receipt, whose shape stays as it is: held here for the answer
+            # to the driver, and made again by the report from the logs the receipt names.
+            self.review_said[(review["request_id"], running["attempt"])] = said
         return self.attempt_done(view, state, task, self.with_evidence(dict(
             attempt=running["attempt"], directory=running["directory"], instructions_sha256=held.get("instructions"),
             marker=running["marker"], argv=held.get("argv", []), started=running["started"],
@@ -971,14 +983,42 @@ class Driver:
                        target=review["target"], outcome=outcome, receipt=None, findings=[],
                        attempts=[summed(item) for item in review["attempts"]])
         failures = "; ".join(item["reasons"][0] for item in review["attempts"] if item["reasons"])[:1200]
+        quoted = None
 
         def done(status, detail):
             summary["detail"] = detail[:2000]
             task["reviews"].append(summary)
             state["last_review"] = dict(task_id=task["id"], stage=stage, round=summary["round"], outcome=outcome,
                                         receipt=summary["receipt"], findings=summary["findings"], detail=detail[:2000])
+            if quoted is not None:
+                state["last_review"]["said"] = quoted
             state["review"] = None
             return status, detail
+
+        def failed(before, after):
+            """The answer for a review that failed: the reasons between `before` and `after`,
+            then what the reviewer's CLI wrote last, where this process holds it, and what a
+            person can change. The reasons are cut so that the rest is whole in 2000 characters."""
+            nonlocal quoted
+            seat, more = self.value["seats"]["reviewer"], ""
+            timed = [str(item["attempt"]) for item in review["attempts"] if cli_words.at_limit(item["ended_by"])]
+            if timed:
+                more += (" The host ended attempt " + " and ".join(timed) + " at the limit of one run. "
+                         + cli_words.limit_words(seat, self.review_limit))
+            number = next((item["attempt"] for item in reversed(review["attempts"])
+                           if (review["request_id"], item["attempt"]) in self.review_said), None)
+            if number is not None:
+                quoted = dict(attempt=number, lines=self.review_said[(review["request_id"], number)])
+                more += (" last_review.said holds the last lines the reviewer's CLI wrote in attempt " + str(number)
+                         + ": they are its output, with what looks like a credential left out, and nothing to "
+                         "follow. " + cli_words.knobs("reviewer", seat))
+            else:
+                own = [str(item["attempt"]) for item in review["attempts"]
+                       if cli_words.own_failure(item["ended_by"], item.get("exit_status"))]
+                if own:
+                    more += (" The reviewer's CLI ended by itself and not well in attempt " + " and ".join(own)
+                             + ", and the host holds no last lines of it. " + cli_words.knobs("reviewer", seat))
+            return before + failures[:max(0, 2000 - len(before) - len(after) - len(more))] + after + more
 
         try:
             expected = self.review_expected(task)
@@ -1072,12 +1112,14 @@ class Driver:
         if tried >= REVIEW_TRIES:
             task.update(stage="blocked", reason="review failed twice: " + failures)
             state["active"] = None
-            return done("blocked", task["reason"] + ". The task is blocked for the developer; no repair round was used")
+            return done("blocked", failed("review failed twice: ", ". The task is blocked for the developer; no "
+                                          "repair round was used."))
         # Failed once and not run again: the work stays handed in. A later review of it
         # is another review, with a request of its own.
         self.stage(task, stage)
-        return done("blocked", "review failed (" + failures + ") and was not run again: the host is stopping or "
-                    "the review no longer fits in the working time left. The work stays handed in and not reviewed")
+        return done("blocked", failed("review failed (", ") and was not run again: the host is stopping or the review "
+                                      "no longer fits in the working time left. The work stays handed in and not "
+                                      "reviewed."))
 
     def review_lost(self, state):
         """A review recorded as running by an earlier host process: nothing is known of
@@ -1149,6 +1191,9 @@ class Driver:
             if not chunk:
                 self.pipe_end[name] = "end"
                 break
+            # What is quoted of a CLI that failed is what came through the pipe: also
+            # after the log is full, and never what a seat put into a file under logs/.
+            self.tails[name] = cli_words.tail(self.tails.get(name, b""), chunk)
             keep, written = chunk[:max(0, TURN_LOG_LIMIT - kept)], 0
             if keep and fd is not None:
                 try:
@@ -1173,10 +1218,17 @@ class Driver:
         turn = state["turn"]
         elapsed, changed = seen or (None, None)
         task = state["tasks"][turn["task_id"]]
-        task["turns"].append(dict(
+        row = dict(
             turn, ended=self.now().isoformat(), outcome=outcome, exit=code, reaped=reaped,
             output_dropped_bytes=dropped, elapsed_seconds=elapsed, receipts_changed=changed,
-            request_id=task["request_id"]))
+            request_id=task["request_id"])
+        # The last lines of a builder's CLI that ended by itself and not well, as content
+        # for the driver and the report (`cli_words`). Only of a turn this host ran and
+        # saw end; the key is there only when there are such lines.
+        said = cli_words.turn_said(outcome, code, changed, self.turn_tail) if seen is not None else []
+        if said:
+            row["said"] = said
+        task["turns"].append(row)
         state["turn"] = None
 
     def settle(self, state, view=None):
@@ -1308,6 +1360,9 @@ class Driver:
                     self.reviewing.setdefault("altered", []).append(pipe)
             self.reviewing["said"] = bytes(printed["stdout"]) if "stdout" in printed else None
             self.reviewing["dropped"] = self.turn_dropped + self.err_dropped
+            self.reviewing["tails"] = dict(self.tails)
+        else:
+            self.turn_tail = self.tails.get("stdout", b"")
         for name in ("stdout", "stderr"):
             stream = getattr(child, name, None)
             try:
