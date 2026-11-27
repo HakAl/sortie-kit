@@ -57,7 +57,8 @@ def decoded(raw):
     try:
         return json.loads(raw, object_pairs_hook=pairs,
                           parse_constant=lambda _: (_ for _ in ()).throw(Refused("nonfinite JSON")))
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        # RecursionError: JSON that nests too deep, on a Python that does not read on.
         raise Refused("invalid grant/trust JSON") from exc
 
 

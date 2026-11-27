@@ -60,6 +60,10 @@ read-only or plan mode (see [what the built-in seats can reach](#what-the-built-
   of the template. A profile of your own may therefore name fixed options,
   including a settings file path; the toolkit signs that text, not the file's
   content.
+- `sortie doctor --agent NAME` looks at a profile of your own before any
+  shift: whether it loads, which file would be pinned, and whether its
+  flags are listed in the program's top help
+  ([before the first shift](machine.md#before-the-first-shift-sortie-doctor)).
 - `models` maps each model ID to its family. `default_model` may be left out or
   set to `null`; when given it must be listed.
 - `unlisted_family` is optional: the family of any model the profile does not

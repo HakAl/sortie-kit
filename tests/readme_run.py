@@ -110,7 +110,16 @@ for line in ("python3 -m venv .venv", ".venv/bin/python -m pip install ."):
        note="README: " + line + ", with .venv as this run's directory")
 assert Path(sh("command -v sortie", work).stdout.strip()) == venv / "bin/sortie"
 
-# Step 2: the key and the trust file by the one command, with ssh-keygen's own prompts
+# Step 2: the look before anything is made. This run's PATH has no agent CLI, so no
+# program of an agent is run: the report says that none was found, that this installation's
+# sortie is the first on the PATH, and that there is no key yet. It writes nothing.
+looked = sh(said("sortie doctor"), work, expected=1, note="before setup: exit 1 with what to do").stdout
+assert looked.startswith("sortie-kit ") and ", Python " in looked.splitlines()[0], looked
+assert "The sortie first on your PATH: " + str(venv / "bin/sortie") + " (this installation)." in looked, looked
+assert "- Run sortie setup once in your own terminal" in looked and "No agent CLI was found" in looked, looked
+assert not (home / ".config").exists()
+
+# Step 3: the key and the trust file by the one command, with ssh-keygen's own prompts
 # answered in a disposable terminal. Without a terminal the command refuses and makes nothing.
 secret = secrets.token_urlsafe(24).encode()  # never a user credential
 refused = sh(said("sortie setup"), work, expected=3, note="no terminal: refused").stderr
@@ -127,12 +136,15 @@ assert all(stat.S_IMODE((config / n).stat().st_mode) == 0o600 for n in ("signing
 kept = {p.name: p.read_bytes() for p in config.iterdir()}
 shown = tty("sortie setup", work, secret, prompts=0, note="a second run changes nothing")
 assert "Nothing was changed" in shown and kept == {p.name: p.read_bytes() for p in config.iterdir()}, shown
+looked = sh("sortie doctor", work, expected=1, note="after setup: the key and the trust file are found").stdout
+assert "and the trust file names this key." in looked and "Run sortie setup" not in looked, looked
+said("sortie doctor", WALK)
 # The by-hand way is on the grants page, as the README says; its lines are not run here.
 for line in ('mkdir -p "$HOME/.config/sortie-kit"', 'chmod 700 "$HOME/.config/sortie-kit"',
              'ssh-keygen -t ed25519 -C sortie-kit -f "$HOME/.config/sortie-kit/signing-key"', "sortie trust init"):
     said(line, GRANTS)
 
-# Step 3: a repository and the direction file from the README.
+# Step 4: a repository and the direction file from the README.
 repo.mkdir()
 sh("git init -q .", repo, note="not a README command: the throwaway repository")
 example = readme.split("named `direction.md`:\n\n   ```\n", 1)[1].split("   ```", 1)[0]
@@ -155,7 +167,7 @@ refused = tty("sortie start --repo project --direction direction.md --for 4h " +
 assert "review" in refused and not (repo / ".sortie").exists(), refused
 profile.write_text(json.dumps(whole))
 
-# Step 4: the start as the README gives it, every question answered in the terminal.
+# Step 5: the start as the README gives it, every question answered in the terminal.
 said("sortie start --repo PATH --direction direction.md")
 text = tty("sortie start --repo project --direction direction.md", work, secret, prompts=1, answers=[
     (b"Driver agent:", b"fixture"), (b"Driver model:", b"1"), (b"Builder agent:", b"fixture"),

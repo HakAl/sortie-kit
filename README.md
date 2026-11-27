@@ -86,7 +86,26 @@ what it does not claim.
    `. .venv/bin/activate` in the terminal you use, or write the path out.
    Another environment of your choice does as well.
 
-2. Make a signing key with a passphrase, and the trust file that names it.
+2. Look at what a start on this machine would find:
+
+   ```sh
+   sortie doctor
+   ```
+
+   It asks no model anything, writes nothing and signs nothing. It says
+   which agent CLIs are there, which file of each a shift would pin, what
+   version each prints, whether each flag sortie-kit passes is listed in
+   that CLI's own help, who would review, and whether a signing key and a
+   trust file are in place. It ends with a list of what to do and exits 1
+   while that list is not empty. Before the next step the list has the line
+   `Run sortie setup`, so an exit of 1 here is the expected first result.
+   The first line of its output begins `sortie-kit` and a version number. If
+   you see anything else, the `sortie` your shell runs is another program:
+   `type sortie` shows which, and `.venv/bin/sortie doctor` runs this one.
+   [Before the first shift](docs/machine.md#before-the-first-shift-sortie-doctor)
+   says what each line means and what it does not show.
+
+3. Make a signing key with a passphrase, and the trust file that names it.
    This is done once, in your own terminal:
 
    ```sh
@@ -99,7 +118,7 @@ what it does not claim.
    [shift grants](docs/grants.md#developer-setup-in-your-own-terminal) says
    what it does and how to do the same by hand.
 
-3. Write a direction file: plain text that says what you want done in this
+4. Write a direction file: plain text that says what you want done in this
    shift. It can live anywhere; the shift takes a copy. For example, in a file
    named `direction.md`:
 
@@ -108,7 +127,7 @@ what it does not claim.
    pyproject.toml and exits 0. Add a test for it.
    ```
 
-4. Start the shift from your own terminal, not from inside an agent:
+5. Start the shift from your own terminal, not from inside an agent:
 
    ```sh
    sortie start --repo PATH --direction direction.md

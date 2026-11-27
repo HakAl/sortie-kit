@@ -153,6 +153,7 @@ of its own, made for the trial, and never with the developer's key or trust
 file:
 
 ```sh
+sortie doctor
 mkdir -m 700 TRIAL
 HOME=TRIAL sortie setup
 sortie start --repo COPY --direction DIRECTION --for 30m \
@@ -161,6 +162,16 @@ sortie start --repo COPY --direction DIRECTION --for 30m \
   --key TRIAL/.config/sortie-kit/signing-key
 ```
 
+- `sortie doctor` comes first and costs nothing: it asks no model anything
+  and writes nothing. It says which agent CLIs a start would find here,
+  whether each flag sortie-kit passes them is listed in their own help, and
+  who would review. Run under the real home directory, as here, it also
+  looks for the developer's own key and trust file, reads them as a start
+  would and changes nothing; what it says of them is not about the trial's
+  two files, which a start is given by name. After the setup,
+  `HOME=TRIAL sortie doctor` looks at the trial's.
+  [Before the first shift](machine.md#before-the-first-shift-sortie-doctor)
+  says what its lines mean.
 - `TRIAL` is a new, empty directory outside the repository, written as a
   full path with no symbolic link in it. On macOS `/tmp` and the directory
   `mktemp` gives are behind one and are refused; a directory under the home

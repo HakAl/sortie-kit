@@ -86,7 +86,7 @@ def no_reviewer(repo, *, home=None):
                    "nothing was prepared or signed")
 
 
-def pick_reviewer(repo, builder, given=None, *, same_family=False, home=None, search=None):
+def pick_reviewer(repo, builder, given=None, *, same_family=False, home=None, search=None, pin=None):
     """The signed reviewer seat and how it was chosen.
 
     `builder` is the builder's seat or choice (its agent name and family).
@@ -97,6 +97,8 @@ def pick_reviewer(repo, builder, given=None, *, same_family=False, home=None, se
     the review is same-family. A same-family reviewer named by flag while one
     of another family is installed needs `same_family`. Returns (seat, choice)
     with choice one of `picked-other-family`, `picked-same-family`, `given`.
+    `pin` stands for `agents.pin_executable`; `sortie doctor` passes one that does
+    not read again a file it has hashed and that is still the same file.
     """
     from . import agents
     from .grants import family as canonical
@@ -126,7 +128,7 @@ def pick_reviewer(repo, builder, given=None, *, same_family=False, home=None, se
         raise Refused("--allow-same-family-review was given, but the builder and reviewer families differ ("
                       + mine + " and " + family + ")")
     try:
-        executable, _ = agents.pin_executable(profile, repo, search=search)
+        executable, _ = (pin or agents.pin_executable)(profile, repo, search=search)
     except Refused as exc:
         raise Refused("reviewer " + profile["value"]["name"] + ": " + str(exc)) from exc
     return agents.seat("reviewer", profile, model, family, executable), choice

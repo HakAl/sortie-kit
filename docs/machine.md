@@ -8,6 +8,111 @@ exception is in the arguments you sign: a built-in `codex` builder is started
 in Codex's workspace-write sandbox, because a builder must write and commit,
 and the built-in reviewers are started in their CLI's read-only or plan mode.
 
+## Before the first shift: sortie doctor
+
+`sortie doctor` says what a `sortie start` on this machine would find. It
+asks no model anything, writes nothing, signs nothing and makes no shift.
+It finds things out with the functions a start uses, and it is no gate: a
+start checks everything again.
+
+```sh
+sortie doctor
+sortie doctor --repo PATH --agent NAME
+```
+
+`--repo PATH` names the repository a shift would be for. A start requires
+five things to lie outside that repository: a profile of your own, each
+agent program, the key, the trust file and the signing tool. With `--repo`
+doctor holds them to that, as the start would. Without it nothing is held
+against any repository, the output says so, and a program that lies inside
+a repository is run like any other. `--agent NAME` also looks at your own
+profile of that name.
+
+What it prints, in order:
+
+- **What runs.** The version of sortie-kit, the Python, the directory the
+  package runs from, and which file is the first `sortie` on your `PATH`:
+  this installation's, or another file. A shell alias or function named
+  `sortie` is invisible to any program, and with one in place
+  `sortie doctor` never reaches sortie-kit at all. So when the output does
+  not begin with `sortie-kit` and a version number, ask your shell with
+  `type sortie`.
+- **`git` and `ssh-keygen`.** Found or not found. They are not run.
+- **One block for each built-in profile** (`claude`, `codex`, `agy`), and
+  for each profile of your own named with `--agent NAME`:
+  - whether the program is found. A built-in CLI you have not installed is
+    said and is nothing to do by itself; the missing program of a profile
+    you named is;
+  - the file a shift would pin, with the start of its hash and its size,
+    and whether it is a script. When `sortie start` would refuse the
+    program (writable by others, or inside the repository named with
+    `--repo`), the line says so in the start's words and **the program is
+    not run**;
+  - the first line the program prints for `--version`;
+  - for each form the profile has (driver, builder, builder with the
+    network on, reviewer), each flag the profile passes, with `listed` or
+    `not found in the help`. For the built-in `codex` profile, whose
+    headless forms begin with the subcommand `exec`, the help asked for is
+    that of `codex exec`, and the word `exec` is looked for in the top help.
+- **Who would review.** For each profile that could be the builder and each
+  model family it can build as, the reviewer the start would pick, by the
+  function the start picks with.
+- **The key and the trust file**, where a start looks without `--key` and
+  `--trust`: none, found, or what a start would refuse about them. The key
+  is not opened for signing and no passphrase is asked.
+- **To do before a shift**, one line for each thing that sets the exit code.
+
+What its words mean, and do not:
+
+- `listed` means the flag's name stands in the CLI's own help text as a
+  whole word. It does not show that the flag works, or that it still means
+  what it meant. The values passed with a flag (`workspace-write`, `plan`)
+  are not looked for. No line says more than that.
+- `not found in the help` means the name is not in that text. A start may
+  then fail at that seat; [agent profiles](agents.md) says how to write a
+  profile of your own with the flags your version takes.
+- `help not known` means the CLI gave no help that could be read: it ended
+  with an error, whose first line is shown, printed nothing, or did not
+  end. The help of a subcommand that the top help does not list is not
+  asked for, and the flags after it are not looked for. An error
+  text is never read as a help text.
+- Not shown at all: that a CLI is signed in, that a model answers, that you
+  know your key's passphrase, and what your own hooks and permission rules
+  will do to a seat ([your hooks](#your-hooks)). No CLI is asked to do any
+  work.
+
+How it runs the CLIs: each call is the pinned file with `--version` or
+`--help`, in the directory `/` and not in your repository, with no terminal,
+with your environment less the Git and SSH agent variables a seat does not
+get either, and for at most 10 seconds. The CLI is started by a small
+keeper of sortie-kit's own, the Python that runs `sortie`, in a session
+that is not yours; the keeper leads the process group and stays until the
+call is over, so that the group that is signalled is never another's. A
+call that does not end is stopped with what it started in that process
+group, named, and passed over, and what a call that did end left running in
+the group is stopped too; a process it put into a session of its own is
+out of reach and is left, and cannot hold the call. At most 256 KiB of a
+help are read: a flag that is not in that part of a longer help is `not
+known`, never `not found`. For the three built-in profiles that is seven calls,
+well under a second in all where this was written and about 80 seconds at
+the worst. A CLI may look for an update or
+write a log of its own when it is asked for its help; sortie-kit cannot
+prevent that. It was seen with one CLI: under a home directory that was
+empty, codex 0.172.0 made a lock file in a `.codex` directory there when
+it was asked for its help.
+
+A profile of your own is looked at only when you name it, because looking
+means running its program with `--version` and `--help`, and sortie-kit
+cannot know what a program of yours does with them. It is never run with
+the leading words of its forms: a flag that is not in its top help is then
+`not known from the top help`, which is said and is not held against it.
+
+Exit codes: 0 when nothing was found to do, 1 when the closing list has a
+line, 2 for wrong usage, 130 when interrupted. Something that could not be
+found out, such as a help that did not end, is a line of the list like
+anything else. On a machine with an agent CLI and no key yet, the list has
+exactly one line, to run `sortie setup`.
+
 ## The builder
 
 What the default `codex` builder is started to do, in plain words:
@@ -110,6 +215,9 @@ under a temporary directory. What that looks like: the driver says in your
 terminal that its command was blocked or denied, no builder turn starts, and
 the shift runs out with no task accepted. If you see it, end the shift with
 `sortie stop`, move the repository or change the hook, and start again.
+`sortie doctor` does not look at hooks and cannot show this: a hook acts on
+the driver's own session, in the repository, on the command with the shift's
+path in it, and nothing short of a shift is that.
 
 A hook that keeps an agent inside the project meets one more thing. The
 builder's temporary files go to

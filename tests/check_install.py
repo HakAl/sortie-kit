@@ -41,9 +41,15 @@ with tempfile.TemporaryDirectory(dir=scratch) as directory:
                GIT_TERMINAL_PROMPT="0", GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="core.hooksPath",
                GIT_CONFIG_VALUE_0=str(empty_hooks), GIT_CONFIG_KEY_1="commit.gpgsign", GIT_CONFIG_VALUE_1="false")
 
-    def run(argv, expected=0):
+    # The bound is there so that a command which hangs ends this check with its name,
+    # before the limit of whatever runs the check. It is no measure of speed: each of
+    # these commands answers in well under a second on a free machine, and a shared
+    # CI runner has taken more than 10 seconds over one of them (the report's own
+    # tests, started below as a whole test file), which failed a run with nothing
+    # wrong. So: two minutes for a command, and ten for the test file.
+    def run(argv, expected=0, limit=120, env=env):
         result = subprocess.run([str(a) for a in argv], cwd=work, env=env,
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=limit)
         assert result.returncode == expected, (argv, result.returncode, result.stdout, result.stderr)
         return result
 
@@ -51,6 +57,15 @@ with tempfile.TemporaryDirectory(dir=scratch) as directory:
     # One source for the version: the command, the package and the installed metadata agree.
     from importlib.metadata import version
     assert run([cli, "--version"]).stdout.strip() == sortie_kit.__version__ == version("sortie-kit")
+    # sortie doctor as installed, with a PATH that holds no agent CLI of this machine, so
+    # that no program of an agent is run: it finds none, and no key in the empty home.
+    import shutil
+    bare = os.pathsep.join([str(trap), "/usr/bin", "/bin"])
+    assert not any(shutil.which(name, path=bare) for name in ("claude", "codex", "agy")), "an agent CLI in " + bare
+    looked = run([cli, "doctor"], 1, env=dict(env, PATH=bare)).stdout
+    assert looked.startswith("sortie-kit " + sortie_kit.__version__ + ", Python "), looked
+    assert "No agent CLI was found" in looked and "- Run sortie setup once in your own terminal" in looked, looked
+    assert sorted(p.name for p in usual.parent.iterdir()) == ["sortie-kit"] and not any(usual.iterdir()), "doctor wrote"
     args = [cli, "start", "--repo", target, "--direction", target / "direction.md",
             "--for", "1m"]
     live = run(args, 2)
@@ -193,7 +208,8 @@ with tempfile.TemporaryDirectory(dir=scratch) as directory:
     assert hashlib.sha256((shift / "report.json").read_bytes()).hexdigest() in (shift / "report.md").read_text()
     assert templates.joinpath("closing-report.md").is_file()
     # The same retained-evidence fixtures exercise the installed package, not source imports.
-    run([sys.executable, "-B", "-m", "unittest", "discover", "-s", ROOT / "tests", "-p", "test_report.py", "-v"])
+    run([sys.executable, "-B", "-m", "unittest", "discover", "-s", ROOT / "tests", "-p", "test_report.py", "-v"],
+        limit=600)
     assert not execution_marker.exists(), "reporting executed a queued check"
     from sortie_kit.receipt_schema import asset, decode, validate_shape
     from sortie_kit.receipts import PHASES

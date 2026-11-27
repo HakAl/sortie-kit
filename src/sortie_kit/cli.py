@@ -150,6 +150,15 @@ def main(argv=None):
     waiting.add_argument("--shift", type=Path, required=True)
     waiting.add_argument("--for", dest="seconds", type=finite, default=540.0,
                          help="longest wait; at most 540s and never past the signed deadline")
+    looking = subs.add_parser("doctor", help="say what a start on this machine would find: the agent CLIs, the "
+                                             "file of each that would be pinned, its version, whether each flag a "
+                                             "profile passes is listed in the CLI's own help, who would review, and "
+                                             "the key and trust file; no model call, and nothing is written or signed")
+    looking.add_argument("--agent", action="append", default=[], metavar="NAME",
+                         help="also look at your own profile of this name, which runs its program with --version "
+                              "and --help; may be given more than once")
+    looking.add_argument("--repo", type=Path, help="the repository a shift would be for: what a start requires to "
+                                                   "lie outside it is held to that")
     subs.add_parser("setup", help="once, in your own terminal: make the signing key (ssh-keygen asks for its "
                                   "passphrase) and the trust file that sortie start looks for")
     trusting = subs.add_parser("trust", help="set up the trust file that names your signing key")
@@ -191,6 +200,27 @@ def main(argv=None):
     judged.add_argument("--expected", type=Path, required=True,
                         help='JSON with "marker", "target" and "prior", as the host held them for that run')
     args = parser.parse_args(argv)
+    if args.command == "doctor":
+        for name in args.agent:
+            if "=" in name or ":" in name:
+                looking.error("sortie doctor --agent takes the NAME of a profile alone, not ROLE=NAME[:MODEL] as "
+                              "sortie start does: " + safe(name))
+        repo = None
+        if args.repo is not None:
+            try:
+                repo = args.repo.resolve() if args.repo.is_dir() else None
+            except (OSError, ValueError) as exc:
+                looking.error("--repo " + safe(args.repo) + " cannot be looked at: " + safe(exc))
+            if repo is None:
+                looking.error("--repo " + safe(args.repo) + " is not a directory")
+        from . import doctor
+        try:
+            lines, code = doctor.run(args.agent, repo)
+        except KeyboardInterrupt:
+            print("sortie: interrupted", file=sys.stderr)
+            return 130
+        print("\n".join(safe(line) for line in lines))
+        return code
     if args.command == "review":
         from . import review
         from .layout import Refused

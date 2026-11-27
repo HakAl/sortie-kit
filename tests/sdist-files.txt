@@ -51,6 +51,7 @@ src/sortie_kit/data/templates/review-commit.md
 src/sortie_kit/data/templates/review-plan.md
 src/sortie_kit/data/templates/state.md
 src/sortie_kit/data/templates/tiger.md
+src/sortie_kit/doctor.py
 src/sortie_kit/entry.py
 src/sortie_kit/grants.py
 src/sortie_kit/guided.py
@@ -86,6 +87,7 @@ tests/sdist-files.txt
 tests/support.py
 tests/test_agents.py
 tests/test_bounds_supervisor.py
+tests/test_doctor.py
 tests/test_foreground.py
 tests/test_grants.py
 tests/test_guided.py
