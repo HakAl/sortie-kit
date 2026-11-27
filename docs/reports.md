@@ -147,6 +147,54 @@ clickable. If the readable part cannot be built from what was kept, a short
   whole entry is `null` when the kept grant has no reviewer seat (an earlier
   shift, whose reviews were the builder's reports, or a shift that was
   prepared and never signed) or could not be read.
+- `repeated_findings`: the findings that two or more reviews running
+  answered as not resolved. A review in a repair round is asked about the
+  earlier findings the review before it handed on and answers each as
+  resolved or not. A run is one finding of one task and stage (the plan or
+  the candidate, counted apart) answered as not resolved by reviews that
+  follow one another, and it is counted from two such answers on. The review
+  that raised a finding does not answer it, so a run of two is three reviews
+  that held it. The entry has `count`, `items` (those listed, at most 256,
+  each with `task`, `stage`, `id`, `severity`, `times`: how many reviews
+  running answered it so, `reviews`: the numbers of those reviews, each
+  `null` where the driver's record of the task gives none, `resolved` and
+  `task_accepted`), `more` (how many of the count are not listed) and
+  `unread` (review receipts that could not be read). `resolved` says how the
+  run ended: `true` when a later review answered the finding as resolved,
+  `false` when none did (the stage had no further review, or the finding
+  was no longer asked about), and `null` when the run ended at a review
+  receipt that could not be read, so that what that review answered, and
+  whether the run went on in it, is not known. A run that ended as resolved
+  on a task that went on to be accepted is still a fact of the shift and is
+  counted, with `resolved` true and `task_accepted` true. `report.md` gives
+  one line under Outcome, "Findings answered as not resolved by two or more
+  reviews running": the number, and for at most eight of them the task and
+  whether it was accepted, the stage, the finding with its severity, how
+  many reviews running and which, and how the run ended; `none` when there
+  is none; and with `unread` above zero never `none` but for how many
+  reviews it is not known. The reviews are named by number only when the
+  number of every one of them is known. Of those beyond the eight the line
+  says how many `report.json` lists and how many only the review receipts
+  have. It is computed from the review receipts, as
+  `open_findings` is, and not from the driver's record: an answer counts
+  only from a review whose last attempt completed and that ended in `ACCEPT`
+  or `CHANGES`, and only for an id the host asked that review about; a
+  review that failed is passed over and neither adds to a run nor ends it.
+  An `ACCEPT` may answer an earlier minor finding as not resolved, and that
+  answer counts like any other. What the line does not count or say: who was
+  right, the builder or the reviewer; a finding that a review raised again
+  under another id, which is another finding to the host; a finding no
+  longer handed on because a review left more than 64 to answer, whose run
+  ends there; and a run through a review receipt that cannot be read. The
+  host says the same to the driver while the shift runs, after each review
+  that ends in `CHANGES`, in the task's reason and `last_review.detail` (see
+  [the lifecycle](lifecycle.md)); that count is made from the driver's
+  record, and the two agree on every such review where the receipts can be
+  read. After an `ACCEPT` the host says nothing of it, since no repair
+  follows, and this entry still counts the answer. `count` is
+  `null`, and the line says "not known", in the same cases as for
+  `open_findings`, and the whole entry is `null` in the same cases. A report
+  kept from before this entry has no such key and no such line.
 - `requirements_unchecked`: what a brief asked for that the review which
   accepted the task answered `not_checked` (see
   [the review contract](review.md)). The host takes an `ACCEPT` beside such

@@ -195,7 +195,9 @@ while the review runs and then gives `last_review` with its `outcome`:
 - `CHANGES`: the stage is `repair_needed` and `last_review.detail` names the
   findings and the file under briefs/ that holds them. Send `repair`, then
   `continue`; the builder's next receipt answers each finding and the next
-  review checks those answers.
+  review checks those answers. When `detail` says that a finding was
+  answered as not resolved by reviews running, read "A finding the reviewer
+  repeats" below before you send `repair`.
 - `FAILED`: the reviewer gave nothing the host could take (it timed out,
   exited with an error, printed no valid answer, or something changed the
   repository while it ran). The host has already run it a second time. The
@@ -238,11 +240,40 @@ Do not give up a task that can still be put right. While
   this does not use a repair round and is open in round 3 too, within the
   limit of turns per task.
 
+A finding the reviewer repeats. A review in a repair round answers each
+earlier finding as resolved or not. When one is answered as not resolved for
+the second time running or more, the task's reason and `last_review.detail`
+end with "Answered as not resolved by reviews running:", the finding and
+the number of reviews. The host counts and does not judge who is right, and
+each further round costs a repair all the same. Before you send `repair`,
+read the findings file and the builder's last receipt:
+
+- When the builder's answer does not do what the finding asks, it is an
+  ordinary repair: `repair` with that in the reason, then `continue`.
+- When the builder's receipt shows the thing done and the reviewer says the
+  same again, a further repair with the same answer will not pass. With a
+  repair round left, send `repair` with a reason that tells the builder to
+  put the proof where the reviewer sees it: the reviewer is shown the brief,
+  the plan or the patch, the committed tree, the builder's answers to the
+  findings, and under `evidence/` the receipts the host took for the task
+  and the files they name, and nothing else of the shift.
+- When that gives the same result again, or there is no way to show more,
+  or no repair round is left, the task cannot be put right in this shift:
+  `set-aside` it with the developer as `next_owner` and a reason that names
+  the finding and what the builder and the reviewer each say. Then brief the
+  next task while the window allows, on the conditions given below for any
+  task set aside.
+
+You never waive a finding and never call it resolved; no command does
+either. That you hold the reviewer to be wrong goes in a `note` and in the
+reason of the `set-aside`, where the developer reads it.
+
 A task that cannot be put right in this shift is left with `set-aside`, at
 any stage but `accepted` and in any repair round, with no need to use the
 rounds up first: its builder cannot get a permission or a tool it needs, the
 checks the direction names fail on the untouched base for a cause outside
-the task, or an accepted plan, or work handed in that no repair can put
+the task, a finding the reviewer repeats that the builder has no further
+way to answer (see above), or an accepted plan, or work handed in that no repair can put
 right, breaks a line direction.md states (see the three cases at the top).
 Give the reason as you would tell the
 developer, and who has to act as `next_owner`. The task is then recorded as

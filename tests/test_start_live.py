@@ -632,6 +632,47 @@ class LiveStartTests(test_grants.GrantTests):
         self.assertIs(got["wake"], held)
         self.assertEqual((held.calls[0], held.calls.count("release")), ("acquire", 1))
 
+    def test_one_line_is_printed_just_before_the_driver_takes_the_terminal(self):
+        """In every new clone the first screen of a real driver was its CLI's own question
+        whether to trust the folder, with the answer that exits preselected: one Enter ended
+        a signed shift. The host cannot know what a CLI has trusted, so the line is always said."""
+        import contextlib
+        import io
+        from sortie_kit import launcher
+        out, seen = io.StringIO(), []
+
+        class Seat:
+            def __init__(inner, argv, *, cwd, env):
+                seen.append(out.getvalue())  # what the terminal held when the driver took it
+
+            def close(inner):
+                return "stopped by the host"
+
+        with contextlib.redirect_stdout(out):
+            launcher.run(self.shift, self.trust, self.seats, 60, launch=Seat, serve=lambda admission, **options: (0, "served"))
+        self.assertEqual(seen, [launcher.DRIVER_QUESTION + "\n"])
+        self.assertEqual(out.getvalue().count(launcher.DRIVER_QUESTION), 1)
+        said = launcher.DRIVER_QUESTION
+        self.assertNotIn("\n", said)
+        for part in ("a question of its own", "trust the folder", "Read it before pressing Enter",
+                     "preselected answer can be the one that declines and exits", "a driver that exits ends the shift"):
+            self.assertIn(part, said)
+
+    def test_no_line_on_the_drivers_first_question_when_no_driver_is_started(self):
+        import contextlib
+        import io
+        from sortie_kit import launcher
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            def refused(inner, role, prompt):
+                raise ValueError("driver agent executable replaced or rewritten after admission")
+            from unittest.mock import patch
+            with patch.object(grants.Admission, "seat_start", refused), self.assertRaises(Exception):
+                launcher.run(self.shift, self.trust, self.seats, 60,
+                             launch=lambda *a, **k: self.fail("no driver may start"),
+                             serve=lambda *a, **k: self.fail("the host loop must not start"))
+        self.assertNotIn(launcher.DRIVER_QUESTION, out.getvalue())
+
     def test_the_maker_of_the_temporary_directory_is_handed_to_the_host_loop_and_makes_nothing_before_it(self):
         from sortie_kit import launcher
         got, made = {}, []

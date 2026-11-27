@@ -43,7 +43,13 @@ steps before it.
   its own first, such as whether you trust the folder. That prompt is the
   CLI's, not the toolkit's. Read it before pressing Enter: its preselected
   answer can be the one that declines and exits (Claude Code's is "No,
-  exit"; the one seen from `agy` was "Yes, I trust this folder"), and a driver that exits ends the shift. The driver begins once you
+  exit"; the one seen from `agy` was "Yes, I trust this folder"), and a driver that exits ends the shift.
+  The last line `sortie start` prints before the driver's CLI takes the
+  terminal says this, on every start whether or not a question follows:
+  "sortie: the driver's CLI starts now. Its first screen may be a question
+  of its own, such as whether you trust the folder. Read it before pressing
+  Enter: its preselected answer can be the one that declines and exits, and
+  a driver that exits ends the shift." The driver begins once you
   accept. The builder
   runs without a window, one turn at a time, when the driver asks for it. The
   reviewer runs without a window too: the host starts it when the builder
@@ -116,6 +122,7 @@ has needed a person in the shifts run so far:
   line left something out, and your key's passphrase at signing.
 - **The driver CLI's own first question,** such as whether you trust the
   folder. Its preselected answer can be the one that declines and exits.
+  `sortie start` prints a line saying so just before it.
 - **A driver CLI that your own configuration makes ask before it runs a
   command.** It asks in the terminal, and with nobody there it waits. The
   builder and the reviewer are given no terminal input, and each turn and
@@ -189,7 +196,8 @@ sortie start --repo COPY --direction DIRECTION --for 30m \
 - After the signature the driver's CLI may first ask a question of its own,
   such as whether to trust the folder, and its preselected answer can be the
   one that declines and exits (Claude Code's is "No, exit"), which ends the
-  shift: the agent reads the question and answers it, as
+  shift; the line `sortie start` prints just before the driver starts says
+  so: the agent reads the question and answers it, as
   [the driver in your terminal](#what-you-will-see) says.
 - The agent says in what it reports that the shift was signed by the agent
   with a key made for the trial. Such a shift shows what the tool does. It

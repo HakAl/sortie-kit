@@ -797,6 +797,26 @@ any receipt, and moves the task:
   review is given those answers and says for each earlier finding whether it
   is resolved. An `ACCEPT` that leaves an earlier blocker or major finding
   unresolved is a failed attempt, not an accept.
+  When a review that ends in `CHANGES` answers an earlier finding as not
+  resolved and the review before it at that stage did so too, the task's
+  reason and `last_review.detail` say so after the list of findings:
+  `Answered as not resolved by reviews running: F1 (3 reviews)`, each such
+  finding with the number of reviews that answered it so one after another,
+  this one included. The answer then no longer ends in "send repair": it
+  points to what `driver.md` says under "A finding the reviewer repeats".
+  These are words only. No field of the state, no receipt and nothing
+  signed changed for them: the host counts from what it already keeps, the
+  list each earlier review of the task handed on, since the next review is
+  asked about exactly that list and an answer whose new finding takes an id
+  it was asked about is refused. A review that failed or was lost answered
+  nothing and neither adds to the number nor ends it. The host does not
+  judge who is right between the builder and the reviewer, a repair round is
+  used for each such review as for any other, and no command lets a driver
+  contest a finding or call it resolved: a driver that could strike a
+  finding would be a way round the review. The host says nothing of the
+  kind after an `ACCEPT`, which may leave a minor finding unresolved and
+  asks for no repair; the report counts that answer (see
+  [reports](reports.md), `repeated_findings`).
 - A candidate review answers the brief requirement by requirement (see
   [the review contract](review.md)). An `ACCEPT` beside a requirement
   answered `not_met` is a failed attempt, not an accept, and so is an answer

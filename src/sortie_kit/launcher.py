@@ -342,6 +342,13 @@ def report_read(shift):
     return ("final", raw) if final else ("preliminary", None)
 
 
+# Printed just before the driver's CLI takes the terminal, always: the host cannot know
+# what a CLI has been told to trust. A driver is only ever started interactive, here.
+DRIVER_QUESTION = ("sortie: the driver's CLI starts now. Its first screen may be a question of its own, such as "
+                   "whether you trust the folder. Read it before pressing Enter: its preselected answer can be the "
+                   "one that declines and exits, and a driver that exits ends the shift.")
+
+
 def run(shift, trust, seats, seconds, *, sources=None, poll=0.5, launch=None, serve=None, wake=None, temp=None):
     """Admit the signed shift, start the interactive driver in this terminal and
     serve the seats until the shift ends. Returns (code, reason, driver process,
@@ -386,6 +393,10 @@ def run(shift, trust, seats, seconds, *, sources=None, poll=0.5, launch=None, se
                 # changes hands. A stop noted after it closes the driver right below.
                 if interrupted:
                     raise Refused(early)
+                try:
+                    print(DRIVER_QUESTION, flush=True)
+                except (OSError, ValueError):
+                    pass  # a terminal that takes no line is no reason to start no driver
                 seat.append(launch(argv, cwd=cwd, env=env))
                 if interrupted:
                     raise Refused("foreground host interrupted while starting the driver")

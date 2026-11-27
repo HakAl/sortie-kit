@@ -56,6 +56,8 @@ PREPARE_ROOM = 3 * WRITE_RESERVE + 1  # seconds under the lock without which no 
 RECEIPT_ENTRIES = 1024  # entries of receipts/ the host will walk for one observation
 LOST = ("a builder turn from an earlier host process has no recorded end; "
         "its process may still run. No new turn; check for it by hand")
+# What a CHANGES review adds to the task's reason for earlier findings answered so two or more times running.
+REPEATED = "Answered as not resolved by reviews running: "
 LOST_REVIEW = ("a review from an earlier host process has no recorded end; "
                "its process may still run. No new turn or review; check for it by hand")
 HELD = ("wind-down: the review's signed limit does not fit in the working time left, so none is started; "
@@ -872,6 +874,36 @@ class Driver:
         items.sort(key=lambda item: SEVERITY[item["severity"]])
         return items[:OUTSTANDING], len(items[OUTSTANDING:])
 
+    @staticmethod
+    def repeated(reviews, stage, unresolved):
+        """Which of the earlier findings a CHANGES review has just answered as not
+        resolved were answered so by the review before it too: `(id, number)` for each
+        with two or more reviews running, the one that just ended included.
+
+        `reviews` are the task's review summaries before this one, and `unresolved` the
+        ids this review answered as not resolved. Nothing more is kept for the count:
+        a review's summary lists what it handed on, the next review is asked about
+        exactly that, and an answer whose new finding takes an id it was asked about
+        is refused. So an id in the summaries of reviews running at one stage is one
+        finding: the first of them raised it and each one after answered it as not
+        resolved. A review that failed or was lost answered nothing and is passed
+        over; a review without the id, or an ACCEPT, ends the count."""
+        before = [row for row in reviews if isinstance(row, dict) and row.get("stage") == stage
+                  and row.get("outcome") in ("CHANGES", "ACCEPT")]
+        found = []
+        for identity in unresolved:
+            held = 0
+            for row in reversed(before):
+                listed = row.get("findings") if isinstance(row.get("findings"), list) else []
+                if row["outcome"] != "CHANGES" or not any(isinstance(item, dict) and item.get("id") == identity
+                                                          for item in listed):
+                    break
+                held += 1
+            # The earliest of those raised it; the review that just ended makes up for that one.
+            if held >= 2:
+                found.append((identity, held))
+        return found
+
     def finalize(self, view, state, task, outcome):
         """The review is over: the host writes its receipt from what it ran and read,
         has it checked and recorded as any receipt is, and moves the task. ACCEPT
@@ -978,8 +1010,19 @@ class Driver:
             task["findings"][key] = dict(path=kept, sha256=receipts.digest(raw))
             task["required"][key] = list(summary["findings"])
             names = ", ".join(item["id"] + " (" + item["severity"] + ")" for item in items)[:800]
+            # From the review's own answers and not from `items`, which is cut at OUTSTANDING.
+            again = self.repeated(task["reviews"], stage, [answer["id"] for answer in
+                                                           review["attempts"][-1]["record"]["prior"]
+                                                           if not answer["resolved"]])
+            carried = ", ".join(identity + " (" + str(number) + " reviews)" for identity, number in again)[:400]
             task.update(stage="repair_needed", repair_from=stage,
-                        reason="the reviewer asks for changes to the " + what + ": " + names)
+                        reason="the reviewer asks for changes to the " + what + ": " + names
+                               + (". " + REPEATED + carried if carried else ""))
+            if carried:
+                return done("blocked", task["reason"] + ". The findings are in " + kept + ". A repair that gives the "
+                            "same answer to such a finding is unlikely to pass: before `repair`, read the findings "
+                            "file and the builder's last receipt, and what driver.md says under \"A finding the "
+                            "reviewer repeats\"")
             return done("blocked", task["reason"] + ". The findings are in " + kept + "; send repair, and the "
                         "builder's next receipt answers each of them")
         if tried >= REVIEW_TRIES:

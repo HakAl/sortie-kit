@@ -130,6 +130,9 @@ what it does not claim.
   repository, expect a question of its own first, such as whether you trust
   the folder. Read it before pressing Enter: its preselected answer can be
   the one that declines and exits, and a driver that exits ends the shift.
+  `sortie start` prints one line saying so just before the driver's CLI
+  takes the terminal, on every start, since it cannot know what a CLI has
+  been told to trust.
   Once the driver has begun it is told not to wait for you: it decides within
   the direction, and the report lists what it decided on its own or could not
   settle. [What still needs you](docs/walkthrough.md#what-still-needs-you)

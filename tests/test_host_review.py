@@ -1857,7 +1857,351 @@ class RequirementsReportTests(ReviewFixture):
         self.assertEqual((whole["count"], whole["unread"]), (1, 0))
 
 
-for _class in (HostReviewReportTests, OpenFindingsTests, RequirementsReportTests):
+class RepeatedFindingTests(ReviewFixture):
+    """A finding the reviewer answers as not resolved review after review: on a real shift one
+    was carried through four reviews of a plan, each round cost a repair, and neither the
+    host's answer nor the Outcome of the report said that it was the same finding again."""
+    LINE = "- Findings answered as not resolved by two or more reviews running: "
+
+    def again(self, new):
+        """One more repair round whose review says CHANGES, leaves every earlier finding
+        not resolved and raises one new finding."""
+        self.assertEqual(self.action("repair", reason="Address the findings", next_owner="builder")["status"], "advanced")
+        self.assertEqual(self.hand_in()["status"], "advanced")
+        return self.end_review(changes=True, new=new, resolved=False)
+
+    def hand_in(self):
+        task = self.task_state()
+        target = ({"kind": "plan", "artifact": self.artifact("briefs/plan.md", "Plan\n")} if task["stage"] == "plan"
+                  else {"kind": "commit", "commit": self.candidate})
+        _, path = self.phase_receipt(target=target)
+        return self.action("consume", receipt=path, target=target)
+
+    def report(self):
+        self.driver.finish("the fixture ends the shift")
+        return (self.shift / "report.md").read_text(), decode((self.shift / "report.json").read_bytes())
+
+    def outcome(self, text):
+        return text.split("## Outcome")[1].split("## What was asked")[0]
+
+    def test_the_host_names_a_finding_answered_as_not_resolved_by_reviews_running(self):
+        self.reach_review()
+        state = self.end_review(changes=True)  # review 1 raises N1
+        self.assertNotIn("reviews running", state["last_review"]["detail"])
+        state = self.again("M")  # review 2: N1 not resolved once, M2 new
+        task = state["tasks"]["task"]
+        self.assertNotIn("reviews running", state["last_review"]["detail"] + task["reason"])
+        self.assertIn("send repair", state["last_review"]["detail"])
+        state = self.again("P")  # review 3: N1 for the second time running, M2 for the first
+        task, last = state["tasks"]["task"], state["last_review"]
+        said = "Answered as not resolved by reviews running: N1 (2 reviews)"
+        self.assertIn(said, task["reason"])
+        self.assertIn(said, last["detail"])
+        self.assertNotIn("M2 (1", last["detail"])
+        self.assertIn(task["findings"]["candidate"]["path"], last["detail"])
+        self.assertIn('what driver.md says under "A finding the reviewer repeats"', last["detail"])
+        self.assertNotIn("; send repair,", last["detail"])  # no longer the one thing to do
+        # Words only: the state has the fields it had.
+        self.assertEqual(set(last), {"task_id", "stage", "round", "outcome", "receipt", "findings", "detail"})
+        self.assertEqual(set(task["reviews"][-1]), set(task["reviews"][0]))
+        state = self.again("Q")  # review 4
+        self.assertIn("Answered as not resolved by reviews running: N1 (3 reviews), M2 (2 reviews)",
+                      state["tasks"]["task"]["reason"])
+        text, doc = self.report()
+        found = doc["repeated_findings"]
+        self.assertEqual((found["count"], found["more"], found["unread"]), (2, 0, 0))
+        self.assertEqual(found["items"], [
+            dict(task="task", stage="review", id="N1", severity="major", times=3, reviews=[2, 3, 4], resolved=False,
+                 task_accepted=False),
+            dict(task="task", stage="review", id="M2", severity="major", times=2, reviews=[3, 4], resolved=False,
+                 task_accepted=False)])
+        self.assertIn(self.LINE + "2. Task task (not accepted), review of the candidate, N1 (major): 3 reviews running "
+                      "(reviews 2, 3 and 4), and no later review answered it as resolved; task task (not accepted), "
+                      "review of the candidate, M2 (major): 2 reviews running (reviews 3 and 4), and no later review "
+                      "answered it as resolved.\n", self.outcome(text))
+        self.assertEqual(doc["issues"], [])
+
+    def test_a_finding_carried_and_then_resolved_on_an_accepted_task_is_counted_and_said_as_that(self):
+        self.reach_review()
+        self.end_review(changes=True)
+        self.again("M")
+        state = self.again("P")
+        self.assertEqual(self.action("repair", reason="Address the findings", next_owner="builder")["status"], "advanced")
+        self.assertEqual(self.hand_in()["status"], "advanced")
+        state = self.end_review()  # ACCEPT, every earlier finding resolved
+        self.assertEqual(state["last_review"]["outcome"], "ACCEPT")
+        self.assertNotIn("reviews running", state["last_review"]["detail"])
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        self.assertEqual(doc["repeated_findings"]["items"], [dict(
+            task="task", stage="review", id="N1", severity="major", times=2, reviews=[2, 3], resolved=True,
+            task_accepted=True)])
+        self.assertIn(self.LINE + "1. Task task (accepted), review of the candidate, N1 (major): 2 reviews running "
+                      "(reviews 2 and 3), and a later review answered it as resolved.\n", self.outcome(text))
+
+    def test_one_review_that_leaves_a_finding_unresolved_is_not_a_repeat_and_the_line_says_none(self):
+        self.reach_review()
+        self.end_review(changes=True)
+        self.again("M")
+        text, doc = self.report()
+        self.assertEqual(doc["repeated_findings"], dict(count=0, items=[], more=0, unread=0))
+        self.assertIn(self.LINE + "none.\n", self.outcome(text))
+
+    def test_the_plan_stage_and_the_candidate_stage_are_counted_apart(self):
+        self.begin("feature")
+        while self.task_state()["stage"] != "plan_review":
+            self.assertEqual(self.consume_phase()["status"], "advanced")
+        if self.state()["review"] is None:
+            self.assertEqual(self.action("continue")["status"], "recorded")
+        self.end_review(changes=True)
+        self.again("M")
+        state = self.again("P")
+        self.assertIn("Answered as not resolved by reviews running: N1 (2 reviews)", state["tasks"]["task"]["reason"])
+        self.assertIn("changes to the plan", state["tasks"]["task"]["reason"])
+        text, doc = self.report()
+        self.assertEqual([(i["stage"], i["id"], i["times"]) for i in doc["repeated_findings"]["items"]],
+                         [("plan_review", "N1", 2)])
+        self.assertIn("review of the plan, N1 (major): 2 reviews running", self.outcome(text))
+
+    def test_the_hosts_count_passes_over_a_review_that_answered_nothing_and_ends_at_a_gap(self):
+        count = Driver.repeated
+        row = lambda outcome, *ids, stage="review": dict(stage=stage, outcome=outcome,
+                                                          findings=[dict(id=i, severity="major") for i in ids])
+        self.assertEqual(count([row("CHANGES", "F1")], "review", ["F1"]), [])  # raised, then not resolved once
+        self.assertEqual(count([row("CHANGES", "F1"), row("CHANGES", "F1", "F2")], "review", ["F1", "F2"]), [("F1", 2)])
+        # A review that failed or was lost answered nothing: it neither adds nor ends the count.
+        self.assertEqual(count([row("CHANGES", "F1"), row("FAILED"), row("CHANGES", "F1"), row("lost")], "review", ["F1"]),
+                         [("F1", 2)])
+        # A review without the id ends it: an id resolved and used again later is another finding.
+        self.assertEqual(count([row("CHANGES", "F1"), row("CHANGES", "F1"), row("CHANGES", "F2"), row("CHANGES", "F1")],
+                               "review", ["F1"]), [])
+        # Reviews of the other stage are not counted, and an ACCEPT ends the count.
+        self.assertEqual(count([row("CHANGES", "F1", stage="plan_review"), row("CHANGES", "F1", stage="plan_review"),
+                                row("CHANGES", "F1")], "review", ["F1"]), [])
+        self.assertEqual(count([row("CHANGES", "F1"), row("CHANGES", "F1"), row("ACCEPT"), row("CHANGES", "F1")],
+                               "review", ["F1"]), [])
+        # A kept state may hold anything where a list belongs.
+        self.assertEqual(count([3, dict(stage="review", outcome="CHANGES", findings="x"), row("CHANGES", "F1")],
+                               "review", ["F1"]), [])
+
+    def test_the_count_rests_on_the_rule_that_a_new_finding_never_takes_an_id_the_review_was_asked_about(self):
+        """An id in the findings of reviews running is one finding carried, because the host
+        refuses an answer whose new finding uses an id it was asked about, resolved or not."""
+        from sortie_kit import review
+        target = {"kind": "commit", "commit": self.candidate}
+        prior = [dict(id="F1", severity="major")]
+        for resolved in (True, False):
+            with self.subTest(resolved=resolved):
+                record = self.record(target, "CHANGES", [self.finding("F1")],
+                                     [dict(id="F1", resolved=resolved, reason="Checked.")])
+                with self.assertRaisesRegex(Refused, "reuses the id of an earlier one"):
+                    review.validate(record, target, prior)
+        told = review.instructions("commit", target, "0" * 16, prior)
+        self.assertIn("Give new findings new ids.", told)
+        self.assertIn('"id": "F2"', told)  # the example finding avoids the id asked about
+        self.assertNotIn('"id": "F1",\n      "severity"', told)
+
+    def answer(self, verdict, findings=(), resolved=()):
+        """The review that runs now ends with this verdict, these new findings, and every
+        earlier finding not resolved but those named."""
+        review = self.state()["review"]
+        record = self.record(review["target"], verdict, findings, [
+            dict(id=item["id"], resolved=item["id"] in resolved, reason="Checked.") for item in review["prior"]])
+        return self.end_review(self.said(record, review["running"]["marker"]))
+
+    def repair(self):
+        self.assertEqual(self.action("repair", reason="Address the findings", next_owner="builder")["status"], "advanced")
+        self.assertEqual(self.hand_in()["status"], "advanced")
+
+    def test_a_repeated_finding_cut_from_what_is_handed_on_is_still_named_by_the_host(self):
+        """The count is of the review's own answers: a finding answered again that falls
+        behind the cut of what the builder is handed is named all the same, as the report
+        counts it from the receipts."""
+        from sortie_kit import lifecycle
+        self.reach_review()
+        self.answer("CHANGES", [self.finding("F1", "minor")])
+        self.repair()
+        self.answer("CHANGES")  # F1 not resolved, nothing new
+        self.repair()
+        with mock.patch.object(lifecycle, "OUTSTANDING", 1):
+            state = self.answer("CHANGES", [self.finding("Z9", "major")])
+        task = state["tasks"]["task"]
+        self.assertEqual(task["required"]["candidate"], [dict(id="Z9", severity="major")])  # F1 is behind the cut
+        self.assertIn("Answered as not resolved by reviews running: F1 (2 reviews)", task["reason"])
+        text, doc = self.report()
+        self.assertEqual([(i["id"], i["times"], i["reviews"]) for i in doc["repeated_findings"]["items"]], [("F1", 2, [2, 3])])
+
+    def test_an_accept_that_leaves_a_minor_finding_unresolved_again_is_counted_and_the_host_says_nothing(self):
+        self.reach_review()
+        self.answer("CHANGES", [self.finding("F1", "minor"), self.finding("F2", "major")])
+        self.repair()
+        self.answer("CHANGES", resolved=["F2"])  # F1 not resolved for the first time
+        self.repair()
+        state = self.answer("ACCEPT")  # F1, a minor one, not resolved for the second time running
+        last, task = state["last_review"], state["tasks"]["task"]
+        self.assertEqual((last["outcome"], task["stage"]), ("ACCEPT", "accepted"))
+        self.assertNotIn("reviews running", last["detail"] + task["reason"])
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        self.assertEqual(doc["repeated_findings"]["items"], [dict(
+            task="task", stage="review", id="F1", severity="minor", times=2, reviews=[2, 3], resolved=False,
+            task_accepted=True)])
+        self.assertEqual([(i["id"], i["earlier"]) for i in doc["open_findings"]["items"]], [("F1", True)])
+
+    def test_driver_md_says_what_to_do_with_a_finding_the_reviewer_repeats(self):
+        from importlib.resources import files
+        from sortie_kit.lifecycle import REPEATED
+        text = " ".join(files("sortie_kit").joinpath("data/templates/driver.md").read_text().split())
+        part = text.split("A finding the reviewer repeats.")[1].split("`finish` before wind-down")[0]
+        for words in (
+                REPEATED.strip(),  # the host's own words, so that a driver finds the rule from the answer
+                "read the findings file and the builder's last receipt",
+                "it is an ordinary repair",
+                "put the proof where the reviewer sees it",
+                "`set-aside` it with the developer as `next_owner`",
+                "names the finding and what the builder and the reviewer each say",
+                "You never waive a finding and never call it resolved",
+                "in a `note`"):
+            self.assertIn(words, part)
+        # And the bullet for CHANGES sends a driver there.
+        changes = text.split("- `CHANGES`: the stage is `repair_needed`")[1].split("- `FAILED`")[0]
+        self.assertIn("A finding the reviewer repeats", changes)
+
+    def test_which_answers_make_a_run_in_the_report(self):
+        from sortie_kit import report
+        def kept(stage, number, outcome, findings=(), answered=(), status="complete", asked=None):
+            last = dict(status=status, findings=[dict(id=i, severity="minor", location="a.py:1", claim="c") for i in findings],
+                        findings_count=len(findings), prior=[dict(id=i, resolved=r, reason="why") for i, r in answered])
+            return dict(reference=dict(path="receipts/r%d.json" % number, stage=stage, round=0,
+                                       status="satisfied" if outcome == "ACCEPT" else "blocked"),
+                        integrity="matched", role="reviewer",
+                        data=dict(outcome=outcome, attempts=[last], prior=[
+                            dict(id=i, severity="minor") for i in (asked if asked is not None else [a for a, _ in answered])]))
+        def found(*receipts, numbered=True, accepted=False):
+            reviews = [dict(review=n + 1, receipt=dict(path=item["reference"]["path"])) for n, item in enumerate(receipts)]
+            return report.repeated_findings([dict(id="task", receipts=list(receipts), reviews=reviews if numbered else [],
+                                                  acceptance=report.ACCEPTED if accepted else "acceptance missing")])
+        runs = lambda *receipts, **kw: [(i["id"], i["times"], i["reviews"], i["resolved"]) for i in found(*receipts, **kw)["items"]]
+        no, yes = [("F1", False)], [("F1", True)]
+        first = kept("review", 1, "CHANGES", ["F1"])
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no)), [])
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no), kept("review", 3, "CHANGES", answered=no)),
+                         [("F1", 2, [2, 3], False)])
+        # A later review that answers it as resolved ends the run, which is still counted.
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no), kept("review", 3, "CHANGES", answered=no),
+                              kept("review", 4, "ACCEPT", answered=yes)), [("F1", 2, [2, 3], True)])
+        # An ACCEPT may leave a minor one unresolved: that answer counts as any other.
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no), kept("review", 3, "ACCEPT", answered=no)),
+                         [("F1", 2, [2, 3], False)])
+        # A review whose last attempt did not complete, or that ended in neither verdict, answered nothing.
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no),
+                              kept("review", 3, "FAILED", answered=no, status="failed"),
+                              kept("review", 4, "FAILED", answered=no),
+                              kept("review", 5, "CHANGES", answered=no)), [("F1", 2, [2, 5], False)])
+        # An answer nobody asked for, and a review of the other stage, are not part of a run.
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no),
+                              kept("review", 3, "CHANGES", answered=no, asked=[])), [])
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no),
+                              kept("plan_review", 3, "CHANGES", answered=no)), [])
+        # No longer asked about (cut from what was handed on): the run ends there, not resolved.
+        self.assertEqual(runs(first, kept("review", 2, "CHANGES", answered=no), kept("review", 3, "CHANGES", answered=no),
+                              kept("review", 4, "CHANGES", ["F9"]), kept("review", 5, "CHANGES", answered=no, asked=["F1"])),
+                         [("F1", 2, [2, 3], False)])
+        # A receipt that cannot be read ends the run: whether it was resolved after is not known, and a
+        # run of one before it is not said to be none.
+        lost = kept("review", 4, "ACCEPT", answered=yes)
+        lost["integrity"] = "damaged"
+        seen = found(first, kept("review", 2, "CHANGES", answered=no), kept("review", 3, "CHANGES", answered=no), lost)
+        self.assertEqual(([(i["id"], i["times"], i["resolved"]) for i in seen["items"]], seen["unread"]),
+                         ([("F1", 2, None)], 1))
+        line = report.repeated_words(seen)
+        self.assertIn("whether a later review answered it as resolved is not known", line)
+        self.assertIn("Not known for 1 review whose receipt could not be read.", line)
+        middle = kept("review", 2, "CHANGES", answered=no)
+        middle["data"] = None
+        seen = found(first, middle, kept("review", 3, "CHANGES", answered=no))
+        self.assertEqual((seen["count"], seen["unread"]), (0, 1))
+        self.assertIn("not known for 1 review whose receipt could not be read; none in the others.",
+                      report.repeated_words(seen))
+        # Without the numbers of the reviews the line names none of them, and never `None`.
+        bare = found(first, kept("review", 2, "CHANGES", answered=no), kept("review", 3, "CHANGES", answered=no),
+                     numbered=False, accepted=True)
+        self.assertEqual((bare["items"][0]["reviews"], bare["items"][0]["task_accepted"]), ([None, None], True))
+        line = report.repeated_words(bare)
+        self.assertIn("Task task (accepted), review of the candidate, F1 (minor): 2 reviews running, and no later", line)
+        self.assertNotIn("None", line)
+        # With one number missing none is named: a part of them would read as all of them.
+        part = report.repeated_words(dict(count=1, more=0, unread=0, items=[dict(
+            task="task", stage="review", id="F1", severity="minor", times=3, reviews=[2, 3, None], resolved=False,
+            task_accepted=False)]))
+        self.assertIn("F1 (minor): 3 reviews running, and no later", part)
+        self.assertNotIn("(reviews", part)
+        # A review with no receipt on record gives no number to a receipt without a path.
+        odd = kept("review", 2, "CHANGES", answered=no)
+        again = kept("review", 3, "CHANGES", answered=no)
+        del odd["reference"]["path"], again["reference"]["path"]
+        seen = report.repeated_findings([dict(id="task", receipts=[first, odd, again],
+                                              reviews=[dict(review=7, receipt=None)])])
+        self.assertEqual(seen["items"][0]["reviews"], [None, None])
+        # More runs than report.json keeps: the line does not say that report.json lists them.
+        with mock.patch.object(report, "OPEN_KEPT", 1):
+            cut = report.repeated_findings([dict(id="task", reviews=[], receipts=[
+                kept("review", 1, "CHANGES", ["F1", "F2", "F3"]),
+                kept("review", 2, "CHANGES", answered=[("F1", False), ("F2", False), ("F3", False)]),
+                kept("review", 3, "CHANGES", answered=[("F1", False), ("F2", False), ("F3", False)])])])
+        self.assertEqual((cut["count"], len(cut["items"]), cut["more"]), (3, 1, 2))
+        line = report.repeated_words(cut)
+        self.assertIn(": 3. Task task", line)
+        self.assertTrue(line.endswith("; and 2 more, which report.json does not list: the review receipts have them."), line)
+        many = dict(count=12, more=2, unread=0, items=[dict(task="t", stage="review", id="F%d" % n, severity="minor",
+                                                            times=2, reviews=[2, 3], resolved=False, task_accepted=False)
+                                                       for n in range(10)])
+        self.assertTrue(report.repeated_words(many).endswith(
+            "; and 4 more: report.json lists 2 of them and the review receipts have the other 2."))
+        self.assertTrue(report.repeated_words(dict(count=2, more=2, unread=0, items=[])).endswith(
+            ": 2, which report.json does not list: the review receipts have them."))
+        # More than the line names are counted with a pointer; a reviewer's or driver's words stay inert.
+        many = dict(count=11, more=0, unread=0, items=[dict(task="t<b>", stage="review", id="F%d" % n, severity="minor",
+                                                            times=2, reviews=[2, 3], resolved=False, task_accepted=False)
+                                                       for n in range(11)])
+        line = report.repeated_words(many)
+        self.assertIn("; and 3 more, which report.json lists.", line)
+        self.assertNotIn("<b>", line)
+        # Not known, a kept report from before the number, and a shift without a reviewer seat.
+        self.assertIn("not known, because the tasks could not be read in full", report.repeated_words(report.REPEATED_UNKNOWN))
+        self.assertIsNone(report.repeated_words(None))
+        # Shapes that are not what the host writes are passed over, never raised on.
+        self.assertEqual(report.repeated_findings([dict(id="task", receipts=[dict(reference=None), 3, dict(
+            reference=dict(stage="review", status="blocked"), role="reviewer", integrity="matched",
+            data=dict(outcome="CHANGES", attempts="x", prior="y"))], reviews="x"), "task"])["count"], 0)
+
+    def test_the_number_is_not_known_when_the_tasks_were_not_read_and_absent_from_an_earlier_report(self):
+        from unittest.mock import patch
+        from sortie_kit import receipts, report
+        self.reach_review()
+        self.end_review(changes=True)
+        self.again("M")
+        self.again("P")
+        text, doc = self.report()
+        self.assertEqual(doc["repeated_findings"]["count"], 1)
+        # A kept report from before the number existed says nothing of it.
+        earlier = {k: v for k, v in doc.items() if k != "repeated_findings"}
+        self.assertNotIn(self.LINE, report.markdown(earlier, "0" * 64).decode())
+        self.assertIn(self.LINE + "1. ", report.markdown(doc, "0" * 64).decode())
+        size = max((self.shift / name).stat().st_size for name in ("report.json", "report.md"))
+        with patch.object(receipts, "DOCUMENT_LIMIT", size - 1):
+            cut = report.finalize(self.shift, 3)
+        self.assertEqual(cut["repeated_findings"], dict(count=None, items=[], more=0, unread=0))
+        path = self.shift / "driver-state.json"
+        path.chmod(0o600)
+        path.write_bytes(b"{not json")
+        doc = report.finalize(self.shift, 3)
+        self.assertEqual(doc["repeated_findings"], dict(count=None, items=[], more=0, unread=0))
+        self.assertIn(self.LINE + "not known, because the tasks could not be read in full or were left out of this "
+                      "report.\n", (self.shift / "report.md").read_text())
+
+
+for _class in (HostReviewReportTests, OpenFindingsTests, RequirementsReportTests, RepeatedFindingTests):
     for _name in tuple(vars(test_lifecycle.LifecycleFixture)):
         if _name.startswith("test_"):
             setattr(_class, _name, None)

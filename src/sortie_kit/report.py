@@ -630,6 +630,8 @@ def extract(view, *, previous=None, reader=None):
     # Without every task of the driver's record there is no saying how many: not known, which is not none.
     result['open_findings'] = (None if not hosted(get(result['grant'], 'review_policy'))
                                else open_findings(result['tasks']) if summarized else dict(OPEN_UNKNOWN, items=[]))
+    result['repeated_findings'] = (None if not hosted(get(result['grant'], 'review_policy'))
+                                   else repeated_findings(result['tasks']) if summarized else dict(REPEATED_UNKNOWN, items=[]))
     result['requirements_unchecked'] = (None if not hosted(get(result['grant'], 'review_policy'))
                                         else requirements_unchecked(result['tasks']) if summarized else dict(REQUIREMENTS_UNKNOWN, items=[]))
     result['requirements_disclosed'] = (None if not hosted(get(result['grant'], 'review_policy'))
@@ -920,6 +922,135 @@ def open_words(found):
     if not total and not lost:
         out.append('None: no review that ended in ACCEPT left a finding open.')
     return line, out + ['']
+
+
+REPEATED_UNKNOWN = dict(count=None, items=[], more=0, unread=0)  # the tasks could not be read in full
+REPEATED_HEAD = 'Findings answered as not resolved by two or more reviews running'  # the Outcome line
+REPEATED_NAMED = 8  # of them the Outcome line names; report.json lists up to OPEN_KEPT
+
+
+def repeated_findings(tasks):
+    """Findings that two or more reviews running answered as not resolved.
+
+    A review in a repair round is asked about the earlier findings the review
+    before it handed on, and answers each as resolved or not. A run is one
+    finding of one task and stage answered as not resolved by reviews that
+    follow one another. It is counted from two answers on: the review that
+    raised a finding does not answer it, so two answers are three reviews
+    that held it. The run ends when a later review answers the finding as
+    resolved (`resolved` true), when it is no longer asked about or the stage
+    has no further review (false), or at a review receipt that cannot be read
+    (null: what that review answered, and whether the run went on in it, is
+    not known). A review whose last attempt did not complete, or that ended
+    in neither ACCEPT nor CHANGES, answered nothing and is passed over. An
+    answer counts only for an id the host asked that review about.
+
+    This is read from the review receipts, as `open_findings` is, and not from
+    the driver's record. Who was right, the builder or the reviewer, is not
+    judged. A run that ended as resolved on a task that went on to be accepted
+    is counted like any other, with `resolved` and `task_accepted` saying so.
+
+    Returns `count`, `items` (at most OPEN_KEPT, each with `task`, `stage`,
+    `id`, `severity`, `times`, `reviews`: the numbers of the reviews that
+    answered, null where the driver's record gives none, `resolved` and
+    `task_accepted`), `more` and `unread`: review receipts that could not be
+    read, so that a run through one of them is not known."""
+    items, unread = [], 0
+    listed = lambda node, name: [x for x in get(node, name) or [] if isinstance(x, dict)] if isinstance(get(node, name), list) else []
+    readable = lambda row: row.get('integrity') == 'matched' and isinstance(row.get('data'), dict)
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        rows = [r for r in (task.get('receipts') if isinstance(task.get('receipts'), list) else [])
+                if isinstance(r, dict) and get(r, 'reference', 'stage') in ('plan_review', 'review')
+                and (r.get('role') == 'reviewer' or not readable(r))]
+        numbers = {get(r, 'receipt', 'path'): get(r, 'review')
+                   for r in (task.get('reviews') if isinstance(task.get('reviews'), list) else []) if isinstance(r, dict)}
+        numbers = {path: number for path, number in numbers.items() if isinstance(path, str)}  # none for a review without a receipt
+        task_accepted = task.get('acceptance') == ACCEPTED
+        for stage in ('plan_review', 'review'):
+            runs, done = {}, []
+
+            def end(identity, resolved):
+                run = runs.pop(identity)
+                if run['times'] >= 2:
+                    done.append(dict(run, resolved=resolved))
+
+            for row in rows:
+                if get(row, 'reference', 'stage') != stage:
+                    continue
+                if not readable(row):
+                    unread += 1
+                    for identity in list(runs):
+                        end(identity, None)
+                    continue
+                attempts = listed(row['data'], 'attempts')
+                last = attempts[-1] if attempts else {}
+                if get(last, 'status') != 'complete' or get(row, 'data', 'outcome') not in ('ACCEPT', 'CHANGES'):
+                    continue
+                severity = {get(p, 'id'): get(p, 'severity') for p in listed(row['data'], 'prior')
+                            if isinstance(get(p, 'id'), str)}
+                answers = {get(p, 'id'): get(p, 'resolved') for p in listed(last, 'prior')
+                           if get(p, 'id') in severity and type(get(p, 'resolved')) is bool}
+                number = numbers.get(get(row, 'reference', 'path'))
+                for identity in list(runs):
+                    if answers.get(identity) is not False:
+                        end(identity, answers.get(identity) is True)
+                for identity, resolved in answers.items():
+                    if resolved is False:
+                        run = runs.setdefault(identity, dict(task=task.get('id'), stage=stage, id=identity,
+                                                             severity=severity[identity], times=0, reviews=[]))
+                        run['times'] += 1
+                        run['reviews'].append(number if type(number) is int else None)
+            for identity in list(runs):
+                end(identity, False)
+            items += [dict(run, task_accepted=task_accepted) for run in done]
+    return dict(count=len(items), items=items[:OPEN_KEPT], more=max(0, len(items) - OPEN_KEPT), unread=unread)
+
+
+def repeated_words(found):
+    """The Outcome line for the findings answered as not resolved by reviews running, or
+    None for a shift whose reviews were not the host's and for a kept report from
+    before the number existed."""
+    if not isinstance(found, dict):
+        return None
+    line = '- ' + REPEATED_HEAD + ': '
+    if type(found.get('count')) is not int:
+        return line + 'not known, because the tasks could not be read in full or were left out of this report.'
+    number = lambda name: found.get(name) if type(found.get(name)) is int and found.get(name) > 0 else 0
+    items = [f for f in found.get('items') or [] if isinstance(f, dict)] if isinstance(found.get('items'), list) else []
+    more = number('more')  # beyond what report.json keeps
+    total, unread = len(items) + more, number('unread')
+    lost = (count_words(unread, 'review') + ' whose receipt could not be read') if unread else ''
+    if not total:
+        return line + ('not known for ' + lost + '; none in the others.' if lost else 'none.')
+    stage = {'plan_review': 'review of the plan', 'review': 'review of the candidate'}
+    later = {True: 'a later review answered it as resolved', False: 'no later review answered it as resolved'}
+
+    def one(f):
+        which = f.get('reviews') if isinstance(f.get('reviews'), list) else []
+        named = [str(n) for n in which if type(n) is int]
+        # The reviews are named only when the number of every one is known.
+        numbers = (' (reviews ' + ', '.join(named[:-1]) + ' and ' + named[-1] + ')'
+                   if len(named) > 1 and len(named) == len(which) else '')
+        accepted = {True: ' (accepted)', False: ' (not accepted)'}.get(f.get('task_accepted'), '')
+        return ('task ' + plain(f.get('task'), 60) + accepted + ', ' + stage.get(f.get('stage'), plain(f.get('stage'), 20))
+                + ', ' + plain(f.get('id'), 40) + ' (' + plain(f.get('severity'), 20) + '): ' + plain(f.get('times'), 6)
+                + ' reviews running' + numbers + ', and '
+                + later.get(f.get('resolved'), 'whether a later review answered it as resolved is not known'))
+
+    said = '; '.join(one(f) for f in items[:REPEATED_NAMED])
+    listed = len(items) - min(len(items), REPEATED_NAMED)  # in report.json and not named in this line
+    absent = 'which report.json does not list: the review receipts have them'
+    if not said:
+        tail = ', ' + absent
+    else:
+        tail = ('. ' + said[:1].upper() + said[1:]
+                + ('; and ' + str(listed) + ' more, which report.json lists' if listed and not more
+                   else '; and ' + str(more) + ' more, ' + absent if more and not listed
+                   else '; and ' + str(listed + more) + ' more: report.json lists ' + str(listed) + ' of them and the '
+                        'review receipts have the other ' + str(more) if more else ''))
+    return line + str(total) + tail + '.' + (' Not known for ' + lost + '.' if lost else '')
 
 
 REQUIREMENTS_UNKNOWN = dict(count=None, items=[], more=0, unasked=0, unread=0)  # the tasks could not be read in full
@@ -2033,6 +2164,8 @@ def markdown(doc, sha):
     out += temp_words(window)
     left_open, open_section = open_words(doc.get('open_findings'))
     out += [left_open] if left_open else []
+    again = repeated_words(doc.get('repeated_findings'))
+    out += [again] if again else []
     unchecked = unchecked_words(doc.get('requirements_unchecked'))
     out += [unchecked] if unchecked else []
     told = disclosed_words(doc.get('requirements_disclosed'), doc.get('requirements_unchecked')) if unchecked else None
@@ -2191,6 +2324,8 @@ def write(view, *, previous=None):
         doc['head_unaccepted'] = doc['stop'] = None  # of tasks and of an ending this form no longer holds
         if doc.get('open_findings') is not None:
             doc['open_findings'] = dict(OPEN_UNKNOWN, items=[])  # the tasks are dropped, and a list of their findings with them
+        if doc.get('repeated_findings') is not None:
+            doc['repeated_findings'] = dict(REPEATED_UNKNOWN, items=[])  # and the runs of answers their reviews made
         if doc.get('requirements_unchecked') is not None:
             doc['requirements_unchecked'] = dict(REQUIREMENTS_UNKNOWN, items=[])  # and what their reviews left unchecked
         if doc.get('requirements_disclosed') is not None:
