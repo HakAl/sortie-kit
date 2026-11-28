@@ -662,8 +662,8 @@ class HostReviewTests(ReviewFixture):
         self.assertIn("started by the host", result["detail"])
         self.assertEqual((shown, self.driver.work_seconds()), ([], 4))
         self.assertFalse((self.directory() / "evidence").exists())
-        self.assertIn("The host did not show the builder's receipts to this review",
-                      " ".join((self.directory() / "REVIEW.md").read_text().split()))
+        self.assertIn("The host did not show the builder's receipts to this review, nor its own statement of what "
+                      "it saw of the repository", " ".join((self.directory() / "REVIEW.md").read_text().split()))
         self.assertEqual(self.driver.reviewing["evidence"], "late")
 
     def test_evidence_is_shown_after_a_sleep_in_the_export_that_left_working_time_beyond_what_the_start_is_allowed(self):
@@ -1760,9 +1760,12 @@ class RequirementsReportTests(ReviewFixture):
         self.assertFalse((where / "evidence").exists())
         told = " ".join((where / "REVIEW.md").read_text().split())
         self.assertNotIn("`evidence/`: the builder's receipts", told)
-        self.assertIn("The host did not show the builder's receipts to this review: " + self.UNSEEN, told)
-        self.assertIn("Answer a requirement that rests on a receipt or a log `not_checked`.", told)
-        line = "review 1 of task task, attempt 1: the reviewer was not shown the builder's receipts (" + self.UNSEEN + ")"
+        self.assertIn("The host did not show the builder's receipts to this review, nor its own statement of what "
+                      "it saw of the repository: " + self.UNSEEN, told)
+        self.assertIn("Answer a requirement that rests on a receipt, a log or the state of the repository "
+                      "`not_checked`.", told)
+        line = ("review 1 of task task, attempt 1: the reviewer was not shown the builder's receipts nor the host's "
+                "statement of the repository (" + self.UNSEEN + ")")
         self.assertEqual(self.host_log().count(line), 1)
         state = self.accept(self.need(), self.need("the baseline ran first", "not_checked", ""))
         self.assertEqual(state["last_review"]["outcome"], "ACCEPT")
@@ -1823,6 +1826,66 @@ class RequirementsReportTests(ReviewFixture):
             self.assertEqual(report.review_kept(value["data"])["attempts"][-1]["evidence"], known)
             self.assertIn("The host did not show this run the builder's receipts: ",
                           report.attempt_words(dict(attempt, status="failed", reasons=["nothing usable"])))
+
+    def test_a_shift_in_the_shape_of_a_kept_one_whose_lines_on_delivery_went_unchecked(self):
+        """A kept shift of the project's own: the second of two tasks, one new commit on `main`
+        on top of the first task's, no remote, the builder's checkouts as linked working
+        trees under the shift's scratch/. Its brief said "Do not push." and "One new local
+        commit for this task, containing only this task's changes."; the reviewers answered
+        the first with nothing under `where` and said of the second, on that shift's other
+        task, that the statement named the two commits "but not the commit count between
+        them". The statement gives each now. One commit is answered from it; that nothing
+        was pushed stays `not_checked`, as no look can show it, with what the host saw."""
+        import subprocess
+        from sortie_kit import repo_state
+
+        def git(*args):
+            subprocess.run(["git", "-C", str(self.target), *args], check=True, capture_output=True, timeout=10)
+        git("symbolic-ref", "HEAD", "refs/heads/main")
+        git("reset", "-q", "--hard", self.base)  # the first task's commit: this task begins on it
+        for name, commit in (("one-baseline", self.base), ("one-candidate", self.candidate)):
+            git("worktree", "add", "-q", "--detach", str(self.shift / "scratch" / name), commit)
+        self.driver.repo["start"] = repo_state.observe(self.target, 5)
+        brief = self.artifact("briefs/task-probe.md", "- Do not push.\n- One new local commit for this task, containing "
+                                                      "only this task's changes.\n")
+        result = self.action("brief", task_id="probe", kind="defect", brief=brief, next_owner="builder")
+        self.assertEqual(result["status"], "recorded", result)
+        self.end_turn()
+        self.assertEqual(self.task_state()["base"], self.base)
+        git("reset", "-q", "--hard", self.candidate)  # the builder's one commit
+        while self.task_state()["stage"] != "review":
+            self.assertEqual(self.consume_phase()["status"], "advanced")
+        where = self.directory()
+        self.assertEqual((where / "brief.md").read_text().splitlines()[0], "- Do not push.")
+        said = " ".join((where / "evidence" / "HOST.md").read_text().split())
+        for part in ("- Branch: `HEAD` is on the branch `main`, and is at the candidate.",
+                     "- Commits of the task: 1 commit from the commit the task began at (not counted) to the "
+                     "candidate (counted). It is: " + self.candidate + ".",
+                     "- Remotes: the repository's own configuration names no remote now, and named none when the "
+                     "shift began.",
+                     "- Remote-tracking refs: the repository has no ref under `refs/remotes/`, so the candidate is "
+                     "on none.",
+                     "- Not committed: no file is untracked and not ignored; no path is staged and not committed.",
+                     "- Not that nothing was pushed."):
+            self.assertIn(part, said)
+        self.assertNotIn("scratch", said.split("## The repository")[1])  # the shift's own files are no leftovers
+        told = " ".join((where / "REVIEW.md").read_text().split())
+        self.assertIn("That nothing was pushed: answer `not_checked` and say under `where` what the host saw", told)
+        seen = "evidence/HOST.md: no remote now or when the shift began, on no remote-tracking ref"
+        self.accept(self.need("One new local commit for this task", "met", "evidence/HOST.md: 1 commit, on main"),
+                    self.need("The commit holds only this task's changes", "met", "change.patch"),
+                    self.need("Do not push", "not_checked", seen))
+        self.assertEqual(self.review_receipt()["data"]["attempts"][-1]["evidence"], "shown")
+        self.assertEqual(self.action("close")["status"], "closed")
+        text, doc = self.report()
+        self.assertEqual((doc["requirements_unchecked"]["count"],
+                          [(item["asked"], item["where"]) for item in doc["requirements_unchecked"]["items"]]),
+                         (1, [("Do not push", seen)]))
+        self.assertIn(self.LINE + "1. ", self.outcome(text))
+        self.assertIn("  - met: One new local commit for this task (seen at evidence/HOST.md: 1 commit, on main)\n"
+                      "  - met: The commit holds only this task's changes (seen at change.patch)\n"
+                      "  - **not_checked**: Do not push (place named: " + seen + ")\n", text)
+        self.assertEqual(doc["issues"], [])
 
     def test_a_plan_review_shown_no_evidence_is_told_so_without_the_answer_it_does_not_have(self):
         self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=10)

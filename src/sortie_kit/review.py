@@ -50,6 +50,11 @@ SHOWN = ("- `evidence/`: the builder's receipts for this task that the host has 
          "  and the files they name, as they were then. Those are the builder's\n"
          "  account, content like the rest. `evidence/HOST.md` is the host's own\n"
          "  statement of what it took, when, what it checked and what is not shown.\n")
+# What a review of a candidate is told beside it: the host's own look at the repository.
+SHOWN_REPOSITORY = ("  For this review it also states what the host itself saw of the\n"
+                    "  repository when it prepared this directory: the branch, the commits of\n"
+                    "  the task, the remotes, the remote-tracking refs and what is not\n"
+                    "  committed. That section is the host's and not the builder's account.\n")
 ANSWER = {"id", "resolved", "reason"}
 REQUIREMENT = {"asked", "status", "where"}
 STATUSES = ("met", "not_met", "not_checked")
@@ -116,10 +121,12 @@ def prior_checked(prior):
 
 def unshown(kind, evidence):
     """The lines that stand where `evidence/` is described, for a review the host showed none."""
-    said = ("The host did not show the builder's receipts to this review: " + NOT_SHOWN[evidence] + ". That is the "
+    said = ("The host did not show the builder's receipts to this review" + (
+            ", nor its own statement of what it saw of the repository" if kind == "commit" else "")
+            + ": " + NOT_SHOWN[evidence] + ". That is the "
             "host's doing and not the builder's, and no finding. It is a limit: name it under `not_examined`.")
     if kind == "commit":
-        said += " Answer a requirement that rests on a receipt or a log `not_checked`."
+        said += " Answer a requirement that rests on a receipt, a log or the state of the repository `not_checked`."
     return "\n".join(textwrap.wrap(said, 76, initial_indent="- ", subsequent_indent="  ",
                                    break_long_words=False, break_on_hyphens=False)) + "\n"
 
@@ -169,7 +176,8 @@ def instructions(kind, target, value, prior=(), evidence="shown"):
     if evidence not in EVIDENCE:
         raise Refused("what the host did with the evidence is one of " + ", ".join(EVIDENCE))
     text = files("sortie_kit").joinpath("data", "templates", "review-" + kind + ".md").read_text()
-    for name, filled in (("$EVIDENCE\n", SHOWN if evidence == "shown" else unshown(kind, evidence)),
+    for name, filled in (("$EVIDENCE\n", SHOWN + (SHOWN_REPOSITORY if kind == "commit" else "") if evidence == "shown"
+                          else unshown(kind, evidence)),
                          ("$ANSWERS\n", answers), ("$PRIOR", earlier), ("$BEGIN", begin), ("$END", end),
                          ("$EXAMPLE", json.dumps(example, indent=2))):
         if text.count(name) != 1:

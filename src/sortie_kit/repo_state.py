@@ -1,6 +1,6 @@
 """What the target repository looks like to Git: HEAD and what is uncommitted.
 
-An observation for the closeout, taken by the host when a shift begins and
+Two looks. `observe` is an observation for the closeout, taken by the host when a shift begins and
 when it ends, so that what a stopped builder turn left behind is named. Git is
 asked only for listings of its index and of untracked files, which read no
 tracked file's content. Nothing the repository itself configures is run: no
@@ -22,10 +22,17 @@ lead a read outside. Git still reads the repository's configuration and what
 that includes, and its ignore rules, as it does for any command there: those
 decide which untracked names are listed and can hide one, so an empty listing
 is not proof that nothing was left.
+
+`candidate_look` is the host's look for a review of a candidate commit: the
+branch, the commits of the task, the remotes of the repository's own
+configuration, the remote-tracking refs that hold the candidate and what is
+not committed. It is held to the same rules, reads no tracked file and gives
+no URL beyond a scheme and a host.
 """
 import hashlib
 import json
 import os
+import re
 import select
 import stat
 import subprocess
@@ -39,6 +46,27 @@ OUTPUT = 8 * 1024 * 1024  # bytes read from one Git command
 TRACKED = 50000  # index entries looked at
 HASHED = 8 * 1024 * 1024  # a touched file larger than this is called changed without being read
 REAPING = 0.2  # seconds of a command's time kept for stopping and collecting it
+REMOTES = 20  # remotes named from one look
+NAME_SHOWN = 200  # characters of a remote's name kept in a look
+URLS = 4  # values of one remote's `url` or `pushurl` given in a look for a review
+LOOK_SECONDS = 3.0  # the most a look for a review takes
+COMMITS = 1000  # commits of a task counted
+COMMITS_SHOWN = 20
+UNTRACKED = 1000  # untracked files counted
+UNTRACKED_SHOWN = 50
+TRACKING = 20  # remote-tracking refs that hold a candidate, named
+FACTS = ("branch", "commits", "remotes", "uncommitted", "tracking")  # in the order they are looked at
+# Why a fact is not in a look for a review.
+LATE = "the time for preparing this review did not allow it"
+SILENT = "Git did not answer"
+CUT = "the listing was cut at a bound"
+MOVED = "the repository's Git directory is not the one seen when the shift began"
+REMOTE_KEY = r"^remote\."  # every key of every remote: Git takes a section for a remote whatever it sets
+HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+PORT = re.compile(r"[0-9]{1,5}\Z")
+SCHEMES = ("http", "https", "ssh", "git")
+NO_HOST = frozenset(SCHEMES + ("file", "ftp", "ftps"))  # before a single colon these are a scheme, not a host
+UNLISTED = ("added", "changed", "unsure")
 DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
@@ -263,6 +291,7 @@ def observe(repo, seconds=3.0, clock=time.monotonic, since=None, git_dir=None, c
                               if head else listing("ls-files", "-z", "--cached"))
         rows, cut_tracked = tracked(root, index, since, end, clock)
         linked = worktrees(lambda *args: git(bound, *args, common=shared), root)
+        named = remotes(lambda *args: git(bound, *args, common=shared))
     except (OSError, ValueError, TimeoutError) as exc:
         return dict(error=str(exc)[:200])
     rows |= {(os.fsdecode(name), state) for state, names in (("untracked", untracked), ("staged", staged)) for name in names}
@@ -278,6 +307,313 @@ def observe(repo, seconds=3.0, clock=time.monotonic, since=None, git_dir=None, c
                 git_dir=found, common_dir=shared, pinned=pinned)
     if linked:
         seen["worktrees"] = linked  # only when there are some: an older reader sees what it knew
+    if named is not None:
+        # Always when Git answered, also with none: a look without the key did not read them.
+        seen["remotes"] = [dict(name=name[:NAME_SHOWN], sha256=digest(named[name])) for name in sorted(named)[:REMOTES]]
+        if len(named) > REMOTES:
+            seen["remotes_truncated"] = True
+    return seen
+
+
+def remotes(git):
+    """The remotes of the repository's own configuration: `{name: [(key, value), ...]}`
+    with key `url` or `pushurl`, in Git's order; None when Git did not answer in the
+    time left. A remote is every section `remote "NAME"` that sets anything, also one
+    with a fetch rule and no URL, whose list is then empty: Git lists such a remote and
+    pushes to it under its name. The values of its other keys are not kept, and a key of
+    the section `remote` itself (`remote.pushDefault`, with one dot) names no remote. A
+    section with an empty name (`remote..url`, with two) is not that: Git takes each of
+    its keys for a remote named by a dot and the key, `.url`, and so does this. Advisory
+    and last in `observe`, as `worktrees` is. Neither the user's nor the machine's
+    configuration is read, nor a file the repository's configuration includes: a
+    builder can write an include, and what it points at is not the repository's."""
+    try:
+        out, code, cut = git("config", "--local", "--no-includes", "--null", "--get-regexp", REMOTE_KEY)
+    except (OSError, ValueError, TimeoutError):
+        return None
+    if cut or code not in (0, 1) or (code == 1 and out):
+        return None  # 1 with no output is Git's answer when no key matches
+    found = {}
+    for entry in entries(out, False):
+        key, _, value = entry.partition(b"\n")
+        key = os.fsdecode(key)
+        name, dot, kind = key[len("remote."):].rpartition(".")
+        if not key.startswith("remote.") or not kind:
+            return None  # not what was asked for: the output was not read as it was meant
+        if not dot:
+            continue  # `remote.KEY`, a setting for all remotes
+        if not name:
+            name = "." + kind  # `remote..KEY`: the name Git itself gives the remote of that key
+        urls = found.setdefault(name, [])
+        if kind in ("url", "pushurl"):
+            urls.append((kind, os.fsdecode(value)))
+    return found
+
+
+def digest(values):
+    """One SHA-256 for a remote's configured URLs, so that a look can say that they
+    changed without keeping them: its `url` values and then its `pushurl` values,
+    each with its key, so that a URL moved from one key to the other is a change.
+    It is for comparing and protects nothing: a URL that holds a short secret can be
+    found from it by trying, so a look is kept where the shift's other records are."""
+    mark = hashlib.sha256()
+    for kind in ("url", "pushurl"):
+        for key, value in values:
+            if key == kind:
+                mark.update(kind.encode() + b"\0" + os.fsencode(value) + b"\0")
+    return mark.hexdigest()
+
+
+def url_shown(value):
+    """The scheme and the host of a remote's URL, or None when it is not shown.
+
+    Only for `http`, `https`, `ssh` and `git` URLs and for the form `host:path` (a
+    colon before any slash, and no `://`), which is given as `ssh://host`. A user
+    and a password, the path, a query and a fragment are never given: a path can
+    hold a token, and no mask by shape can promise to find one. A path on this
+    machine, a `file://` URL, a remote helper (`name::address`) and a host that is
+    not made of letters, digits, dots and hyphens are not shown at all; nor is what
+    stands before a single colon when it is the name of a scheme (`file:/path`) or
+    one letter (a drive)."""
+    if not isinstance(value, str) or not value or len(value) > 4096:
+        return None
+    head, found, rest = value.partition("://")
+    if found:
+        scheme = head.lower()
+        if scheme not in SCHEMES:
+            return None  # also `helper::https`, whose scheme is not one of them
+        place = re.split(r"[/?#]", rest, maxsplit=1)[0].rpartition("@")[2]
+        host, colon, port = place.partition(":")
+        if not HOST.fullmatch(host) or (colon and not PORT.fullmatch(port)):
+            return None
+        return scheme + "://" + host + colon + port
+    host, colon, path = value.partition(":")
+    if not colon or "/" in host or path.startswith(":") or "@" in path:
+        return None  # a path, a remote helper, or a colon inside what stands before the host
+    host = host.rpartition("@")[2]
+    if len(host) < 2 or host.lower() in NO_HOST:
+        return None
+    return "ssh://" + host if HOST.fullmatch(host) else None
+
+
+def candidate_look(repo, base, commit, seconds, room=None, start=None, clock=time.monotonic):
+    """What the host itself sees of the repository when it prepares the review of the
+    candidate `commit` of a task that began at `base` (None: the repository had no
+    commit). Read only. `{at, branch, commits, remotes, uncommitted, tracking}`: `at`
+    is the time of the look, and each of FACTS is the fact or `{left_out: reason}`.
+    Never raises for what Git says; an id that is not a full commit id is refused
+    before anything is run.
+
+    `seconds` is one deadline for all of it, never more than LOOK_SECONDS. `room`,
+    when given, is the caller's own question for the seconds that may still be
+    used: it is asked once before each command, which gets no more than it says. A
+    command that gave more than is read of one (CUT) or that the time ended (LATE)
+    leaves its fact out and is never read as none, and once the time has ended no
+    further command is started.
+    `start` is the look taken when the shift began. Where it gives the Git
+    directories, a repository that now resolves to others is not read. Where it
+    gives the remotes and the untracked files, those of now are compared with it.
+
+    - `branch`: `{name, ref, head, at_candidate, holds_candidate}`. `ref` is what
+      HEAD names (None: detached) and `name` the branch where that is one;
+      `holds_candidate` says, when HEAD is at another commit, whether the
+      candidate is an ancestor of it.
+    - `commits`: `{based, count, more, rows}`. `based`: whether `base` is an
+      ancestor of the candidate (None without a base). `count` commits are
+      reachable from the candidate and not from the base, counted to COMMITS
+      (`more`: there are more). `rows` are the newest COMMITS_SHOWN, newest first,
+      each `{id, merge}`.
+    - `remotes`: `{rows, removed, more, compared, unlisted}`. `rows`, at most
+      REMOTES, each `{name, urls, urls_more, since}`: `urls` is `[{key, shown}]`
+      with `shown` as `url_shown` gives it, at most URLS of each key, and
+      `urls_more` how many it has beyond those. `since` is `added`, `changed` or
+      `there` against the start, None when that cannot be said: `compared` is
+      false, or the start look kept a name cut at NAME_SHOWN that this name begins
+      with. `more` remotes are not in `rows`, and `unlisted` counts those of them
+      that were added, that changed and of which it cannot be said.
+    - `uncommitted`: `{untracked, count, more, staged, compared}`. `untracked` are
+      the first UNTRACKED_SHOWN names that are untracked and not ignored, each
+      `{path, before}` (`before`: the start look listed it; None when it cannot
+      say, as for a path the start look may have kept cut at PATH_SHOWN); `count`
+      of them all, to UNTRACKED; `staged` paths differ between the index and HEAD,
+      or with no commit are all the index holds. Edits that are not staged are not
+      looked at.
+    - `tracking`: `{any, on, more}`: whether a ref exists under `refs/remotes/`,
+      and those that hold the candidate, at most TRACKING, without that prefix.
+    """
+    for value, needed in ((base, False), (commit, True)):
+        if (needed or value is not None) and not (
+                isinstance(value, str) and len(value) in (40, 64) and set(value) <= OBJECT):
+            raise ValueError("a look for a review is between full commit IDs")
+    end = clock() + max(0, min(seconds, LOOK_SECONDS))
+    seen = dict(at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    root = os.path.realpath(repo)
+    place = {}
+
+    class Late(Exception):
+        pass
+
+    def git(*args, pinned=True, fine=(0,)):
+        """The output of one command. A status outside `fine` is no answer."""
+        left = end - clock()
+        if left > 0 and room is not None:
+            left = min(left, room())
+        if left <= 0:
+            raise Late()
+        base_args = (("--git-dir=" + place["git"], "--work-tree=" + root) if pinned else ("-C", root))
+        out, code, cut = run(["git", "--no-optional-locks", "--no-replace-objects", "--no-pager", *base_args,
+                              "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull, *args],
+                             root, left, place.get("common"))
+        if cut:
+            # More than is read of one command, or the time: `run` ends a command for either.
+            if len(out) >= OUTPUT:
+                raise ValueError(CUT)
+            raise Late()
+        if code not in fine:
+            raise ValueError(SILENT)
+        return out, code
+
+    def lines(out):
+        return [line for line in out.decode("utf-8", "surrogateescape").split("\n") if line]
+
+    def ancestor(first, second):
+        return git("merge-base", "--is-ancestor", first, second, fine=(0, 1))[1] == 0
+
+    def at():
+        """The commit HEAD is at, None when the repository has none. Asked once: an answer
+        is kept, and a question that got none is asked again by the next fact that needs it."""
+        if "head" not in place:
+            out, code = git("rev-parse", "--verify", "-q", "HEAD^{commit}", fine=(0, 1))
+            head = out.decode("ascii", "replace").strip() or None
+            if (code == 0) != bool(head) or (head is not None and not (len(head) in (40, 64) and set(head) <= OBJECT)):
+                raise ValueError(SILENT)
+            place["head"] = head
+        return place["head"]
+
+    def branch():
+        head = at()
+        out, code = git("symbolic-ref", "-q", "HEAD", fine=(0, 1))
+        ref = os.fsdecode(out).rstrip("\n") if code == 0 else None
+        if code == 0 and not ref:
+            raise ValueError(SILENT)
+        name = ref[len("refs/heads/"):] if ref and ref.startswith("refs/heads/") else None
+        holds = None if head == commit or head is None else ancestor(commit, head)
+        return dict(name=name, ref=ref, head=head, at_candidate=head == commit, holds_candidate=holds)
+
+    def commits():
+        based = None if base is None else ancestor(base, commit)
+        out, _ = git("rev-list", "--parents", "--max-count=" + str(COMMITS + 1),
+                     *(["^" + base] if base is not None else []), commit, "--")
+        rows = [line.split() for line in lines(out)]
+        if any(not row or any(not set(part) <= OBJECT for part in row) for row in rows):
+            raise ValueError(SILENT)
+        return dict(based=based, count=min(len(rows), COMMITS), more=len(rows) > COMMITS,
+                    rows=[dict(id=row[0], merge=len(row) > 2) for row in rows[:min(COMMITS_SHOWN, COMMITS)]])
+
+    def remote():
+        why = []
+
+        def asked(*args):
+            try:
+                return git(*args, fine=(0, 1)) + (False,)
+            except ValueError as exc:
+                why.append(exc)  # `remotes` answers None for it: the reason is kept here
+                raise
+        found = remotes(asked)
+        if found is None:
+            raise why[0] if why else ValueError(SILENT)
+        before = start.get("remotes") if isinstance(start, dict) else None
+        # Compared only with a start look that read all the remotes and wrote rows as `observe`
+        # writes them. A name it kept at the full NAME_SHOWN may have been cut there: such a
+        # row says nothing of one name, and is kept apart from those that are whole.
+        compared = (isinstance(before, list) and start.get("remotes_truncated") is not True
+                    and all(isinstance(row, dict) and isinstance(row.get("name"), str) and row["name"]
+                            and len(row["name"]) <= NAME_SHOWN and isinstance(row.get("sha256"), str) for row in before)
+                    and len({row["name"] for row in before}) == len(before))
+        known = {row["name"]: row["sha256"] for row in before if len(row["name"]) < NAME_SHOWN} if compared else {}
+        cut = {row["name"] for row in before if len(row["name"]) == NAME_SHOWN} if compared else set()
+
+        def since(name):
+            if not compared or (len(name) >= NAME_SHOWN and name[:NAME_SHOWN] in cut):
+                return None
+            if name not in known:
+                return "added"  # also a long name where the start look kept none that it begins with
+            return "there" if known[name] == digest(found[name]) else "changed"
+        rows, unlisted = [], dict.fromkeys(UNLISTED, 0)
+        for number, name in enumerate(sorted(found)):
+            if number >= REMOTES:
+                if compared and since(name) != "there":
+                    unlisted[since(name) or "unsure"] += 1
+                continue
+            urls = {kind: [dict(key=key, shown=url_shown(value)) for key, value in found[name] if key == kind]
+                    for kind in ("url", "pushurl")}
+            rows.append(dict(name=name, urls=urls["url"][:URLS] + urls["pushurl"][:URLS],
+                             urls_more=sum(max(0, len(urls[kind]) - URLS) for kind in urls), since=since(name)))
+        gone = sorted((set(known) - set(found)) | {name for name in cut
+                                                   if not any(now[:NAME_SHOWN] == name for now in found)})
+        return dict(rows=rows, removed=gone, more=max(0, len(found) - REMOTES), compared=bool(compared),
+                    unlisted=unlisted)
+
+    def uncommitted():
+        out, _ = git("ls-files", "-z", "--others", "--exclude-standard")
+        names = sorted(os.fsdecode(name) for name in entries(out, False))
+        head = at()
+        staged, _ = (git("diff-index", "-z", "--cached", "--name-only", "--no-ext-diff", "--no-textconv", head)
+                     if head else git("ls-files", "-z", "--cached"))
+        compared = usable(start) and start.get("truncated") is False
+        before = {row["path"] for row in start["changes"] if row["state"] == "untracked"} if compared else set()
+
+        def there(name):
+            """Whether the start look listed it. That look keeps a path cut at PATH_SHOWN, so
+            of a path that long it says only whether one with the same beginning was there."""
+            if not compared:
+                return None
+            if len(name) < PATH_SHOWN:
+                return name in before
+            return None if name[:PATH_SHOWN] in before else False
+        return dict(untracked=[dict(path=name, before=there(name)) for name in names[:UNTRACKED_SHOWN]],
+                    count=min(len(names), UNTRACKED), more=len(names) > UNTRACKED,
+                    staged=len(entries(staged, False)), compared=bool(compared))
+
+    def tracking():
+        out, _ = git("for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/")
+        if not lines(out):
+            return dict(any=False, on=[], more=False)
+        out, _ = git("for-each-ref", "--count=" + str(TRACKING + 1), "--format=%(refname)", "--contains", commit,
+                     "refs/remotes/")
+        names = [name[len("refs/remotes/"):] for name in lines(out) if name.startswith("refs/remotes/")]
+        return dict(any=True, on=names[:TRACKING], more=len(names) > TRACKING)
+
+    # Where Git keeps this working tree's data, found from the root and not from
+    # configuration, and held to what the shift's first look found.
+    why = None
+    try:
+        if not os.path.lexists(os.path.join(root, ".git")):
+            raise ValueError(SILENT)
+        out, _ = git("rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir", pinned=False)
+        places = out.split(b"\n")
+        if len(places) != 3 or not places[0] or not places[1] or places[2]:
+            raise ValueError(SILENT)
+        place.update(git=os.fsdecode(places[0]), common=os.path.realpath(os.fsdecode(places[1])))
+        held_to = [start.get(name) for name in ("git_dir", "common_dir")] if isinstance(start, dict) else [None, None]
+        if (held_to[0] is not None and held_to[0] != place["git"]) or (
+                held_to[1] is not None and held_to[1] != place["common"]):
+            why = MOVED
+    except Late:
+        why = LATE
+    except (OSError, ValueError) as exc:
+        why = str(exc) if str(exc) in (CUT, SILENT) else SILENT
+    for name, fact in zip(FACTS, (branch, commits, remote, uncommitted, tracking)):
+        if why is not None:
+            seen[name] = dict(left_out=why)
+            continue
+        try:
+            seen[name] = fact()
+        except Late:
+            seen[name] = dict(left_out=LATE)
+            why = LATE  # for what is still to come as well
+        except (OSError, ValueError) as exc:
+            seen[name] = dict(left_out=str(exc) if str(exc) in (CUT, SILENT) else SILENT)
     return seen
 
 

@@ -198,7 +198,9 @@ clickable. If the readable part cannot be built from what was kept, a short
   kept from before this entry has no such key and no such line.
 - `requirements_unchecked`: what a brief asked for that the review which
   accepted the task answered `not_checked` (see
-  [the review contract](review.md)). The host takes an `ACCEPT` beside such
+  [the review contract](review.md)). It is read from the kept review
+  receipts: a report made again for a kept shift, by this build or a later
+  one, counts the same answers. The host takes an `ACCEPT` beside such
   an answer, so the report counts them: `count`, `items` (those listed, at
   most 256, each with `task`, `review`, `receipt`, `asked` and `where`),
   `more` (how many of the count are not listed), `unasked` (accepted reviews

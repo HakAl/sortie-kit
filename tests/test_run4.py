@@ -537,6 +537,8 @@ class RefusedCommandTests(LifecycleFixture):
 class HostRepoTests(LifecycleFixture):
     def test_the_closeout_and_report_name_what_a_stopped_turn_left_in_the_repository(self):
         (self.target / "there-before.txt").write_text("the developer's own\n")
+        subprocess.run(["git", "-C", str(self.target), "remote", "add", "origin",
+                        "https://example.invalid/team/project.git"], check=True, capture_output=True, timeout=10)
         command = dict(version=1, id="first", op="brief", task_id="task", kind="defect",
                        brief=self.artifact("briefs/task.md"), next_owner="builder")
         (self.shift / "driver-command.json").write_bytes(receipts.encoded(command))
@@ -549,6 +551,12 @@ class HostRepoTests(LifecycleFixture):
         self.assertEqual(code, 0, why)
         kept = decode((self.shift / "closeout.json").read_bytes())["repo"]
         self.assertEqual(kept["start"]["head"], kept["end"]["head"])
+        # Both looks name the remotes and keep a digest of their URLs and no URL; the report reads
+        # a closeout with them as it read one without.
+        self.assertEqual([(row["name"], len(row["sha256"])) for row in kept["start"]["remotes"]], [("origin", 64)])
+        self.assertEqual(kept["start"]["remotes"], kept["end"]["remotes"])
+        self.assertNotIn(b"example.invalid", (self.shift / "closeout.json").read_bytes())
+        self.assertEqual(decode((self.shift / "report.json").read_bytes())["issues"], [])
         new = dict(path="tests/test_half.py", state="untracked")
         self.assertNotIn(new, kept["start"]["changes"])
         self.assertIn(new, kept["end"]["changes"])
@@ -729,7 +737,7 @@ class RepoStateTests(LocalTest):
         import os
         where = os.path.realpath(repo / ".git")
         self.assertEqual(repo_state.observe(repo, 5), dict(head=head, changes=[], truncated=False, git_dir=where,
-                                                           common_dir=where, pinned=False))
+                                                           common_dir=where, pinned=False, remotes=[]))
         self.assertTrue(repo_state.observe(repo, 5, git_dir=where, common_dir=where)["pinned"])
         # The Git directory seen at the start is the one read at the end, or nothing is.
         self.assertEqual(repo_state.observe(repo, 5, git_dir=where)["head"], head)

@@ -402,20 +402,57 @@ class InstructionTests(unittest.TestCase):
             # The commit instructions carry the requirement list: its paragraph, its field and two example entries.
             # and, since the third form, the question asked of each finding and the fourth status. Both name the
             # evidence directory (130 for a plan before it was named), and say that the brief is the whole task
-            # (140 for a plan before that: four lines).
-            self.assertLess(len(text.splitlines()), 145 if kind == "plan" else 200)
+            # (140 for a plan before that: four lines). The commit instructions say since the host's own look
+            # at the repository what that look is and how a line on delivery is answered from it (200 before).
+            self.assertLess(len(text.splitlines()), 145 if kind == "plan" else 225)
         self.assertIn("change.patch", review.instructions("commit", COMMIT, NONCE))
         self.assertIn("plan.md", review.instructions("plan", PLAN, NONCE))
         # A plan review is not asked for the requirement list.
         for part in ("requirement", "not_met", "not_checked", "disclosed", V2, V3):
             self.assertNotIn(part, review.instructions("plan", PLAN, NONCE), part)
 
+    def test_a_review_of_a_candidate_is_told_of_the_hosts_look_and_how_a_line_on_delivery_is_answered(self):
+        """Lines of a brief on Git hygiene went unchecked on most shifts: the reviewer had
+        nothing to answer them from. It has the host's look now and is told what that can
+        settle. That nothing was pushed and how files were staged it cannot, and `met` is
+        not the answer to them."""
+        text = " ".join(review.instructions("commit", COMMIT, NONCE).split())
+        for part in ("`evidence/HOST.md` is the host's own statement of what it took, when, what it checked and "
+                     "what is not shown. For this review it also states what the host itself saw of the repository "
+                     "when it prepared this directory: the branch, the commits of the task, the remotes, the "
+                     "remote-tracking refs and what is not committed. That section is the host's and not the "
+                     "builder's account.",
+                     "What the brief asks of how the work is delivered (one commit, a branch, no remote added, "
+                     "nothing untracked left) you answer from the section of `evidence/HOST.md` on the repository",
+                     "`met` when the section states the fact and the fact agrees with the brief, with "
+                     "`evidence/HOST.md` under `where`; `not_met`, with a finding, when it shows a breach; "
+                     "`not_checked` when it says the host did not look, or does not state the fact.",
+                     "That nothing was pushed: answer `not_checked` and say under `where` what the host saw",
+                     "unless a remote added since the shift began or a remote-tracking ref that holds the candidate "
+                     "speaks for a push, which is `not_met`.",
+                     "How files were staged: it leaves no trace, so answer `not_checked` and say so under `where`.",
+                     "That the commit holds only the task's files, where the brief asks that, you answer from "
+                     "`change.patch`."):
+            self.assertIn(part, text)
+        plan = " ".join(review.instructions("plan", PLAN, NONCE).split())
+        self.assertNotIn("the host itself saw", plan)
+        self.assertNotIn("how the work is delivered", plan)
+
+    def test_driver_md_says_how_to_write_a_line_on_delivery_that_a_reviewer_can_check(self):
+        text = " ".join(files("sortie_kit").joinpath("data", "templates", "driver.md").read_text().split())
+        for part in ("A line on how the work is delivered is checked only where it names what can be seen.",
+                     "\"no remote added; the candidate on no remote-tracking ref\"",
+                     "You can keep \"do not push\" and \"stage files by name\" as requests to the builder, but no "
+                     "look at a repository shows that nothing was pushed or how files were staged: a reviewer "
+                     "answers those `not_checked`, and the report counts them as accepted unchecked."):
+            self.assertIn(part, text)
+
     def test_a_review_the_host_showed_no_evidence_is_told_so_and_no_directory_is_described(self):
         """What the host did with the builder's receipts is one of four. For three of them
         there is no evidence/ to rely on, and the text says that, why, and what to do."""
         self.assertEqual(review.EVIDENCE, ("shown", "no_time", "late", "failed"))
         bullet = "`evidence/`: the builder's receipts"
-        for kind, target, most in (("commit", COMMIT, 200), ("plan", PLAN, 145)):
+        for kind, target, most in (("commit", COMMIT, 225), ("plan", PLAN, 145)):
             usual = review.instructions(kind, target, NONCE)
             self.assertEqual(usual, review.instructions(kind, target, NONCE, evidence="shown"))
             self.assertIn(bullet, usual)
@@ -424,13 +461,17 @@ class InstructionTests(unittest.TestCase):
                 text = review.instructions(kind, target, NONCE, evidence=value)
                 flat = " ".join(text.split())
                 self.assertNotIn(bullet, flat)
-                self.assertIn("The host did not show the builder's receipts to this review: " + review.NOT_SHOWN[value]
+                # A review of a candidate is shown the host's own look at the repository in that directory too.
+                also = ", nor its own statement of what it saw of the repository" if kind == "commit" else ""
+                self.assertIn("The host did not show the builder's receipts to this review" + also + ": "
+                              + review.NOT_SHOWN[value]
                               + ". That is the host's doing and not the builder's, and no finding. It is a limit: "
                               "name it under `not_examined`.", flat)
                 # Only a review of a candidate has the answer `not_checked`.
-                self.assertEqual("Answer a requirement that rests on a receipt or a log `not_checked`." in flat,
-                                 kind == "commit")
+                self.assertEqual("Answer a requirement that rests on a receipt, a log or the state of the repository "
+                                 "`not_checked`." in flat, kind == "commit")
                 self.assertEqual("not_checked" in flat, kind == "commit")
+                self.assertNotIn("it also states what the host itself saw", flat)
                 self.assertLess(len(text.splitlines()), most)
                 self.assertLessEqual(max(len(line) for line in text.splitlines() if "evidence" in line), 80)
             for wrong in (None, "", "none", True):

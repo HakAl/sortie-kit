@@ -713,7 +713,7 @@ class Driver:
                 nonce=running["marker"], seconds=view.budget.remaining() - 3 * WRITE_RESERVE,
                 evidence=[item for item in task["receipts"] if isinstance(item, dict)
                           and item.get("status") == "satisfied" and item.get("stage") in PHASE] if over > 0 else None,
-                evidence_seconds=max(0, over), evidence_left=spare)
+                evidence_seconds=max(0, over), evidence_left=spare, start=self.repo.get("start"))
             for path in (running["stdout"], running["stderr"]):
                 # The host creates both files and keeps these descriptors for the whole
                 # review; what it later reads back is read through them.
@@ -787,12 +787,15 @@ class Driver:
 
     def unshown(self, review, task, number, shown):
         """One line in the host's log for an attempt whose reviewer was not shown the
-        builder's receipts. Never waits and never fails the review."""
+        builder's receipts, nor, for a candidate, what the host saw of the repository.
+        Never waits and never fails the review."""
         if not isinstance(shown, str) or shown not in contract.NOT_SHOWN:
             return
         from .launcher import host_log  # at the call: the launcher imports this module
         host_log(self.shift, "review " + str(review["review"]) + " of task " + str(task["id"]) + ", attempt "
-                 + str(number) + ": the reviewer was not shown the builder's receipts (" + contract.NOT_SHOWN[shown] + ")")
+                 + str(number) + ": the reviewer was not shown the builder's receipts"
+                 + (" nor the host's statement of the repository" if review.get("stage") == "review" else "")
+                 + " (" + contract.NOT_SHOWN[shown] + ")")
 
     def review_ended(self, view, state, outcome, code, reaped, dropped, seen):
         """The running review attempt is over: say what it gave. A verdict is taken only

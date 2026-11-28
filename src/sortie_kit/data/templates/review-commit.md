@@ -85,6 +85,23 @@ absence is resolved, with the limit named in its reason; one that named a
 fault stays unresolved until you can check the correction. What the brief
 requires and the change or a shown receipt leaves out is a finding as before.
 
+What the brief asks of how the work is delivered (one commit, a branch, no
+remote added, nothing untracked left) you answer from the section of
+`evidence/HOST.md` on the repository, where the host shows it: that section
+is the host's own look and not the builder's account. `met` when the section
+states the fact and the fact agrees with the brief, with `evidence/HOST.md`
+under `where`; `not_met`, with a finding, when it shows a breach;
+`not_checked` when it says the host did not look, or does not state the
+fact. Two things no look at a repository can settle, and `met` is not the
+answer to them. That nothing was pushed: answer `not_checked` and say under
+`where` what the host saw (the remotes, the remote-tracking refs), unless a
+remote added since the shift began or a remote-tracking ref that holds the
+candidate speaks for a push, which is `not_met`. How files were staged: it
+leaves no trace, so answer `not_checked` and say so under `where`. That the
+commit holds only the task's files, where the brief asks that, you answer
+from `change.patch`. Split a line of the brief that asks several of these
+into one requirement for each, so that each gets its own answer.
+
 Severity: `blocker` means the task's outcome is not met or is unsafe to
 keep; `major` means material harm or rework if kept as is; `minor` is local
 and does not stand in the way.

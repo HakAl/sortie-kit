@@ -71,6 +71,17 @@ repositories. They have shown:
   the second task was not briefed for that reason, and shutdown was
   confirmed. A review that failed on its own, with nothing arranged to make
   it fail, has still not been seen.
+- A reviewer answering lines of a brief on how the work is delivered from
+  the host's own statement of the repository, in one shift. The brief had
+  four such lines. Three were answered as met, each with the place in the
+  statement named: the candidate is one commit on `main` as it was when the
+  shift began, no remote was added, and nothing was left untracked or
+  staged. The fourth, that nothing is pushed, stayed `not_checked`, with
+  the reason that no remote and no remote-tracking ref cannot prove it. The
+  host looks at remotes and remote-tracking refs and at no push, so such a
+  line stays unchecked. On earlier shifts, where the statement gave the two
+  commits and nothing else, 4 to 10 such lines were answered `not_checked`
+  on several shifts.
 
 Others than the project's developers have run real shifts too, on a build
 that has `sortie doctor`, and told the project what they saw. Those shifts
@@ -108,6 +119,10 @@ hosted checks, and by nothing else:
 - A machine with a single agent CLI, where the reviewer is the builder's
   own CLI without any flag.
 - A review whose end could not be saved in time.
+- A repository with a remote added or changed during the shift, a
+  remote-tracking ref that holds the candidate, or something untracked or
+  staged left behind, and what the host's statement of the repository and
+  the reviewer then say of it.
 - A lapse in the hold against idle sleep, and a hold that is refused or
   dropped.
 

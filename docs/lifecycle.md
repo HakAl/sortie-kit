@@ -721,7 +721,64 @@ build receipt, the host begins the review of that plan or candidate itself:
   when and with which SHA-256, the commit the task began at and, for a plan, the commit the
   repository is at now or, for a candidate, the candidate, what it checked of them (shape, the request they were
   written for, the bytes of each named file) and that it did not judge what
-  they say. At most 64 files are shown, none over 1 MiB, 4 MiB together; a
+  they say. For the review of a candidate `HOST.md` also states what the
+  host itself saw of the repository when it prepared the review, from a
+  read-only look of its own and from no receipt:
+  - the branch `HEAD` is on, and whether `HEAD` is at the candidate;
+  - the commits from the commit the task began at to the candidate: whether
+    the first is an ancestor of the second, how many there are (counted to
+    1000) and the ids of the 20 newest, with those that are merges marked;
+  - the remotes of the repository's own configuration, at most 20 (every
+    section `remote "NAME"` that sets anything, also one with a fetch rule
+    and no URL, and one with an empty name under the name Git gives it,
+    `.url`), each with
+    its name and, of its URLs, the scheme and the host only (for `http`,
+    `https`, `ssh` and `git` URLs and the form `host:path`; any other URL,
+    a path on the machine among them, is "not shown"), and against the look
+    at the shift's start whether it was added since, was there, or has
+    another URL, and which were removed;
+  - whether any ref exists under `refs/remotes/` and which of them, at most
+    20, the candidate is reachable from;
+  - the files that are untracked and not ignored, at most 50 names of at
+    most 1000 counted, with those the start look already listed marked, and
+    how many paths are staged and not committed.
+
+  A name is given between backticks and only when it is made of letters,
+  digits, `.`, `_` and `-` (a path: each part) and has not the beginning of
+  a known kind of credential; others are counted, since a name is the
+  builder's to choose, stands in the host's own text and goes to the
+  reviewer's provider. Of one remote at most four URLs of each key are
+  given and the rest counted, and where more than 20 remotes are named,
+  those not listed are still compared with the start and counted as added
+  or changed. The start look keeps a name cut at a length: of a longer name
+  that begins as one kept there the host says that it cannot tell. The
+  look takes at most three seconds and at most a quarter of the time
+  evidence has, before the receipts are read, and asks before each Git
+  command what is left as it does before each piece of evidence. It is
+  held to the Git directory the start look found, runs no hook, monitor,
+  pager or filter of the repository and follows no replaced object. For
+  the remotes it reads neither the user's nor the machine's configuration
+  nor a file the repository's configuration includes; its other commands
+  read configuration as Git does, so the user's own exclude file can hide
+  an untracked name. A command that the time ended ends the look: no
+  further one is started. A fact it could not read has a line
+  that says so and why, and that is no finding. The section ends with what
+  it does not show: nothing from before the shift; not that nothing was
+  pushed (a push to a URL typed by hand touches nothing here, and the host
+  asks no remote); remotes and untracked files as they are at the look and
+  not in between; nothing that ignore rules hide; not edits that are not
+  staged; not how files were staged; and that it is a look at a `.git`
+  the builder can write, not a record. The instructions tell the reviewer
+  to answer a line on how the work is delivered from that section, to
+  answer "do not push" and "staged by name" `not_checked` with what the
+  host saw under `where`, unless an added remote or a remote-tracking ref
+  that holds the candidate speaks for a push, and that `met` is not the
+  answer to those two. A plan review gets none of this. The names of
+  remotes, of remote-tracking refs and of untracked files, and the hosts of
+  remote URLs, go to the reviewer's CLI with the rest: they are not in the
+  exported files, so this is more than a reviewer of another family was
+  sent before.
+  At most 64 files are shown, none over 1 MiB, 4 MiB together; a
   file whose name is not made of plain parts, or that the host holds no
   copy of, is not shown. Whatever is not shown has a line in `HOST.md` with
   the reason, and none of it fails the review. The instructions tell the
@@ -759,10 +816,12 @@ build receipt, the host begins the review of that plan or candidate itself:
   `evidence/` cannot be made at all, the review runs without it.
   `REVIEW.md` is written after the evidence, from what became of it. A
   review that was shown none reads there, in place of the lines on
-  `evidence/`, that the host did not show the builder's receipts and why,
+  `evidence/`, that the host did not show the builder's receipts (nor,
+  for a candidate, its own statement of the repository) and why,
   that this is the host's doing and not the builder's and no finding, that
   it is a limit to state under `not_examined` and, in a review of a
-  candidate, that a requirement resting on a receipt or a log is answered
+  candidate, that a requirement resting on a receipt, a log or the state of
+  the repository is answered
   `not_checked`. Each attempt in the review receipt says under `evidence`
   which it was: `shown`; `no_time`, the host gave none to show because the
   time above left no room; `late`, preparing the directory used the time
@@ -1221,7 +1280,13 @@ developer's working tree. The host therefore looks at the target repository
 twice, when it begins and after it stopped both seats' processes (also when a
 stop could not be confirmed), each time within three seconds, and records both
 looks in the closeout as `repo`: `{start, end}`, each `{head, changes,
-truncated, git_dir, common_dir, pinned}` or `{error}`. `git_dir` is the
+truncated, git_dir, common_dir, pinned, remotes}` or `{error}`. `remotes`
+are those of the repository's own configuration, at most 20 (beyond that
+`remotes_truncated` is true), each `{name, sha256}`: the SHA-256 is of the
+remote's configured URLs, so that a later look can say that they changed,
+and no URL is kept. A look whose read of the remotes failed has no
+`remotes` key and is otherwise whole; a closeout of an earlier build has
+none either. `git_dir` is the
 working tree's own Git directory and `common_dir` the one its refs and
 objects come from; the two differ for a linked worktree. The look at the end
 reads only the ones the look at the start reported: if the repository

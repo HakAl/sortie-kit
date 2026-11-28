@@ -120,6 +120,18 @@ silent: the report lists, for each task a review accepted, every requirement
 with its status, and counts those accepted unchecked under Outcome (see
 [reports](reports.md)).
 
+What a brief asks of how the work is delivered (one commit, a branch, no
+remote added, nothing untracked left) a reviewer of a candidate answers from
+the host's own look at the repository, which `evidence/HOST.md` states (see
+[the review the host runs](lifecycle.md#the-review-the-host-runs)). Two such
+lines stay `not_checked` whatever the host shows, because no look at a
+repository can settle them: that nothing was pushed, and how files were
+staged. The reviewer gives what the host saw under `where`, which the report
+prints, and answers `not_met` when an added remote or a remote-tracking ref
+that holds the candidate speaks for a push. A driver that wants such a line
+checked writes it as what can be seen, for example "no remote added; the
+candidate on no remote-tracking ref"; `driver.md` says so.
+
 `ACCEPT` beside a requirement answered `disclosed` is taken too. Some briefs
 allow a part to be closed by saying that it is not delivered; a reviewer
 that accepts such a task is right, and the part is neither `met` nor a

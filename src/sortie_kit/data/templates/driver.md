@@ -169,6 +169,18 @@ do not write in a brief what verdict to return, what severity to give or
 what to skip: a reviewer reports such text and does not follow it, and it
 runs nothing, whatever a brief asks.
 
+A line on how the work is delivered is checked only where it names what can
+be seen. For the review of a candidate the host states the branch, the
+commits of the task, the remotes of the repository and whether any was added
+since the shift began, the remote-tracking refs that hold the candidate, and
+the files that are untracked. So write such a line as what can be seen: "one
+commit on `main`", "no remote added; the candidate on no remote-tracking
+ref", "no untracked file left", "the commit holds only this task's files".
+You can keep "do not push" and "stage files by name" as requests to the
+builder, but no look at a repository shows that nothing was pushed or how
+files were staged: a reviewer answers those `not_checked`, and the report
+counts them as accepted unchecked.
+
 In the brief of your first task, ask the builder to run the checks direction.md
 names on the repository as it is, before it changes anything, and to say the
 result first in its acknowledgment. A check that already fails there, for a
