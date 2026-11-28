@@ -26,6 +26,9 @@ LATE = "exit seen after its limit"  # as lifecycle.LATE: a reviewer first seen o
 # How the host's reason begins for a review log that is not what the reviewer printed: something
 # else wrote to it while the review ran. The report, which has the log alone, quotes nothing of it.
 ALTERED = "what is in the review's log ("
+# The host's reason for a review of which a pipe did not give its end: its log is what the
+# host read, and is not known to be all the reviewer printed. The report reads no usage from it.
+UNDRAINED = "what the reviewer printed could not be read to its end"
 
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")  # as agents.NAME
 FORMS = {"driver": "interactive_argv", "builder": "headless_argv", "reviewer": "review_argv"}

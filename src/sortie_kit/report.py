@@ -1,11 +1,13 @@
 """Bounded closeout over retained local bytes. No commands, authority or pane reads."""
 import html
 from importlib.resources import files
+import os
 import re
 import shlex
+import stat
 import time
 
-from . import channels, cli_words, grants, receipts, repo_state
+from . import channels, cli_words, grants, receipts, repo_state, usage
 from .layout import Refused
 from .receipt_schema import decode, validate_shape
 from .review import SCHEMA as UNLISTED, LISTED, SCHEMA_V3 as NAMING, EVIDENCE as SHOWING, NOT_SHOWN
@@ -50,6 +52,7 @@ class Reader:
         self.view, self.limit = view, DETAIL_LIMIT if limit is None else limit
         self.end = time.monotonic() + max(0, view.budget.remaining() - min(1, view.budget.remaining() / 2))
         self.inputs, self.issues, self.cache = {}, [], {}
+        self.ends = {}  # the ends of builder logs read again for usage (`log_end`): not inputs, and counted apart
         self.details = 0
         # Of the receipt being read: the paths it names that do not hold the bytes it
         # gives, and those whose bytes were read from the host's own copy.
@@ -60,7 +63,7 @@ class Reader:
         one read, so that no file is read or counted twice against the bound on all
         that is read, and the same time to finish in."""
         other = Reader(self.view, limit)
-        other.end, other.inputs, other.cache = self.end, self.inputs, self.cache
+        other.end, other.inputs, other.cache, other.ends = self.end, self.inputs, self.cache, self.ends
         return other
 
     def issue(self, path, reason):
@@ -267,6 +270,147 @@ def review_quotes(reader, data, kept):
         if said:
             item['said'] = said
     return kept
+
+
+USAGE_RUNS = 4096  # builder turns and review attempts that report.json lists one by one; the totals are of all
+USAGE_SHOWN = 200  # of them, rows in the table of report.md
+USAGE_TASKS = 64  # tasks with a line of their own in report.md
+REPLAY_LOGS = 256  # builder logs whose end is read again for a shift that was recorded without usage
+USAGE_LOG_LIMIT = 4 * 1024 * 1024  # the most the host keeps of one turn (lifecycle.TURN_LOG_LIMIT): a larger file is not its log
+BUILDER_LOG = 'logs/builder-turn-{task}-{turn}.log'  # where the host puts the log of a builder turn
+
+
+def log_end(reader, path):
+    """The end of a builder's kept log, as `(bytes, whether more came before)`, or None
+    where there is no such regular file of a size the host keeps. For the reading again
+    of a shift that was recorded without usage and for nothing else. At most `usage.TAIL`
+    bytes of each of at most REPLAY_LOGS logs, through no link. This is not evidence of
+    the shift: it is not among the inputs, takes nothing from the bounds on them, and
+    a log that cannot be read is no problem of the evidence."""
+    if path in reader.ends:
+        return reader.ends[path]
+    if len(reader.ends) >= REPLAY_LOGS:
+        return None
+    found = None
+    try:
+        reader.guard()
+        with reader.view.parent(path) as (parent, name):
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_size <= USAGE_LOG_LIMIT:
+                found = (os.pread(fd, usage.TAIL, max(0, info.st_size - usage.TAIL)), info.st_size > usage.TAIL)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError, TypeError):
+        found = None
+    reader.ends[path] = found
+    return found
+
+
+def turn_again(reader, form, identity, turn):
+    """What the kept log of one builder turn states, for a shift recorded without usage:
+    only of a turn recorded as ended on its own with status 0 and nothing dropped, from
+    the log at the name the host gives the log of that turn."""
+    if form is None:
+        return usage.none('no_form')
+    if turn.get('outcome') != 'exit' or type(turn.get('exit')) is not int or turn['exit'] != 0:
+        return usage.none('not_ended', form)
+    if type(turn.get('output_dropped_bytes')) is not int or turn['output_dropped_bytes'] != 0:
+        return usage.none('no_end', form)
+    number = turn.get('turn')
+    if type(number) is not int or turn.get('log') != BUILDER_LOG.format(task=identity, turn=number):
+        return usage.none('no_log', form)
+    end = log_end(reader, turn['log'])
+    return usage.none('no_log', form) if end is None else usage.codex_text(*end)
+
+
+def attempt_again(reader, form, review, attempt):
+    """What the kept error output of one review attempt states, for a shift recorded
+    without usage: only bytes that the review's receipt names by their hash, as
+    `Reader.references` read and checked them, of an attempt that the receipt says
+    ended on its own with status 0, dropped nothing and whose log is what the
+    reviewer printed, read to the end of both pipes."""
+    if form is None:
+        return usage.none('no_form')
+    try:
+        # A number in both places: true equals 1 and names no attempt.
+        raw = checked_bytes(reader, review.get('receipt')) if type(attempt.get('attempt')) is int else None
+        entry = next(item for item in decode(raw)['data']['attempts']
+                     if isinstance(item, dict) and type(item.get('attempt')) is int
+                     and item['attempt'] == attempt['attempt']) if raw is not None else None
+    except (ValueError, KeyError, TypeError, RecursionError, StopIteration):
+        entry = None
+    if entry is None:
+        return usage.none('no_log', form)
+    if entry.get('ended_by') != 'exit' or type(entry.get('exit_status')) is not int or entry['exit_status'] != 0:
+        return usage.none('not_ended', form)
+    if type(entry.get('output_dropped_bytes')) is not int or entry['output_dropped_bytes'] != 0:
+        return usage.none('no_end', form)
+    reasons = entry.get('reasons') if isinstance(entry.get('reasons'), list) else []
+    if any(isinstance(reason, str) and reason.startswith(cli_words.UNDRAINED) for reason in reasons):
+        return usage.none('no_end', form)  # the log is what the host read, and not known to be all that was printed
+    printed = checked_bytes(reader, entry.get('stderr'))
+    if printed is None or any(isinstance(reason, str) and reason.startswith(cli_words.ALTERED) for reason in reasons):
+        return usage.none('no_log', form)
+    return usage.codex_text(printed[-usage.TAIL:], len(printed) > usage.TAIL)
+
+
+def usage_summary(reader, state, grant):
+    """What the seats' CLIs stated of the tokens they used, from the driver's record: one
+    row for each builder turn and each review attempt that had a process, with the
+    record the host kept of it or why there is none, and the totals by task and seat
+    and by seat, each with the number of runs it is from. Never a number across
+    seats, and never 0 for a figure that is not there. The driver's seat is not
+    counted: it runs on the terminal and the host reads none of its output.
+
+    A shift whose record has no usage anywhere was run by a build from before the
+    host recorded it. For such a shift, and no other, the figures are read again
+    from the kept logs (`turn_again`, `attempt_again`) and every row says so. A
+    shift recorded with usage is never filled in from a log."""
+    seats = get(grant, 'seats') if isinstance(get(grant, 'seats'), dict) else {}
+    forms = {role: usage.form(seats.get(role)) for role in ('builder', 'reviewer')}
+    number = lambda value: value if type(value) is int else None
+    rows, recorded = [], False
+    for identity, task in state['tasks'].items():
+        if not isinstance(task, dict):
+            continue
+        for turn in task.get('turns') if isinstance(task.get('turns'), list) else []:
+            if isinstance(turn, dict) and not str(turn.get('outcome')).startswith('not started'):
+                recorded = recorded or 'usage' in turn
+                rows.append((dict(seat='builder', task=identity, turn=number(turn.get('turn'))), turn, None))
+        for review in task.get('reviews') if isinstance(task.get('reviews'), list) else []:
+            for attempt in (review.get('attempts') if isinstance(review, dict)
+                            and isinstance(review.get('attempts'), list) else []):
+                if isinstance(attempt, dict) and not str(attempt.get('ended_by')).startswith('not started'):
+                    recorded = recorded or 'usage' in attempt
+                    rows.append((dict(seat='reviewer', task=identity, review=number(review.get('review')),
+                                      attempt=number(attempt.get('attempt'))), attempt, review))
+    replayed = bool(rows) and not recorded
+    runs = []
+    for run, kept, review in rows:
+        if replayed:
+            run['read_again'] = True
+            run.update(turn_again(reader, forms['builder'], run['task'], kept) if review is None
+                       else attempt_again(reader, forms['reviewer'], review, kept))
+        elif 'usage' in kept:
+            run.update(usage.checked(kept['usage']) or usage.none('malformed'))
+        else:
+            run.update(usage.none('not_recorded'))
+        runs.append(run)
+    by_seat = {row['seat']: row for row in usage.summed(runs, 'seat')}
+    short = lambda value: value[:200] if isinstance(value, str) else None
+    found = dict(runs=runs[:USAGE_RUNS], by_task=usage.summed(runs, 'task', 'seat'),
+                 by_seat=[dict(seat=role, agent=short(get(seats, role, 'agent')), model=short(get(seats, role, 'model')),
+                               **{key: by_seat.get(role, dict(total=None, counted=0, runs=0))[key]
+                                  for key in ('total', 'counted', 'runs')}) for role in ('builder', 'reviewer')],
+                 driver='not counted', replayed=replayed)
+    if len(runs) > USAGE_RUNS:
+        found['more'] = len(runs) - USAGE_RUNS
+    if reader.retain(dict(runs=found['runs'], by_task=found['by_task']), 'driver-state.json') is None:
+        found.update(runs=None, by_task=None, left_out=LEFT_OUT)
+        found.pop('more', None)  # of a list that is not there
+    return found
 
 
 def receipt_summary(reader, ref, task, shift_id, ledger):
@@ -515,7 +659,7 @@ def extract(view, *, previous=None, reader=None):
     result = dict(schema=SCHEMA, shift_id=view.shift.name, repo=str(view.repo), status='partial',
                   grant=None, actual_window=unknown('no retained host closeout'), tasks=[], actions=[],
                   direction=None, blockers=[], next_owner='developer', not_started=None, driver_notes=None, last_activity=None,
-                  stop=None, head_unaccepted=None, metrics={}, delta={}, inputs=[], issues=[],
+                  stop=None, head_unaccepted=None, usage=None, metrics={}, delta={}, inputs=[], issues=[],
                   limits=['Only what the kept files claim, and whether those files are intact. No signature, commit, '
                           'test or code quality was checked again.',
                           'Writing this report ran no command, agent or network call. Nothing is assumed to have been '
@@ -650,6 +794,9 @@ def extract(view, *, previous=None, reader=None):
                 for summary in result['tasks']:
                     if summary['id'] == identity:
                         summary['untaken'] = rows
+            # After everything else: where the bound on details is reached, the list of
+            # runs is what is left out, and never a task, a note or a command.
+            result['usage'] = usage_summary(reader, state, result['grant'])
     except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
         reader.issue('report extraction', exc)
     # What the host saw of the repository at its start and end (closeout `repo`):
@@ -1933,6 +2080,71 @@ def seat_words(role, seat, repo):
     return lines
 
 
+def tokens_words(row):
+    """A total with the number of runs it is from; never 0 for a figure that is not there."""
+    total, counted, runs = get(row, 'total'), get(row, 'counted'), get(row, 'runs')
+    if type(runs) is not int or type(counted) is not int or runs < 1:
+        return 'no run'
+    return (('{:,}'.format(total) + ' tokens' if type(total) is int and counted > 0 else 'not reported')
+            + ', from ' + str(counted) + ' of ' + str(runs) + (' run' if runs == 1 else ' runs'))
+
+
+def usage_words(found):
+    """The section "Usage" of report.md, from the `usage` of report.json, whatever shape
+    that has: a value that is no list where one belongs is read as an empty one."""
+    out = ['## Usage', '']
+    if not isinstance(found, dict):
+        return out + ["Not known: the driver's record was not read in full, so the runs of this shift are not known.", '']
+    listed = lambda value: [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+    seats = listed(found.get('by_seat'))
+    if found.get('by_seat') is None:
+        return out + ['Usage was left out of this report (' + plain(found.get('left_out')) + '). driver-state.json '
+                      'has what the host recorded of each builder turn and review attempt.', '']
+    out += ['Tokens of each builder turn and review attempt, as its CLI reported it at the end of the run. The host did '
+            "not count them and cannot check them: a figure is what a process printed on a pipe that the seat's own "
+            'work also reaches. A run that did not end on its own with status 0 has none. No cost is given: one total '
+            'has no price.', '']
+    if found.get('replayed'):
+        out += ['**The host that ran this shift recorded no usage.** Every figure here was read again from the kept '
+                "logs when this report was made: a review's from the error output its receipt names by hash, and a "
+                "builder turn's from the end of its log, which the host cannot tell from one written to later.", '']
+    for row in seats:
+        named = ', '.join(plain(row.get(key), 100) for key in ('agent', 'model') if isinstance(row.get(key), str))
+        out.append('- ' + plain(row.get('seat'), 20).capitalize() + (' (' + named + ')' if named else '') + ': '
+                   + tokens_words(row) + '.')
+    out += ['- Driver: not counted. It ran in your terminal and the host read none of its output.',
+            '- No number is given across seats: the CLIs do not count alike.']
+    runs = found.get('runs')
+    if runs is None:
+        return out + ['', 'The list of runs was left out of this report at its own size limit; driver-state.json has '
+                          'what the host recorded of each.', '']
+    runs = listed(runs)
+    if not runs:
+        return out + ['', 'No builder turn and no review ran.', '']
+    tasks = {}
+    for row in listed(found.get('by_task')):
+        if isinstance(row.get('task'), str):
+            tasks.setdefault(row['task'], []).append(plain(row.get('seat'), 20) + ' ' + tokens_words(row))
+    out += ['- Task ' + plain(name, 100) + ': ' + '; '.join(parts) + '.' for name, parts in list(tasks.items())[:USAGE_TASKS]]
+    if len(tasks) > USAGE_TASKS:
+        out.append('- ' + str(len(tasks) - USAGE_TASKS) + ' more tasks are in report.json.')
+    out += ['', '| Task | Seat | Run | Tokens |', '|---|---|---|---|']
+    for run in runs[:USAGE_SHOWN]:
+        which = ('turn ' + plain(run.get('turn'), 20) if run.get('seat') == 'builder'
+                 else 'review ' + plain(run.get('review'), 20) + ', attempt ' + plain(run.get('attempt'), 20))
+        count = usage.total({key: run[key] for key in ('form', 'stated', 'not_reported') if key in run})
+        why = run.get('not_reported')
+        figure = ('{:,}'.format(count) if count is not None
+                  else 'not reported: ' + (usage.REASONS[why] if isinstance(why, str) and why in usage.REASONS
+                                           else usage.REASONS['malformed']))
+        out.append('| ' + plain(run.get('task'), 100) + ' | ' + plain(run.get('seat'), 20) + ' | ' + which + ' | '
+                   + figure + ' |')
+    more = len(runs) - min(len(runs), USAGE_SHOWN) + (found['more'] if type(found.get('more')) is int else 0)
+    if more > 0:
+        out += ['', str(more) + ' more runs are not in this table; report.json and driver-state.json have them.']
+    return out + ['']
+
+
 def undone_words(blocker):
     """One blocker for "Not done": where the task stopped first, then any reason
     still recorded for it."""
@@ -2327,6 +2539,7 @@ def markdown(doc, sha):
         'The host counts only the tasks the driver briefed; it does not know whether the direction held more.'
         if left is None else 'The driver stated that nothing in the direction was left unstarted.')]
     out += leftover_words(doc.get('leftovers')) + worktree_words(doc.get('leftovers'))
+    out += [''] + usage_words(doc.get('usage'))[:-1]
     actions = [a for a in doc.get('actions') or [] if isinstance(a, dict)]
     # A review that asked for changes is answered `blocked` too. It is a round of the
     # work and is counted apart from what the host refused.
@@ -2436,6 +2649,10 @@ def write(view, *, previous=None):
         doc.pop('reason', None)
         doc['not_started'] = doc['driver_notes'] = doc['last_activity'] = None
         doc['head_unaccepted'] = doc['stop'] = None  # of tasks and of an ending this form no longer holds
+        if doc.get('usage') is not None:
+            # The runs are of the tasks, which are dropped: left out, and said to be.
+            doc['usage'] = dict(runs=None, by_task=None, by_seat=None, driver='not counted', replayed=False,
+                                left_out='output limit exceeded; retained details omitted')
         if doc.get('open_findings') is not None:
             doc['open_findings'] = dict(OPEN_UNKNOWN, items=[])  # the tasks are dropped, and a list of their findings with them
         if doc.get('repeated_findings') is not None:

@@ -11,7 +11,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from . import channels, cli_words, receipts, review as contract, review_dir
+from . import channels, cli_words, receipts, review as contract, review_dir, usage
 from .bounds import Budget, Sources, closing, wind_down as default_wind_down
 from .layout import Elapsed, Refused
 from .grants import moment
@@ -27,6 +27,7 @@ OUTSTANDING = 64  # findings one repair round can be handed
 SEVERITY = {"blocker": 0, "major": 1, "minor": 2}
 TURN_DEFAULT, TURN_MAX, TURN_CAP = 1800, 7200, 32
 TURN_LOG_LIMIT = 4 * 1024 * 1024
+BUILDER_LOG = "logs/builder-turn-{task}-{turn}.log"  # the log of one builder turn; the report knows it by this name
 PUMP_READS = 64  # at most 4 MiB read per host loop pass
 LAST_PUMPS = 16  # passes of that size at a review's close, to come to the end of both pipes
 WRITE_RESERVE = 0.5  # seconds kept for writing a turn's end before any optional listing
@@ -67,13 +68,18 @@ WINDING = ("What a turn already handed in can still be taken with consume and cl
 DROPPED = ("GIT_", "SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_AGENT_PID", "GIT_ASKPASS", "SUDO_ASKPASS")
 
 
-def summed(item):
-    """What the driver's state keeps of one attempt of a review: how it went, and what
-    the host did with the builder's receipts for it where the attempt says."""
+def summed(item, stated=None):
+    """What the driver's state keeps of one attempt of a review: how it went, what the
+    host did with the builder's receipts for it where the attempt says, and `stated`,
+    what the reviewer's CLI stated of its usage as this host read it (`usage`). That is
+    kept here and not in the attempt itself, which goes into the review receipt as it
+    is. An attempt that did not start ran no process and has none."""
     kept = {name: item[name] for name in ("attempt", "status", "verdict", "ended_by", "reasons", "started", "ended",
                                           "elapsed_seconds", "repository")}
     if "evidence" in item:
         kept["evidence"] = item["evidence"]
+    if not str(item["ended_by"]).startswith("not started"):
+        kept["usage"] = stated if stated is not None else usage.none("not_recorded")
     return kept
 
 
@@ -216,6 +222,12 @@ class Driver:
         # `review_said` the last lines of each failed run of a reviewer that ended by
         # itself, by (request, attempt). All of it is held in this process only.
         self.tails, self.turn_tail, self.review_said = {}, None, {}
+        # For what a seat's CLI states of its usage (`usage`): a longer end of each pipe
+        # of the owned process; of the builder turn last closed, the end of its one pipe
+        # and whether that pipe gave its end; and the record of each attempt of the
+        # review at hand, by (request, attempt). Read from the pipes by this process
+        # and held in it only: never from a log, which a seat can write to.
+        self.usage_ends, self.turn_usage, self.review_usage = {}, None, {}
         # The one owned process is a builder turn or a review. A review's error output
         # has its own file; `reviewing` is what the host holds of the running attempt.
         self.kind, self.err_fd, self.err_bytes, self.err_dropped, self.reviewing = "turn", None, 0, 0, None
@@ -538,7 +550,7 @@ class Driver:
         self.require_live(new_work=True)
         cutoff = self.clock() + seconds  # fixed now: slow checks below shorten the turn, never extend it
         number = len(task["turns"]) + 1
-        log = "logs/builder-turn-" + task["id"] + "-" + str(number) + ".log"
+        log = BUILDER_LOG.format(task=task["id"], turn=number)
         # Intent first: a crash after this line leaves a turn the next host records as lost.
         state["turn"] = dict(task_id=task["id"], turn=number, started=self.now().isoformat(),
                              limit_seconds=seconds, log=log)
@@ -581,6 +593,7 @@ class Driver:
         self.turn_end, self.turn_fd = cutoff, fd
         self.turn_bytes = self.turn_dropped = 0
         self.pipe_end, self.tails, self.turn_tail = {}, {}, None
+        self.usage_ends, self.turn_usage = {}, None
         self.stopping = self.observed = None
         stream = getattr(self.child, "stdout", None)
         if stream is not None:
@@ -631,6 +644,7 @@ class Driver:
         if review is None or (review["task_id"], review["request_id"]) != (task["id"], task["request_id"]):
             key = FINDINGS[task["stage"]]
             self.review_said = {}  # of an earlier review, whose answer was given
+            self.review_usage = {}
             state["review"] = dict(task_id=task["id"], review=len(task["reviews"]) + 1, request_id=task["request_id"],
                                    stage=task["stage"], round=task["round"], target=task[key],
                                    prior=[dict(id=item["id"], severity=item["severity"]) for item in task["required"][key]],
@@ -767,6 +781,7 @@ class Driver:
         self.turn_end, self.turn_fd, self.err_fd = cutoff, opened[0], opened[1]
         self.turn_bytes = self.turn_dropped = self.err_bytes = self.err_dropped = 0
         self.pipe_end, self.tails, self.turn_tail = {}, {}, None
+        self.usage_ends, self.turn_usage = {}, None
         self.stopping = self.observed = None
         for name in ("stdout", "stderr"):
             stream = getattr(self.child, name, None)
@@ -840,7 +855,7 @@ class Driver:
             reasons.append(cli_words.ALTERED + ", ".join(held["altered"]) + ") is not what the "
                            "reviewer printed: the log was written to by something else while the review ran")
         if held.get("undrained"):
-            reasons.append("what the reviewer printed could not be read to its end")
+            reasons.append(cli_words.UNDRAINED)
         if "err" not in kept:
             # Both logs back the attempt, an empty one too; a verdict beside a log that
             # could not be verified is not taken.
@@ -876,6 +891,12 @@ class Driver:
             # Not in the receipt, whose shape stays as it is: held here for the answer
             # to the driver, and made again by the report from the logs the receipt names.
             self.review_said[(review["request_id"], running["attempt"])] = said
+        # What the reviewer's CLI stated of its usage, on its error output. Only of a run
+        # that ended on its own with status 0 and whose pipes both gave their end. Not in
+        # the receipt either: `stated` puts it on what the task keeps of the attempt.
+        self.review_usage[(review["request_id"], running["attempt"])] = usage.read(
+            usage.form(self.value["seats"]["reviewer"]), held.get("usage"),
+            ended=outcome == "exit" and code == 0, whole="usage" in held and not held.get("undrained"))
         return self.attempt_done(view, state, task, self.with_evidence(dict(
             attempt=running["attempt"], directory=running["directory"], instructions_sha256=held.get("instructions"),
             marker=running["marker"], argv=held.get("argv", []), started=running["started"],
@@ -984,7 +1005,7 @@ class Driver:
         tried = len(review["attempts"])
         summary = dict(review=review["review"], stage=stage, round=task["round"], request_id=review["request_id"],
                        target=review["target"], outcome=outcome, receipt=None, findings=[],
-                       attempts=[summed(item) for item in review["attempts"]])
+                       attempts=[summed(item, self.stated(review, item)) for item in review["attempts"]])
         failures = "; ".join(item["reasons"][0] for item in review["attempts"] if item["reasons"])[:1200]
         quoted = None
 
@@ -1124,6 +1145,11 @@ class Driver:
                                       "no longer fits in the working time left. The work stays handed in and not "
                                       "reviewed."))
 
+    def stated(self, review, item):
+        """The usage record this process holds for one attempt of the review, or None:
+        the attempt was run by an earlier host process, or did not start."""
+        return self.review_usage.get((review["request_id"], item["attempt"]))
+
     def review_lost(self, state):
         """A review recorded as running by an earlier host process: nothing is known of
         its end and nothing is taken from it."""
@@ -1136,7 +1162,7 @@ class Driver:
         task["reviews"].append(dict(
             review=review["review"], stage=review["stage"], round=review["round"], request_id=review["request_id"],
             target=review["target"], outcome=outcome, receipt=None, findings=[], detail=detail,
-            attempts=[summed(item) for item in review["attempts"]]))
+            attempts=[summed(item, self.stated(review, item)) for item in review["attempts"]]))
         state["last_review"] = dict(task_id=task["id"], stage=review["stage"], round=review["round"], outcome=outcome,
                                     receipt=None, findings=[], detail=detail)
         state["review"] = None
@@ -1197,6 +1223,7 @@ class Driver:
             # What is quoted of a CLI that failed is what came through the pipe: also
             # after the log is full, and never what a seat put into a file under logs/.
             self.tails[name] = cli_words.tail(self.tails.get(name, b""), chunk)
+            self.usage_ends[name] = usage.roll(self.usage_ends.get(name), chunk)
             keep, written = chunk[:max(0, TURN_LOG_LIMIT - kept)], 0
             if keep and fd is not None:
                 try:
@@ -1231,6 +1258,17 @@ class Driver:
         said = cli_words.turn_said(outcome, code, changed, self.turn_tail) if seen is not None else []
         if said:
             row["said"] = said
+        # What the builder's CLI stated of its usage (`usage`), on every row of a turn that
+        # had a process: of one this host ran, from the end of the pipe as this host read
+        # it, and only when the process ended on its own with status 0 and the pipe gave
+        # its end; of one an earlier host process ran, that none was recorded. The row of
+        # a turn that did not start has no such key.
+        if seen is not None:
+            end, whole = self.turn_usage or (None, False)
+            row["usage"] = usage.read(usage.form(self.value["seats"]["builder"]), end,
+                                      ended=outcome == "exit" and code == 0, whole=whole)
+        elif not str(outcome).startswith("not started"):
+            row["usage"] = usage.none("not_recorded")
         task["turns"].append(row)
         state["turn"] = None
 
@@ -1364,8 +1402,13 @@ class Driver:
             self.reviewing["said"] = bytes(printed["stdout"]) if "stdout" in printed else None
             self.reviewing["dropped"] = self.turn_dropped + self.err_dropped
             self.reviewing["tails"] = dict(self.tails)
+            self.reviewing["usage"] = self.usage_ends.get("stderr")  # whether it is whole: `undrained`
         else:
             self.turn_tail = self.tails.get("stdout", b"")
+            # A builder has one pipe. Whether it gave its end is kept with what it gave:
+            # no further pass is made for it, so a pipe that something still holds open,
+            # or that had more than one pass reads, leaves the turn without a figure.
+            self.turn_usage = (self.usage_ends.get("stdout"), self.pipe_end.get("stdout") == "end")
         for name in ("stdout", "stderr"):
             stream = getattr(child, name, None)
             try:

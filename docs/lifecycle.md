@@ -309,7 +309,9 @@ shift ends, the host stops the whole group and records on the task
 output_dropped_bytes, elapsed_seconds, receipts_changed, request_id}`.
 `request_id` is the phase the turn ran in (a row written by an earlier host
 has none); `continue` reads it to tell whether the last turn of the open
-phase handed something in. `limit_seconds` is
+phase handed something in. A row can also hold `said` and, for a turn that
+had a process, `usage`: see "What a CLI wrote last" and "What a CLI stated
+of its usage" below. `limit_seconds` is
 the time the turn was allowed. `elapsed_seconds` runs from just before the
 host started the process until the host saw it over or began stopping it,
 in whole seconds; it is what the host observed at its polling interval, not
@@ -1089,6 +1091,49 @@ itself built is taken. A host process started later holds none of this in
 memory and takes nothing up; for it the review is lost. Before this, the
 second try found the slot taken, or its own receipt file in `receipts/`, and
 blocked a task the reviewer had accepted.
+
+### What a CLI stated of its usage
+
+Some CLIs end a run by stating how many tokens it used. The host records
+that statement for the report (`usage.py`) and decides nothing from it. It
+does not count tokens and cannot check the figure.
+
+- **Which seats.** One form is read: `codex exec` in its text form, which
+  ends its transcript with a line `tokens used` and a line with one number.
+  Whether a seat has that form is taken from the signed seat alone: the agent
+  is `codex`, its arguments begin with `exec` and hold no `--json`. Every
+  other seat is recorded as not reported; in the form the built-in `claude`
+  and `agy` seats are run in, their CLIs state no usage.
+- **From what.** From the bytes the host itself read from the pipe, never
+  from a file under `logs/`. Beside the 8 KiB it keeps for the last lines,
+  the host keeps the last 64 KiB of each pipe, also after the log is full.
+  For a builder turn that is the one pipe that carries both of its streams,
+  where the final answer is printed once more after the figure; for a
+  review it is the error output.
+- **When.** Only of a process the host saw end on its own with status 0 and
+  whose pipe gave its end. A run that was stopped at its limit, failed, was
+  lost, or left its pipe held open by something it started is not reported,
+  whatever stands in its output: the figure is printed last, so a run that
+  did not finish has none of its own.
+- **The rule.** The last line that is exactly `tokens used` decides. The
+  line after it must be a number, `12,345` or `12345`, of at most 17
+  characters and at most 10^12. Otherwise nothing is reported: an earlier
+  pair, which a transcript can hold from a file the run read, is never taken
+  in its place. An answer longer than 64 KiB after the figure loses it.
+- **Where it is kept.** The row of an ended builder turn in
+  `driver-state.json` has `usage`: `{form, stated: {total}}`, or
+  `{not_reported: REASON}` with the form where the seat has one. A turn
+  that did not start has no such key. For a review the record is on what
+  the task keeps of each attempt (`reviews[].attempts[].usage`) and not in
+  the review receipt, whose shape is as it was. The host process that ran
+  the attempt holds the record until the review is over; an attempt that
+  an earlier host process ran is `not_recorded`.
+
+What this cannot show: the seat's own work reaches the same pipe. A builder's
+final answer that ends in those two lines replaces the figure, and a process
+the seat starts can write them. The report therefore says "as its CLI
+reported it". The driver's seat is not counted at all: it has the terminal.
+See `usage` in [shift reports](reports.md).
 
 ## Wind-down
 

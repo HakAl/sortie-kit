@@ -82,6 +82,16 @@ repositories. They have shown:
   line stays unchecked. On earlier shifts, where the statement gave the two
   commits and nothing else, 4 to 10 such lines were answered `not_checked`
   on several shifts.
+- The report's Usage section with a `codex` builder, in one shift. The
+  host recorded what the builder's CLI printed of its tokens at the end of
+  each of four turns, and the report gave the four figures and their sum
+  "from 4 of 4 runs". Two of the four were compared by hand with the
+  `tokens used` lines of the turn logs, and matched. The `claude` reviewer read "not
+  reported" for its three runs, the driver "not counted", and no number was
+  given across seats. A figure is what a process printed on a pipe that
+  the seat's own work also reaches: the host did not count the tokens and
+  cannot check them. See
+  [shift reports](reports.md).
 
 Others than the project's developers have run real shifts too, on a build
 that has `sortie doctor`, and told the project what they saw. Those shifts
@@ -123,6 +133,13 @@ hosted checks, and by nothing else:
   remote-tracking ref that holds the candidate, or something untracked or
   staged left behind, and what the host's statement of the repository and
   the reviewer then say of it.
+- A `codex` reviewer's tokens recorded by the host as the review ran. What
+  there is of it is a reading again, and no recording: for two real shifts
+  that an earlier build had kept, one of them run by others, the report of
+  this build read the figures from the kept logs afterwards, the four
+  review attempts of a `codex` reviewer among them, and says on every such
+  row that it was read again. Nor has a run whose form is read ended on its
+  own with a figure that was missing or malformed.
 - A lapse in the hold against idle sleep, and a hold that is refused or
   dropped.
 

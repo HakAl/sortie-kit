@@ -309,6 +309,64 @@ clickable. If the readable part cannot be built from what was kept, a short
   look failed, when the report did not take the closeout, and when not
   every task of the driver's record could be read. Only the commit at HEAD is compared; whether it holds an accepted
   commit in its history is not looked at.
+- `usage`: what the seats' CLIs stated of the tokens they used, or `null`
+  when not every task of the driver's record could be read. The key is an
+  addition to `sortie-kit.report.v2`; a report made by an earlier build has
+  none. Nothing here is measured or checked by the host: each figure is
+  what a process printed at its end, on a pipe that the seat's own work also
+  reaches, so it reads "as its CLI reported it" and never more.
+  - `runs`: one row for each builder turn (`seat: "builder"`, `task`,
+    `turn`) and each review attempt (`seat: "reviewer"`, `task`, `review`,
+    `attempt`) that had a process. A turn or an attempt that did not start
+    is no run. A row has either `form` and `stated`, or `not_reported` with
+    one word for the reason, and `form` where the seat has one. A figure
+    that is missing, malformed or out of bounds is not reported; it is never
+    0. At most 4096 rows; `more` counts the rest, which the totals include.
+  - One form is known, `codex-text`: `codex exec` without `--json` ends its
+    transcript with a line `tokens used` and a line with one number, and
+    `stated` is `{total: N}`. It is one total: no split into input, output,
+    cached or reasoning tokens, and so no cost. Every other seat is not
+    reported with `no_form`, the built-in `claude` and `agy` seats among
+    them: in the form they are run in, their CLIs state no usage.
+  - The reasons: `no_form` (above); `not_ended`, the process did not end on
+    its own with status 0, whatever it printed; `no_end`, the end of what it
+    printed was not seen, because something still held the pipe open or more
+    was printed than the host read at the end; `no_figure`, no such pair of
+    lines in the last 64 KiB; `malformed`, the last line `tokens used` is not
+    followed by a number of the form `12,345` or `12345` of at most 10^12,
+    or the record in the state is not one the host writes; `not_recorded`,
+    the run was recorded by a host process that kept none; `no_log`, only in
+    a report read again from kept logs, see below.
+  - `by_task`: for each task and seat, `total`, `counted` and `runs`: the sum
+    of the totals stated, of how many runs it is, and how many runs there
+    were. `total` is `null` when no run stated one. `by_seat`: the same for
+    the builder and the reviewer over the shift, with the seat's `agent` and
+    `model` from the kept grant. There is no number across seats: the CLIs do
+    not count alike.
+  - `driver` is `"not counted"`: the driver's CLI has the terminal, and the
+    host reads none of its output.
+  - `replayed`: `true` when the driver's record has no usage for any run,
+    which is a shift run by a build from before the host recorded it. For
+    such a shift, and no other, the report reads the figures again from the
+    kept logs, and each row then has `read_again: true`. A review attempt is
+    read from the error output that its review receipt names by hash (the
+    log, or the host's kept copy), and only where the receipt says the
+    attempt ended on its own with status 0, dropped nothing, was read to
+    the end of both pipes and was not written to by something else. A
+    builder turn is read from the last
+    64 KiB of its log under `logs/`, of a turn recorded as ended on its own
+    with status 0 and nothing dropped. No hash of a builder's log is kept,
+    so the host cannot tell that log from one written to later, and its
+    end is not among `inputs`. A log that is missing, larger than 4 MiB or
+    no regular file gives `no_log` and is no problem of the evidence: the
+    status of an older shift does not change for it. A shift whose record
+    has usage for any run is never filled in from a log.
+  - `runs` and `by_task` are `null`, with `left_out`, when they did not fit
+    in the report's own bound on details; `by_seat` is `null` too in the
+    short report above 1 MiB.
+  `report.md` has the section "Usage": a line for each seat and task with
+  "from K of N runs", the line on the driver, and a table of at most 200
+  runs.
 - `stop`: `{by: "developer"}` when the shift folder holds the `STOP` marker
   with the very bytes `sortie stop` writes, else `null`. That marker is whole
   evidence of a withdrawal and no problem with the evidence: it is not
