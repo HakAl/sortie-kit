@@ -88,6 +88,7 @@ Write each marker as a whole line of its own: the text from the first `=`
 to the last, with nothing before or after it and no quotes around it. Write
 each once, and do not repeat them anywhere else in your answer.
 
+$RETRY
 $PRIOR```json
 $EXAMPLE
 ```
@@ -104,6 +105,8 @@ and `target` is an example. The fields, all required, and no others:
   you read that shows it) and `recommendation`.
 - `prior`: a list, empty unless you were given earlier findings to answer.
   Each has `id`, `resolved` (`true` or `false`) and `reason`.
+  An earlier finding that still holds stands here alone, with `resolved`
+  `false`: never again under `findings`, whose ids are all new.
 - `examined`: a list of what you actually read, in words. Never empty.
 - `not_examined`: a list of what you did not or could not read and what
   you could not settle. Empty when there is nothing to say.

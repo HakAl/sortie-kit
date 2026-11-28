@@ -848,8 +848,13 @@ build receipt, the host begins the review of that plan or candidate itself:
 
 This is not a builder turn. It has its own record: `review` in
 `driver-state.json` while a review is open (`task_id`, `review`, `request_id`,
-`stage`, `round`, `target`, `prior`, `attempts`, `running`), `last_review`
-for how the last one ended, and `reviews` on the task. The turn count and the
+`stage`, `round`, `target`, `prior`, `attempts`, `running`, and `refused`
+where a second run is to be told why the first answer was refused: the
+host's code for it, from a fixed list), `last_review`
+for how the last one ended, and `reviews` on the task. `refused` is optional
+in one direction only: this host reads a state written without the key,
+while an earlier host, which checks the exact keys of an open review,
+refuses a state whose open review carries it. The turn count and the
 `continue` rules for turns are untouched, and a review costs no builder turn.
 
 When the run ends the host applies [the review contract](review.md) to the
@@ -915,8 +920,10 @@ any receipt, and moves the task:
 - A failed attempt is never an accept and never `CHANGES`, and uses no repair
   round. The host makes one more attempt at once when the shift is active, a
   review may still start and enough of its lock is left to prepare one. The
-  second attempt is given the same instructions and not the reason the first
-  was refused. Two attempts at most. Both are kept in the one receipt of that review, so a
+  second attempt is told why the first answer was refused, in one fixed
+  sentence of the host's and with nothing of that answer, only where the
+  first failed for its answer alone; after any other failure it is given the
+  same instructions ([review.md](review.md)). Two attempts at most. Both are kept in the one receipt of that review, so a
   failed first attempt does not weaken a later accept. After a second failure
   the task is `blocked` for the developer with `review failed twice`, and the
   shift goes on: the driver can brief the next task. When the first attempt

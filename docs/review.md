@@ -31,7 +31,8 @@ print the two texts (`data/templates/review-plan.md` and
   `not_met`, `not_checked` or `disclosed` with the place where that was
   seen. `met` means the reviewer read the code that does it. A thing
   delivered for only some of the cases the brief covers is `not_met`, and
-  every `not_met` is a finding. `disclosed` is only for a thing the brief
+  every `not_met` is a finding: a new one, or in a repair round an earlier
+  one that the reviewer holds open under `prior`. `disclosed` is only for a thing the brief
   itself allows to be closed by saying that it is not delivered, when the
   change says so; a gap the builder wrote down by its own choice is
   `not_met`. Of each finding the reviewer is asked whether it means that
@@ -170,8 +171,37 @@ before the run. A run
 that misses one of these is a failed attempt whatever its object says. A
 failed review is run once more when the shift is active and a review may
 still start; a second failure blocks the task. The second run gets a new
-directory and marker and the same instructions. It is not told why the first
-answer was refused; the reason is in the receipt and the report.
+directory and marker.
+
+Where the first run failed for its answer alone, the second is told why, in
+one sentence of the host's. That is the case when the reviewer ended on its
+own with status 0, all it printed was kept and read to its end, the
+repository and `receipts/` were as before, and the one reason for the
+failure is that the answer did not keep the contract. The host keeps a code
+for each way it refuses an answer, from a fixed list, and the sentence
+belongs to the code: nothing of the first answer, no id and no words of the
+reviewer, goes into the second run's instructions. What the first run
+printed still decides which of the fixed sentences the second run reads. The
+note says that the first answer is not shown and settles nothing, and asks
+for the whole review again; the host cannot tell whether the reviewer did
+review again. A run that failed for anything else, or for something more
+(stopped at its limit, another exit status, output dropped, a log altered, a
+pipe not read to its end, a repository that changed or could not be looked
+at), is followed by a second with the same instructions as the first.
+
+That a second run was told shows in two places only: a line in
+`logs/host.log` with the code, and the `REVIEW.md` kept in that run's
+directory, whose SHA-256 the receipt names. The report does not say it, and
+the two hashes of a review's instructions differ in every review, since each
+run has a marker of its own. The reason the first run failed for is in the
+receipt and the report, as before.
+
+In a repair round the reviewer is told how an earlier finding that still
+holds is carried: under `prior` with `resolved` false, and not again under
+`findings`, neither under its id nor under a new one. An answer whose
+finding has the id of an earlier one is refused, as before; `CHANGES` with
+an earlier finding not resolved and nothing new is a whole answer. The host
+cannot tell a finding written again under a new id from a new one.
 
 ## What the list does not show
 

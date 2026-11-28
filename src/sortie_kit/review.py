@@ -66,6 +66,44 @@ NONCE = re.compile(r"[0-9a-f]{16}\Z")
 COMMIT = re.compile(r"([0-9a-f]{40}|[0-9a-f]{64})\Z")
 NEWLINE = re.compile(r"\r\n|\n|\r")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
+# Why the host refused a reviewer's answer for the contract: a closed set of codes, each set by the host
+# at the place where it refuses, and for each the one sentence a second run of the review is told. No
+# sentence holds anything of the answer: the reason that is kept and shown may name an id the reviewer
+# chose or quote its words, and nothing of that goes into instructions.
+RETOLD = dict(
+    too_long="the answer was too long for the host to look through.",
+    markers_none="no review object stood between this run's two marker lines.",
+    markers_many="one of this run's marker lines stood more than once in the answer.",
+    not_json="what stood between the marker lines was not one JSON object.",
+    shape="the object did not have exactly the fields described below, each of the kind and length "
+          "described there.",
+    schema="the object's `schema` was not the one asked of this review.",
+    requirements="`requirements` did not keep its shape: a list, never empty, each entry with exactly "
+                 "`asked`, `status` and `where` as described below.",
+    finding_names="an entry under `findings` did not have `requirement` as the position of a requirement "
+                  "in your list, counted from 1, or null.",
+    repeated_id="an id stood more than once under `findings`.",
+    examined="`examined` was empty.",
+    target="`target` was not the one shown in the example below.",
+    prior_answers="`prior` did not answer each earlier finding once and no other.",
+    reused_id="an entry under `findings` had the id of an earlier finding. An earlier finding that still "
+              "holds goes under `prior` alone, with `resolved` false.",
+    finding_requirement="a finding named a requirement that your list marked `met` or `not_checked`. A "
+                        "finding names only a requirement marked `not_met` or `disclosed`, and null when it "
+                        "is about something else.",
+    accept_not_met="the verdict was `ACCEPT` beside a requirement answered `not_met`.",
+    accept_finding="the verdict was `ACCEPT` beside a blocker or major finding.",
+    accept_unresolved="the verdict was `ACCEPT` while an earlier blocker or major finding was answered as "
+                      "not resolved.",
+    changes_nothing="the verdict was `CHANGES` with no finding and no earlier finding answered as not "
+                    "resolved.")
+
+
+class Unkept(Refused):
+    """A reviewer's answer refused for the contract, with the host's code for why: one of RETOLD."""
+    def __init__(self, code, words):
+        super().__init__(words)
+        self.code = code
 
 
 def nonce():
@@ -131,12 +169,15 @@ def unshown(kind, evidence):
                                    break_long_words=False, break_on_hyphens=False)) + "\n"
 
 
-def instructions(kind, target, value, prior=(), evidence="shown"):
+def instructions(kind, target, value, prior=(), evidence="shown", refused=None):
     """What the reviewer of one run is told, as one text.
 
     `evidence` is what the host did with the builder's receipts for this run, one
     of EVIDENCE: where it showed none the text says so and why, and describes no
-    directory that is not there.
+    directory that is not there. `refused` is given for the second run of a
+    review whose first answer the host refused for the contract alone: the
+    host's code for why, one of RETOLD, and never words. The run is told the
+    host's sentence for it.
 
     The text names this run's two marker lines inside sentences and shows the
     example object without them, so the instructions printed back by a CLI
@@ -172,13 +213,26 @@ def instructions(kind, target, value, prior=(), evidence="shown"):
                    "  A claim there is not evidence: check it against the " + ("plan" if kind == "plan" else "patch") + ".\n")
         earlier = ("This is a repair round. Under `prior`, answer every one of these earlier findings by its id\n"
                    "and no other: " + names + ". `resolved` is true only when you checked that it is, or\n"
-                   "when the finding rested only on proof this directory cannot hold. Give new findings new ids.\n\n")
+                   "when the finding rested only on proof this directory cannot hold. Give new findings new ids.\n"
+                   "An earlier finding that still holds is answered under `prior` with `resolved` false\n"
+                   "and your reason, and is NOT written again under `findings`, neither under its id\n"
+                   "nor under a new one: an id of an earlier finding there is refused and the whole\n"
+                   "answer with it. `findings` holds only what is new, and may be empty: `CHANGES`\n"
+                   "with an earlier finding not resolved and nothing new is a whole answer.\n"
+                   + ("A requirement you answer `not_met` for the reason of an earlier finding that you\n"
+                      "hold open under `prior` has its finding there.\n" if kind == "commit" else "") + "\n")
     if evidence not in EVIDENCE:
         raise Refused("what the host did with the evidence is one of " + ", ".join(EVIDENCE))
+    if refused is not None and (not isinstance(refused, str) or refused not in RETOLD):
+        raise Refused("why a first answer was refused is given as one of the host's codes")
+    retry = "" if refused is None else "\n".join(textwrap.wrap(
+        "This is the second and last run of this review. The host could not take the answer of the first run: "
+        + RETOLD[refused] + " The first answer is not shown to you and settles nothing: review the work again "
+        "and answer in full.", 76, break_long_words=False, break_on_hyphens=False)) + "\n\n"
     text = files("sortie_kit").joinpath("data", "templates", "review-" + kind + ".md").read_text()
     for name, filled in (("$EVIDENCE\n", SHOWN + (SHOWN_REPOSITORY if kind == "commit" else "") if evidence == "shown"
                           else unshown(kind, evidence)),
-                         ("$ANSWERS\n", answers), ("$PRIOR", earlier), ("$BEGIN", begin), ("$END", end),
+                         ("$ANSWERS\n", answers), ("$RETRY\n", retry), ("$PRIOR", earlier), ("$BEGIN", begin), ("$END", end),
                          ("$EXAMPLE", json.dumps(example, indent=2))):
         if text.count(name) != 1:
             raise Refused("packaged review instructions are damaged")
@@ -201,24 +255,24 @@ def extract(text, value):
     """The one object between this run's marker lines."""
     begin, end = markers(value)
     if not isinstance(text, str) or len(text) > OUTPUT_LIMIT:
-        raise Refused("the reviewer's output is too long to look through")
+        raise Unkept("too_long", "the reviewer's output is too long to look through")
     # Lines end at a line feed or carriage return only: U+2028 and its kind may stand in a JSON string.
     lines = [line.strip() for line in NEWLINE.split(text)]
     starts = [i for i, line in enumerate(lines) if line == begin]
     ends = [i for i, line in enumerate(lines) if line == end]
     if len(starts) > 1 or len(ends) > 1:
-        raise Refused("more than one review object between this run's markers")
+        raise Unkept("markers_many", "more than one review object between this run's markers")
     if not starts or not ends or ends[0] < starts[0]:
-        raise Refused("no review object between this run's markers")
+        raise Unkept("markers_none", "no review object between this run's markers")
     body = [line for line in lines[starts[0] + 1:ends[0]] if line]
     if len(body) >= 2 and body[0].startswith("```") and body[0][3:].strip().lower() in ("", "json") and body[-1] == "```":
         body = body[1:-1]
     try:
         value = json.loads("\n".join(body), object_pairs_hook=unique, parse_constant=constant)
     except (ValueError, RecursionError) as exc:
-        raise Refused("what is between the markers is not one JSON object") from exc
+        raise Unkept("not_json", "what is between the markers is not one JSON object") from exc
     if not isinstance(value, dict):
-        raise Refused("what is between the markers is not one JSON object")
+        raise Unkept("not_json", "what is between the markers is not one JSON object")
     return value
 
 
@@ -237,20 +291,20 @@ def requirements_checked(value, disclosed=False):
     `disclosed` is a status of the third schema only."""
     statuses = STATUSES + ((DISCLOSED,) if disclosed else ())
     if not isinstance(value, list) or not value or len(value) > ITEMS:
-        raise Refused("requirements is a list of at least one and at most " + str(ITEMS) + " things the brief asks for")
+        raise Unkept("requirements", "requirements is a list of at least one and at most " + str(ITEMS) + " things the brief asks for")
     for item in value:
         if not isinstance(item, dict) or set(item) != REQUIREMENT:
-            raise Refused("a requirement has exactly `asked`, `status` and `where`")
+            raise Unkept("requirements", "a requirement has exactly `asked`, `status` and `where`")
         if not isinstance(item["asked"], str) or not item["asked"].strip() or len(item["asked"]) > 500:
-            raise Refused("the `asked` of a requirement is nonblank text of at most 500 characters")
+            raise Unkept("requirements", "the `asked` of a requirement is nonblank text of at most 500 characters")
         if not isinstance(item["status"], str) or item["status"] not in statuses:
-            raise Refused("the `status` of a requirement is `met`, `not_met`" + (
+            raise Unkept("requirements", "the `status` of a requirement is `met`, `not_met`" + (
                 ", `not_checked` or `disclosed`" if disclosed else " or `not_checked`"))
         where = item["where"]
         if not isinstance(where, str) or len(where) > 500 or (where and not where.strip()):
-            raise Refused("the `where` of a requirement is text of at most 500 characters")
+            raise Unkept("requirements", "the `where` of a requirement is text of at most 500 characters")
         if not where and item["status"] != "not_checked":
-            raise Refused("the `where` of a requirement may be empty only when its status is `not_checked`")
+            raise Unkept("requirements", "the `where` of a requirement may be empty only when its status is `not_checked`")
 
 
 def validate(record, target, prior, schema=None):
@@ -264,67 +318,68 @@ def validate(record, target, prior, schema=None):
     asked(target, prior, schema)
     try:
         if not isinstance(record, dict):
-            raise Refused("missing or unknown fields")
+            raise Unkept("shape", "missing or unknown fields")
         # The schema is looked at before the fields, so an answer in another shape is told which one was asked.
         named = record.get("schema")
         if schema is not None and (not isinstance(named, str) or named != schema):
-            raise Refused("the schema asked of this review is " + schema)
+            raise Unkept("schema", "the schema asked of this review is " + schema)
         if not isinstance(named, str) or named not in SCHEMAS or (named in LISTED and target["kind"] != "commit"):
-            raise Refused("unknown schema, or the schema of a commit review on a plan")
+            raise Unkept("schema", "unknown schema, or the schema of a commit review on a plan")
         listed, naming = named in LISTED, named == SCHEMA_V3
         if listed and "requirements" not in record:
-            raise Refused("a commit review answers the brief under `requirements`, which is missing")
+            raise Unkept("requirements", "a commit review answers the brief under `requirements`, which is missing")
         try:
             channels.fields(record, FIELDS | ({"requirements"} if listed else set()))
         except Refused:
-            raise Refused("missing or unknown fields" + ("; this schema has no requirements list"
-                                                         if not listed and "requirements" in record else "")) from None
+            raise Unkept("shape", "missing or unknown fields" + (
+                "; this schema has no requirements list" if not listed and "requirements" in record else "")) from None
         if listed:
             requirements_checked(record["requirements"], disclosed=naming)
         if record["verdict"] not in VERDICTS:
-            raise Refused("unknown verdict")
+            raise Unkept("shape", "unknown verdict")
         if not isinstance(record["findings"], list) or len(record["findings"]) > ITEMS:
-            raise Refused("findings are a short list")
+            raise Unkept("shape", "findings are a short list")
         for item in record["findings"]:
             if naming and (not isinstance(item, dict) or "requirement" not in item
                            or not (item["requirement"] is None or (type(item["requirement"]) is int
                                    and 1 <= item["requirement"] <= len(record["requirements"])))):
-                raise Refused("each finding has `requirement`: the position in `requirements`, counted from 1, of "
-                              "the thing it says is not delivered in some case, or null")
+                raise Unkept("finding_names", "each finding has `requirement`: the position in `requirements`, "
+                             "counted from 1, of the thing it says is not delivered in some case, or null")
             channels.fields(item, FINDING | ({"requirement"} if naming else set()))
             channels.token(item["id"])
             if item["severity"] not in SEVERITIES:
-                raise Refused("unknown severity")
+                raise Unkept("shape", "unknown severity")
             for key in ("location", "claim", "evidence", "recommendation"):
                 channels.text(item[key], 500 if key == "location" else 2000)
         if not isinstance(record["prior"], list) or len(record["prior"]) > ITEMS:
-            raise Refused("prior is a short list")
+            raise Unkept("shape", "prior is a short list")
         for item in record["prior"]:
             channels.fields(item, ANSWER)
             channels.token(item["id"])
             channels.text(item["reason"], 2000)
             if type(item["resolved"]) is not bool:
-                raise Refused("resolved is true or false")
+                raise Unkept("shape", "resolved is true or false")
         if not strings(record["not_examined"], 500, empty=True):
-            raise Refused("not_examined is a list of short texts")
+            raise Unkept("shape", "not_examined is a list of short texts")
         if not isinstance(record["examined"], list) or (record["examined"] and not strings(record["examined"], 500, empty=False)):
-            raise Refused("examined is a list of short texts")
+            raise Unkept("shape", "examined is a list of short texts")
         ids = [item["id"] for item in record["findings"]]
         if len(set(ids)) != len(ids):
-            raise Refused("a finding id is repeated")
+            raise Unkept("repeated_id", "a finding id is repeated")
     except Refused as exc:
-        raise Refused("the object does not keep the review contract: " + str(exc)) from exc
+        # A refusal of a helper that names no code of its own (a field, an id, a text of `channels`) is of the shape.
+        raise Unkept(getattr(exc, "code", "shape"), "the object does not keep the review contract: " + str(exc)) from exc
     if not record["examined"]:
-        raise Refused("the review says nothing of what was examined")
+        raise Unkept("examined", "the review says nothing of what was examined")
     if record["target"] != target:
-        raise Refused("the review names another target than the one it was given")
+        raise Unkept("target", "the review names another target than the one it was given")
     answered = [item["id"] for item in record["prior"]]
     expected = {item["id"]: item["severity"] for item in prior}
     if sorted(answered) != sorted(expected):
-        raise Refused("the review must answer each earlier finding once and no other: "
-                      + (", ".join(sorted(expected)) or "there are none"))
+        raise Unkept("prior_answers", "the review must answer each earlier finding once and no other: "
+                     + (", ".join(sorted(expected)) or "there are none"))
     if set(ids) & set(expected):
-        raise Refused("a new finding reuses the id of an earlier one")
+        raise Unkept("reused_id", "a new finding reuses the id of an earlier one")
     unresolved = [item["id"] for item in record["prior"] if not item["resolved"]]
     for item in record["findings"]:
         # A finding that names a requirement says a case of it is not delivered. The same answer may not
@@ -332,22 +387,24 @@ def validate(record, target, prior, schema=None):
         position = item.get("requirement")
         if position is not None and record["requirements"][position - 1]["status"] not in NAMEABLE:
             need = record["requirements"][position - 1]
-            raise Refused("finding " + item["id"] + " names requirement " + str(position) + " (" + short(need["asked"])
-                          + "), which the list marks `" + need["status"] + "`: a finding names only what is "
-                          "`not_met` or `disclosed`, and null when it is about something else")
+            raise Unkept("finding_requirement", "finding " + item["id"] + " names requirement " + str(position) + " ("
+                         + short(need["asked"]) + "), which the list marks `" + need["status"] + "`: a finding names "
+                         "only what is `not_met` or `disclosed`, and null when it is about something else")
     if record["verdict"] == "ACCEPT":
         for item in record.get("requirements", ()):
             if item["status"] == "not_met":
-                raise Refused("ACCEPT with a requirement answered not_met (" + short(item["asked"]) + ") is not an accept")
+                raise Unkept("accept_not_met", "ACCEPT with a requirement answered not_met (" + short(item["asked"])
+                             + ") is not an accept")
         for item in record["findings"]:
             if item["severity"] in BLOCKING:
-                raise Refused("ACCEPT with a " + item["severity"] + " finding (" + item["id"] + ") is not an accept")
+                raise Unkept("accept_finding", "ACCEPT with a " + item["severity"] + " finding (" + item["id"]
+                             + ") is not an accept")
         for identity in unresolved:
             if expected[identity] in BLOCKING:
-                raise Refused("ACCEPT while earlier " + expected[identity] + " finding " + identity
-                              + " is not resolved is not an accept")
+                raise Unkept("accept_unresolved", "ACCEPT while earlier " + expected[identity] + " finding " + identity
+                             + " is not resolved is not an accept")
     elif not record["findings"] and not unresolved:
-        raise Refused("CHANGES names nothing to change: no finding and no unresolved earlier finding")
+        raise Unkept("changes_nothing", "CHANGES names nothing to change: no finding and no unresolved earlier finding")
     return record["verdict"]
 
 
@@ -360,6 +417,20 @@ def asked(target, prior, schema=None):
         raise Refused("a review is asked for by a schema this build knows, and the requirement list of a commit only")
 
 
+def judged(text, value, target, prior, schema=None):
+    """`check`, and beside it why the answer was refused: the host's code, one of RETOLD, or None where
+    the answer was taken. The code is the host's own and is in nothing that `check` gives."""
+    markers(value)
+    asked(target, prior, schema)
+    try:
+        record = extract(text, value)
+        verdict = validate(record, target, prior, schema)
+    except Refused as exc:
+        code = getattr(exc, "code", None)
+        return dict(status="failed", verdict=None, reasons=[str(exc)[:300]], record=None), code if code in RETOLD else None
+    return dict(status="complete", verdict=verdict, reasons=[], record=record), None
+
+
 def check(text, value, target, prior, schema=None):
     """What the host takes from one reviewer run's output.
 
@@ -370,11 +441,4 @@ def check(text, value, target, prior, schema=None):
     what the host asked of the run, `schema_for` of its kind; none is given
     only where a kept output is read again (see `validate`).
     """
-    markers(value)
-    asked(target, prior, schema)
-    try:
-        record = extract(text, value)
-        verdict = validate(record, target, prior, schema)
-    except Refused as exc:
-        return dict(status="failed", verdict=None, reasons=[str(exc)[:300]], record=None)
-    return dict(status="complete", verdict=verdict, reasons=[], record=record)
+    return judged(text, value, target, prior, schema)[0]

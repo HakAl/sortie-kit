@@ -434,11 +434,15 @@ class Driver:
             if state["turn"]["task_id"] not in state["tasks"]:
                 raise Refused("running turn names an unknown task")
         if state["review"] is not None:
+            # `refused`: the host's code for why the last attempt's answer was refused, where the next run is
+            # to be told (`note_due`). A state kept by a host from before that has none.
             channels.fields(state["review"], {"task_id", "review", "request_id", "stage", "round", "target", "prior",
-                                              "attempts", "running"})
+                                              "attempts", "running"}, {"refused"})
+            told = state["review"].get("refused")
             if (state["review"]["task_id"] not in state["tasks"] or state["turn"] is not None
                     or not isinstance(state["review"]["attempts"], list)
-                    or len(state["review"]["attempts"]) > REVIEW_TRIES):
+                    or len(state["review"]["attempts"]) > REVIEW_TRIES
+                    or ("refused" in state["review"] and (not isinstance(told, str) or told not in contract.RETOLD))):
                 raise Refused("running review names an unknown task or runs beside a turn")
         if state["last_review"] is not None and not isinstance(state["last_review"], dict):
             raise Refused("invalid last review")
@@ -700,6 +704,9 @@ class Driver:
         # An earlier attempt's end is on disk with this one's intent: nothing of it is held.
         self.kind, self.reviewing, self.observed = "turn", None, None
         opened, made, sha, shown = [], None, None, None
+        # Why the first answer was refused, where that was the contract alone: from the state, so that a
+        # host that takes the review up under a lock of its own tells the second run the same.
+        refused = review.get("refused") if number > 1 else None
         try:
             if seconds < 1:
                 raise Refused("no working time is left for a review")
@@ -727,7 +734,7 @@ class Driver:
                 nonce=running["marker"], seconds=view.budget.remaining() - 3 * WRITE_RESERVE,
                 evidence=[item for item in task["receipts"] if isinstance(item, dict)
                           and item.get("status") == "satisfied" and item.get("stage") in PHASE] if over > 0 else None,
-                evidence_seconds=max(0, over), evidence_left=spare, start=self.repo.get("start"))
+                evidence_seconds=max(0, over), evidence_left=spare, start=self.repo.get("start"), refused=refused)
             for path in (running["stdout"], running["stderr"]):
                 # The host creates both files and keeps these descriptors for the whole
                 # review; what it later reads back is read through them.
@@ -788,6 +795,10 @@ class Driver:
             if stream is not None:
                 os.set_blocking(stream.fileno(), False)
         self.unshown(review, task, number, shown)  # after the start, which it costs nothing
+        if refused is not None:
+            from .launcher import host_log
+            host_log(self.shift, "review " + str(review["review"]) + " of task " + str(task["id"]) + ", attempt "
+                     + str(number) + ": the reviewer was told why the host refused the first answer (" + refused + ")")
         return "recorded", ("review of the " + REVIEW[review["stage"]] + " started by the host (attempt " + str(number)
                             + " of at most " + str(REVIEW_TRIES) + ", limit " + str(seconds) + " seconds); wait for it")
 
@@ -837,7 +848,7 @@ class Driver:
             data = held["final"]["value"]["data"]
             review["attempts"], review["running"] = data["attempts"], None
             return self.finalize(view, state, task, data["outcome"])
-        reasons, result, kept = [], None, {}
+        reasons, result, kept, refusal = [], None, {}, None
         if str(outcome).startswith(LATE):
             reasons.append("the reviewer was first seen to have ended after its signed limit, so it is not known "
                            "to have ended within it")
@@ -866,8 +877,9 @@ class Driver:
             try:
                 # The host names the schema it asked for: a commit review answers the brief requirement by
                 # requirement, and an answer in the earlier shape is a failed attempt, not a silent pass.
-                result = contract.check(held["said"].decode("utf-8", "replace"), running["marker"], review["target"],
-                                        review["prior"], contract.schema_for(review["target"]["kind"]))
+                result, refusal = contract.judged(held["said"].decode("utf-8", "replace"), running["marker"],
+                                                  review["target"], review["prior"],
+                                                  contract.schema_for(review["target"]["kind"]))
                 reasons += result["reasons"]
             except Refused as exc:
                 reasons.append("the review could not be checked: " + str(exc)[:300])
@@ -897,7 +909,7 @@ class Driver:
         self.review_usage[(review["request_id"], running["attempt"])] = usage.read(
             usage.form(self.value["seats"]["reviewer"]), held.get("usage"),
             ended=outcome == "exit" and code == 0, whole="usage" in held and not held.get("undrained"))
-        return self.attempt_done(view, state, task, self.with_evidence(dict(
+        entry = self.with_evidence(dict(
             attempt=running["attempt"], directory=running["directory"], instructions_sha256=held.get("instructions"),
             marker=running["marker"], argv=held.get("argv", []), started=running["started"],
             ended=self.now().isoformat(), elapsed_seconds=elapsed if type(elapsed) is int else None,
@@ -905,7 +917,31 @@ class Driver:
             ended_by=str(outcome)[:600] or "unknown", stdout=kept.get("out"), stderr=kept.get("err"),
             output_dropped_bytes=lost, status="complete" if complete else "failed",
             verdict=result["verdict"] if complete else None, reasons=[item[:600] for item in reasons[:8]],
-            record=result["record"] if complete else None, repository=repository), held.get("evidence")))
+            record=result["record"] if complete else None, repository=repository), held.get("evidence"))
+        # What the next run of this review is told of this one: the code, where the contract alone was why.
+        # In the state and not in the attempt, whose shape in the receipt stays as it is.
+        review.pop("refused", None)
+        told = self.note_due(entry, refusal)
+        if told is not None:
+            review["refused"] = told
+        return self.attempt_done(view, state, task, entry)
+
+    @staticmethod
+    def note_due(entry, code):
+        """The host's code for why an attempt's answer was refused, where the next run is to be told it;
+        None otherwise. It is told only what answering otherwise can put right: the reviewer ended on its
+        own with status 0, all it printed was kept and read to its end, the repository and receipts/ were
+        as before, and the one reason the attempt failed for is that its answer did not keep the contract.
+        The host checks the contract before it looks at the repository, so the first reason alone does not
+        say that: an attempt refused for its answer may have changed the repository as well."""
+        if (not isinstance(code, str) or code not in contract.RETOLD or entry.get("status") != "failed"
+                or entry.get("ended_by") != "exit" or type(entry.get("exit_status")) is not int
+                or entry["exit_status"] != 0 or entry.get("output_dropped_bytes") != 0
+                or entry.get("stdout") is None or entry.get("stderr") is None
+                or entry.get("repository") != "unchanged"
+                or not isinstance(entry.get("reasons"), list) or len(entry["reasons"]) != 1):
+            return None
+        return code
 
     def attempt_done(self, view, state, task, entry):
         """Keep one attempt of the review. A complete one settles the review. A failed

@@ -80,6 +80,34 @@ class ReviewDirectoryTests(test_receipts.ReceiptTests):
         self.assertIn("F1 (major)", (where / "REVIEW.md").read_text())
         self.assertFalse((self.shift / self.make("request-2")[0] / "answers.json").exists())
 
+    def test_the_directory_of_a_second_run_holds_the_note_for_the_code_and_a_first_runs_none(self):
+        path, sha = self.make()
+        plain = (self.shift / path / "REVIEW.md").read_text()
+        self.assertNotIn("second and last run", plain)
+        path, sha = self.make("request-2", refused="reused_id")
+        told = (self.shift / path / "REVIEW.md").read_text()
+        self.assertIn("second and last run", told)
+        self.assertEqual(told, review.instructions("commit", dict(kind="commit", commit=self.candidate), NONCE,
+                                                   [], self.shown, refused="reused_id"))
+        self.assertEqual(sha, hashlib.sha256(told.encode()).hexdigest())
+
+    def test_words_in_place_of_a_code_are_refused_before_anything_is_made(self):
+        with self.assertRaisesRegex(Refused, "one of the host's codes"):
+            self.make("request-3", refused="a new finding reuses the id of an earlier one")
+        self.assertFalse((self.shift / "reviews" / "request-3").exists())
+
+    def test_a_template_with_no_place_for_the_note_or_two_is_refused(self):
+        from importlib.resources import files
+        real = files("sortie_kit").joinpath("data", "templates", "review-commit.md").read_text()
+        self.assertEqual(real.count("$RETRY\n"), 1)
+        for damaged in (real.replace("$RETRY\n", ""), real.replace("$RETRY\n", "$RETRY\n$RETRY\n")):
+            packaged = mock.Mock()
+            packaged.joinpath.return_value.read_text.return_value = damaged
+            with self.subTest(count=damaged.count("$RETRY")), mock.patch.object(review, "files", lambda name: packaged):
+                with self.assertRaisesRegex(Refused, "packaged review instructions are damaged"):
+                    self.make("request-4")
+                self.assertFalse((self.shift / "reviews" / "request-4").exists())
+
     def taken(self, name="ack-1", log=b"Summary: 25 checks, 0 failed\n", stage="ack", keep=True):
         """A receipt of the builder's as the host holds it after taking it: the file, the
         entry on the task, and the host's kept copy of the one log it names."""

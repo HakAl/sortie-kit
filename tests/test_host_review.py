@@ -2591,3 +2591,242 @@ for _class in (HostReviewReportTests, OpenFindingsTests, RequirementsReportTests
 # Left bound, the loop's variable is a second name for the last class and discovery
 # loads that class twice.
 del _class, _name
+
+
+class RetoldTests(ReviewFixture):
+    """A review whose first answer the host refused for the contract alone is run once more with the
+    host's own sentence on why. Seen twice on real shifts: a reviewer that upheld an earlier finding
+    wrote it under `prior` as not resolved and again under `findings`, both runs were refused for the
+    reused id and the task was blocked."""
+    NOTE = "This is the second and last run of this review."
+
+    def repair_round(self, stage="review"):
+        """Up to the second review of the stage, running, with N1 of the first to answer."""
+        self.begin("feature" if stage == "plan_review" else "defect")
+        while self.task_state()["stage"] != stage:
+            self.assertEqual(self.consume_phase()["status"], "advanced")
+        self.end_review(changes=True)
+        self.assertEqual(self.action("repair", reason="Address N1", next_owner="builder")["status"], "advanced")
+        self.assertEqual(self.consume_phase()["status"], "advanced")
+        review = self.state()["review"]
+        self.assertEqual((review["review"], review["prior"], review["running"]["attempt"]),
+                         (2, [dict(id="N1", severity="major")], 1))
+        return review
+
+    def answer(self, *findings, **kwargs):
+        """The reviewer still holds N1: under `prior` as not resolved, and under `findings` what is given."""
+        review = self.state()["review"]
+        commit = review["target"]["kind"] == "commit"
+        record = self.record(review["target"], "CHANGES", findings,
+                             [dict(id="N1", resolved=False, reason="Still the wrong word.")],
+                             requirements=[self.need(), self.need("the word is the one asked for", "not_met")]
+                             if commit else None)
+        if commit and findings:
+            record["findings"][0]["requirement"] = 2
+        return self.end_review(self.said(record, review["running"]["marker"]), **kwargs)
+
+    def instructions(self, n):
+        review = self.state()["review"]
+        return (self.shift / "reviews" / (review["request_id"] + "-" + str(n)) / "REVIEW.md").read_text()
+
+    def told(self, review, attempt, refused):
+        """The SHA-256 of the instructions made again for an attempt, with the note of this code or none."""
+        import hashlib
+        from sortie_kit import review as contract
+        return hashlib.sha256(contract.instructions(
+            review["target"]["kind"], review["target"], attempt["marker"], review["prior"],
+            attempt.get("evidence", "shown"), refused=refused).encode()).hexdigest()
+
+    def host_log(self):
+        path = self.shift / "logs" / "host.log"
+        return path.read_text() if path.exists() else ""
+
+    def test_a_second_run_told_why_the_first_was_refused_answers_rightly_and_the_task_goes_on(self):
+        for stage in ("review", "plan_review"):
+            with self.subTest(stage=stage):
+                self.setUp()
+                asked = self.repair_round(stage)
+                state = self.answer(self.finding("N1"))  # the kept failure
+                review = state["review"]
+                first, = review["attempts"]
+                self.assertEqual((first["status"], first["reasons"]),
+                                 ("failed", ["a new finding reuses the id of an earlier one"]))
+                self.assertEqual((review["refused"], review["running"]["attempt"]), ("reused_id", 2))
+                self.assertNotIn(self.NOTE, self.instructions(1))
+                second = " ".join(self.instructions(2).split())
+                self.assertIn(self.NOTE + " The host could not take the answer of the first run: an entry under "
+                              "`findings` had the id of an earlier finding. An earlier finding that still holds goes "
+                              "under `prior` alone, with `resolved` false. The first answer is not shown to you",
+                              second)
+                self.assertIn("review 2 of task task, attempt 2: the reviewer was told why the host refused the "
+                              "first answer (reused_id)", self.host_log())
+                state = self.answer()  # N1 under `prior` alone
+                task, last = state["tasks"]["task"], state["last_review"]
+                self.assertEqual((last["outcome"], task["stage"], state["review"]),
+                                 ("CHANGES", "repair_needed", None))
+                key = "candidate" if stage == "review" else "plan"
+                self.assertEqual([item["id"] for item in task["required"][key]], ["N1"])
+                handed, = decode((self.shift / task["findings"][key]["path"]).read_bytes())["findings"]
+                self.assertEqual((handed["id"], handed["earlier"], handed["claim"], handed["reviewer_reason"]),
+                                 ("N1", True, "wrong word", "Still the wrong word."))
+                data = self.review_receipt(state)["data"]
+                self.assertEqual([(item["attempt"], item["status"], item["verdict"]) for item in data["attempts"]],
+                                 [(1, "failed", None), (2, "complete", "CHANGES")])
+                # The receipt names the instructions each run had: the files as they lie there, and the
+                # second's are those made again with the note. (That the two differ shows nothing: each
+                # run has a marker of its own.)
+                import hashlib
+                kept = [hashlib.sha256((self.shift / item["directory"] / "REVIEW.md").read_bytes()).hexdigest()
+                        for item in data["attempts"]]
+                self.assertEqual([item["instructions_sha256"] for item in data["attempts"]], kept)
+                self.assertEqual(kept[1], self.told(asked, data["attempts"][1], "reused_id"))
+                self.assertNotEqual(kept[1], self.told(asked, data["attempts"][1], None))
+                self.assertNotIn("refused", json.dumps(data))  # the receipt's shape is as it was
+                # The next round goes on as after any CHANGES, and the finding is counted as carried.
+                self.assertEqual(self.action("repair", reason="Address N1", next_owner="builder")["status"], "advanced")
+                self.assertEqual(self.consume_phase()["status"], "advanced")
+                review = self.state()["review"]
+                self.assertEqual((review["review"], review["running"]["attempt"]), (3, 1))
+                self.assertNotIn("refused", review)
+                self.assertNotIn(self.NOTE, self.instructions(1))
+
+    def test_both_runs_refused_block_the_task_as_before(self):
+        self.repair_round()
+        self.answer(self.finding("N1"))
+        state = self.answer(self.finding("N1"))
+        self.assertEqual((state["last_review"]["outcome"], state["tasks"]["task"]["stage"], state["review"]),
+                         ("FAILED", "blocked", None))
+        self.assertIn("review failed twice", state["tasks"]["task"]["reason"])
+
+    def no_note(self, state, part):
+        review = state["review"]
+        first, = review["attempts"]
+        self.assertEqual(first["status"], "failed")
+        self.assertIn(part, " ".join(first["reasons"]))
+        self.assertNotIn("refused", review)
+        self.assertEqual(review["running"]["attempt"], 2)
+        self.assertNotIn(self.NOTE, self.instructions(2))
+        self.assertNotIn("was told why", self.host_log())
+        state = self.answer()
+        second = self.review_receipt(state)["data"]["attempts"][1]
+        self.assertEqual(second["instructions_sha256"], self.told(review, second, None))
+
+    def test_a_first_run_that_failed_for_more_or_other_than_the_contract_is_followed_by_one_told_nothing(self):
+        def exit_3():
+            return self.answer(self.finding("N1"), code=3), "status 0"
+
+        def at_its_limit():
+            self.clock.sleep(601)
+            self.driver.poll_turn()
+            return self.state(), "status 0"
+
+        def altered_log():
+            with open(self.shift / self.state()["review"]["running"]["stderr"], "ab") as stream:
+                stream.write(b"not printed by the reviewer\n")
+            return self.answer(self.finding("N1")), "is not what the reviewer printed"
+
+        def repository_changed():
+            (self.target / "source.txt").write_text("the reviewer wrote here\n")
+            try:
+                return self.answer(self.finding("N1")), "changed while the review ran"
+            finally:
+                subprocess.run(["git", "-C", str(self.target), "checkout", "--", "source.txt"], check=True)
+
+        def repository_not_checked():
+            real, calls = review_dir.snapshot, []
+
+            def snapshot(*args, **named):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise OSError("no look")
+                return real(*args, **named)
+            with mock.patch.object(review_dir, "snapshot", snapshot):
+                return self.answer(self.finding("N1")), "could not be checked"
+
+        def no_object():
+            # Refused for the contract, and the host's check itself could not run is another thing: here the
+            # answer is whole and the look at the repository is what fails beside it.
+            (self.shift / "receipts" / "planted.json").write_text("{}")
+            return self.end_review("I looked and it seems fine.\n"), "changed while the review ran"
+
+        for case in (exit_3, at_its_limit, altered_log, repository_changed, repository_not_checked, no_object):
+            with self.subTest(case=case.__name__):
+                self.setUp()
+                self.repair_round()
+                state, part = case()
+                if case is no_object:
+                    self.assertIn("no review object", state["review"]["attempts"][0]["reasons"][0])
+                self.no_note(state, part)
+
+    def test_the_note_is_due_only_where_the_whole_attempt_shows_a_refusal_of_the_contract_and_nothing_else(self):
+        good = dict(status="failed", ended_by="exit", exit_status=0, output_dropped_bytes=0,
+                    stdout=dict(path="logs/r.out", sha256="a" * 64), stderr=dict(path="logs/r.err", sha256="b" * 64),
+                    repository="unchanged", reasons=["a new finding reuses the id of an earlier one"])
+        self.assertEqual(Driver.note_due(good, "reused_id"), "reused_id")
+        for label, change, code in (
+                ("no code", {}, None), ("a code the host does not know", {}, "words of a reviewer"),
+                ("a code that is no text", {}, ["reused_id"]),
+                ("complete", dict(status="complete"), "reused_id"),
+                ("stopped at its limit", dict(ended_by="timeout"), "reused_id"),
+                ("first seen after its limit", dict(ended_by="exit, first seen late"), "reused_id"),
+                ("another status", dict(exit_status=3), "reused_id"), ("no status", dict(exit_status=None), "reused_id"),
+                ("a status that is true", dict(exit_status=False), "reused_id"),
+                ("output dropped", dict(output_dropped_bytes=9), "reused_id"),
+                ("no log of the answer", dict(stdout=None), "reused_id"), ("no error log", dict(stderr=None), "reused_id"),
+                ("repository changed", dict(repository="changed"), "reused_id"),
+                ("repository not checked", dict(repository="not checked"), "reused_id"),
+                ("a second reason", dict(reasons=good["reasons"] + ["the log was altered"]), "reused_id"),
+                ("no reason", dict(reasons=[]), "reused_id"), ("a reason that is no list", dict(reasons="x"), "reused_id"),
+                ("no list of reasons", dict(reasons=None), "reused_id")):
+            with self.subTest(label=label):
+                self.assertIsNone(Driver.note_due(dict(good, **change), code))
+
+    def kept_state(self, change):
+        path = self.shift / "driver-state.json"
+        state = decode(path.read_bytes())
+        change(state)
+        from sortie_kit import receipts
+        path.write_bytes(receipts.encoded(state))
+
+    def test_a_host_started_again_reads_the_code_from_the_state_and_no_other_value(self):
+        self.repair_round()
+        self.answer(self.finding("N1"))
+        self.assertEqual(self.state()["review"]["refused"], "reused_id")
+        # A state with the key loads: the review that ran under the earlier host is lost, as it was before.
+        self.driver = Driver(self.admission, self.spawn, seconds=900, wind_down=10)
+        result = self.action("continue")
+        self.assertEqual((result["status"], result["detail"]), ("blocked", LOST_REVIEW))
+
+    def test_a_state_with_another_value_under_the_key_is_refused(self):
+        for value in ("a new finding reuses the id of an earlier one", "", None, 5, ["reused_id"]):
+            with self.subTest(value=value):
+                self.setUp()
+                self.repair_round()
+                self.answer(self.finding("N1"))
+                self.kept_state(lambda state: state["review"].update(refused=value))
+                result = self.action("continue")
+                self.assertEqual(result["status"], "invalid", result)
+                self.assertIn("running review", result["detail"])
+
+    def test_a_second_run_begun_under_a_lock_of_its_own_is_told_the_same(self):
+        """A state with one failed attempt, nothing running and the code: the host that takes it up
+        writes the note from the state alone."""
+        self.repair_round()
+        self.answer(self.finding("N1"))
+        first = self.instructions(2)
+        self.spawn.child.code = 0
+
+        def change(state):
+            state["review"]["running"] = None
+        self.kept_state(change)
+        self.driver = Driver(self.admission, self.spawn, seconds=900, wind_down=10)
+        os.rename(self.shift / "reviews" / (self.state()["review"]["request_id"] + "-2"), self.shift / "reviews" / "aside")
+        for name in ("out", "err"):
+            os.unlink(self.shift / "logs" / ("review-task-2-2." + name))
+        result = self.action("continue")
+        self.assertEqual(result["status"], "recorded", result)
+        again = self.instructions(2)
+        self.assertIn(self.NOTE, again)
+        marker = lambda text: text.split("=====BEGIN SORTIE REVIEW ")[1][:16]
+        self.assertEqual(again.replace(marker(again), marker(first)), first)
+        self.assertEqual(self.answer()["last_review"]["outcome"], "CHANGES")

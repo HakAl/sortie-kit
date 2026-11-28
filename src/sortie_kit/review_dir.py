@@ -645,7 +645,7 @@ def statement(lines, *, kind, base, commit, facts=None):
 
 
 def make(view, name, *, kind, target, base, brief, plan, prior, findings, answers, nonce, seconds,
-         evidence=None, evidence_seconds=None, evidence_left=None, start=None):
+         evidence=None, evidence_seconds=None, evidence_left=None, start=None, refused=None):
     """Make reviews/NAME in the shift for one run of one review and fill it.
 
     `view` is the shift's open evidence view. `target` is the reviewed thing as
@@ -663,7 +663,10 @@ def make(view, name, *, kind, target, base, brief, plan, prior, findings, answer
     may still take, asked after the files are exported and before each piece of
     evidence. When no time is left for evidence no evidence/ is made. `start` is the
     host's look at the repository when the shift began, which its look for the review
-    of a candidate is compared with and held to.
+    of a candidate is compared with and held to. `refused` is for the second run of
+    a review whose first answer the host refused for the contract alone: the host's
+    code for why, one of `review.RETOLD`, which the instructions turn into the
+    host's sentence.
     REVIEW.md is written last, from what became of the evidence, so that it
     describes no directory that is not there. Returns the directory's path
     relative to the shift, what the instructions' SHA256 is, and what was done
@@ -676,7 +679,8 @@ def make(view, name, *, kind, target, base, brief, plan, prior, findings, answer
     end = time.monotonic() + seconds
     if not NAME.fullmatch(name):
         raise Refused("a review directory has a plain name")
-    review.instructions(kind, target, nonce, prior)  # refused here, before anything is made, when it cannot be written
+    # Refused here, before anything is made, when it cannot be written.
+    review.instructions(kind, target, nonce, prior, refused=refused)
     files = {"brief.md": view.artifact(brief)}
     if kind == "plan":
         files["plan.md"] = view.artifact(target["artifact"])
@@ -746,7 +750,7 @@ def make(view, name, *, kind, target, base, brief, plan, prior, findings, answer
             pass
     # The same one write as before evidence was shown, now after it: nothing above reads
     # this file, and what the reviewer is told of evidence/ is what is there.
-    told = review.instructions(kind, target, nonce, prior, outcome).encode()
+    told = review.instructions(kind, target, nonce, prior, outcome, refused).encode()
     with view.parent(relative + "/REVIEW.md") as (folder, leaf):
         put(folder, [leaf], told)
     view.guard()

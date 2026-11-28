@@ -53,7 +53,9 @@ under `requirements`. For each, say `met`, `not_met`, `not_checked` or
 `met` means you
 read the code that does it, not that a test or a message says so. A thing
 the brief asks for that the change delivers only for some of the cases the
-brief covers is `not_met`. Every `not_met` is a finding. `not_checked` is
+brief covers is `not_met`. Every `not_met` is a finding: a new one under
+`findings`, or in a repair round an earlier one that you hold open under
+`prior`. `not_checked` is
 for what you could not or did not settle, and is the honest answer then.
 `disclosed` is only for a thing that `brief.md` itself allows to be closed
 by saying that it is not delivered, when the change does say so: `where` is
@@ -142,6 +144,7 @@ Write each marker as a whole line of its own: the text from the first `=`
 to the last, with nothing before or after it and no quotes around it. Write
 each once, and do not repeat them anywhere else in your answer.
 
+$RETRY
 $PRIOR```json
 $EXAMPLE
 ```
@@ -164,6 +167,8 @@ and `target` is an example. The fields, all required, and no others:
   in `requirements` of the thing it says is not delivered, or `null`).
 - `prior`: a list, empty unless you were given earlier findings to answer.
   Each has `id`, `resolved` (`true` or `false`) and `reason`.
+  An earlier finding that still holds stands here alone, with `resolved`
+  `false`: never again under `findings`, whose ids are all new.
 - `examined`: a list of what you actually read, in words. Never empty.
 - `not_examined`: a list of what you did not or could not read and what
   you could not settle. Empty when there is nothing to say.

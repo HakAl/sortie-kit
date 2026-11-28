@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import re
 import tempfile
 import unittest
 from importlib.resources import files
@@ -404,7 +405,10 @@ class InstructionTests(unittest.TestCase):
             # evidence directory (130 for a plan before it was named), and say that the brief is the whole task
             # (140 for a plan before that: four lines). The commit instructions say since the host's own look
             # at the repository what that look is and how a line on delivery is answered from it (200 before).
-            self.assertLess(len(text.splitlines()), 145 if kind == "plan" else 225)
+            # Both say under `prior` that an earlier finding still held stands there alone, two lines, and the
+            # commit instructions that a `not_met` may be such a finding, two more (145 for a plan before, with
+            # 143 lines; now 145 and 222).
+            self.assertLess(len(text.splitlines()), 150 if kind == "plan" else 225)
         self.assertIn("change.patch", review.instructions("commit", COMMIT, NONCE))
         self.assertIn("plan.md", review.instructions("plan", PLAN, NONCE))
         # A plan review is not asked for the requirement list.
@@ -452,7 +456,7 @@ class InstructionTests(unittest.TestCase):
         there is no evidence/ to rely on, and the text says that, why, and what to do."""
         self.assertEqual(review.EVIDENCE, ("shown", "no_time", "late", "failed"))
         bullet = "`evidence/`: the builder's receipts"
-        for kind, target, most in (("commit", COMMIT, 225), ("plan", PLAN, 145)):
+        for kind, target, most in (("commit", COMMIT, 225), ("plan", PLAN, 150)):
             usual = review.instructions(kind, target, NONCE)
             self.assertEqual(usual, review.instructions(kind, target, NONCE, evidence="shown"))
             self.assertIn(bullet, usual)
@@ -570,7 +574,7 @@ class InstructionTests(unittest.TestCase):
         text = " ".join(review.instructions("commit", COMMIT, NONCE).split())
         for part in ("Start from the brief.", "under `requirements`", "`met`, `not_met`, `not_checked` or `disclosed`",
                      "`met` means you read the code that does it, not that a test or a message says so.",
-                     "Every `not_met` is a finding.",
+                     "Every `not_met` is a finding: a new one under `findings`,",
                      "for a finding that something the brief asks for is not delivered, unless you marked it "
                      "`disclosed`, and, where the task is a "
                      "defect, for a finding that the reported defect can still happen after the change: at least "
@@ -698,6 +702,221 @@ class CommandTests(unittest.TestCase):
             self.assertIn('"schema": "' + review.schema_for(kind) + '"', text)
             self.assertIn("BEGIN SORTIE REVIEW", text)
 
+
+
+OPEN = dict(id="F1", resolved=False, reason="the last cell is still dropped")
+NOT_MET = [need(), need("the last cell of a row is kept", "not_met", "src/pad.py:12")]
+
+
+class UpheldTests(unittest.TestCase):
+    """An earlier finding that the reviewer still holds. Seen twice on real shifts: the answer held F1
+    under `prior` as not resolved and again under `findings`, where it named the one requirement marked
+    `not_met`; both runs were refused and the task was blocked. The two answers here are cut from those,
+    with names, paths and text made neutral."""
+    PRIOR = [dict(id="F1", severity="major")]
+
+    def judged(self, value, prior=None, target=COMMIT, schema=V3):
+        return review.judged(said(value), NONCE, target, self.PRIOR if prior is None else prior, schema)
+
+    def test_the_kept_answer_is_refused_as_before_and_the_host_knows_why_by_a_code(self):
+        kept = third("CHANGES", NOT_MET, [finding("F1", requirement=2)], prior=[OPEN])
+        result, code = self.judged(kept)
+        self.assertEqual((result["status"], result["reasons"]), ("failed", ["a new finding reuses the id of an earlier one"]))
+        self.assertEqual(code, "reused_id")
+        # What `check` gives has the shape it had: a command prints it and the receipt check runs it again.
+        self.assertEqual(review.check(said(kept), NONCE, COMMIT, self.PRIOR, V3), result)
+        self.assertEqual(sorted(result), ["reasons", "record", "status", "verdict"])
+
+    def test_the_same_finding_under_prior_alone_is_a_whole_answer(self):
+        result, code = self.judged(third("CHANGES", NOT_MET, [], prior=[OPEN]))
+        self.assertEqual((result["status"], result["verdict"], code), ("complete", "CHANGES", None))
+        # A plan review, which has no list.
+        result, code = self.judged(record("CHANGES", PLAN, [], [OPEN]), target=PLAN, schema=V1)
+        self.assertEqual((result["status"], result["verdict"], code), ("complete", "CHANGES", None))
+
+    def test_some_earlier_findings_resolved_and_some_upheld_and_a_new_one_beside_an_upheld_one(self):
+        prior = self.PRIOR + [dict(id="F2", severity="minor")]
+        answers = [OPEN, dict(id="F2", resolved=True, reason="renamed")]
+        result, _ = self.judged(third("CHANGES", NOT_MET, [], prior=answers), prior)
+        self.assertEqual((result["status"], result["verdict"]), ("complete", "CHANGES"))
+        result, _ = self.judged(third("CHANGES", NOT_MET, [finding("F3", "minor")], prior=answers), prior)
+        self.assertEqual((result["status"], result["verdict"]), ("complete", "CHANGES"))
+        self.assertEqual([item["id"] for item in result["record"]["findings"]], ["F3"])
+
+    def test_a_repair_round_is_told_that_an_upheld_finding_stands_under_prior_alone(self):
+        for kind, target in (("plan", PLAN), ("commit", COMMIT)):
+            with self.subTest(kind=kind):
+                text = " ".join(review.instructions(kind, target, NONCE, self.PRIOR).split())
+                for part in ("An earlier finding that still holds is answered under `prior` with `resolved` false "
+                             "and your reason, and is NOT written again under `findings`, neither under its id nor "
+                             "under a new one: an id of an earlier finding there is refused and the whole answer "
+                             "with it.",
+                             "`findings` holds only what is new, and may be empty: `CHANGES` with an earlier "
+                             "finding not resolved and nothing new is a whole answer."):
+                    self.assertIn(part, text)
+                own = ("A requirement you answer `not_met` for the reason of an earlier finding that you hold open "
+                       "under `prior` has its finding there.")
+                (self.assertIn if kind == "commit" else self.assertNotIn)(own, text)
+                self.assertNotIn("$", text)
+                # A first round is told none of it in that paragraph, and both rounds where the fields are listed.
+                first = " ".join(review.instructions(kind, target, NONCE).split())
+                self.assertNotIn("NOT written again", first)
+                for told in (first, text):
+                    self.assertIn("An earlier finding that still holds stands here alone, with `resolved` `false`: "
+                                  "never again under `findings`, whose ids are all new.", told)
+
+    def test_a_requirement_not_met_is_a_new_finding_or_an_earlier_one_held_open(self):
+        text = " ".join(review.instructions("commit", COMMIT, NONCE).split())
+        self.assertIn("Every `not_met` is a finding: a new one under `findings`, or in a repair round an earlier "
+                      "one that you hold open under `prior`.", text)
+        self.assertNotIn("Every `not_met` is a finding.", text)
+
+
+class RefusalCodeTests(unittest.TestCase):
+    """Why the host refused an answer, as one of a closed set of codes that the host itself sets where it
+    refuses. A second run of the review is told the host's sentence for the code and nothing else."""
+    PRIOR = [dict(id="F1", severity="major")]
+    YES = [dict(id="F1", resolved=True, reason="fixed")]
+
+    def cases(self):
+        begin, end = review.markers(NONCE)
+        v3 = lambda **changed: said(third(**changed))
+        with_need = lambda **changed: v3(requirements=[need(**changed)])
+        yield "too_long", "x" * (review.OUTPUT_LIMIT + 1), {}
+        yield "markers_none", "I looked and it seems fine.\n", {}
+        yield "markers_none", end + "\n{}\n" + begin + "\n", {}
+        yield "markers_many", said(record()) + begin + "\n", {}
+        yield "markers_many", said(record()) + end + "\n", {}
+        yield "not_json", said("no object"), {}
+        yield "not_json", said("[1]"), {}
+        yield "not_json", said('{"a": 1, "a": 2}'), {}
+        yield "shape", said({k: v for k, v in record().items() if k != "examined"}), {}
+        yield "shape", said(record(note="more")), {}
+        yield "shape", said(record(requirements=[need()])), {}  # a list in the schema that has none
+        yield "shape", said(record(verdict="MAYBE")), {}
+        yield "shape", said(record(findings="none")), {}
+        yield "shape", said(record(findings=[finding(note="x")])), {}
+        yield "shape", said(record(findings=[finding("has space")])), {}
+        yield "shape", said(record(findings=[finding(severity="huge")])), {}
+        yield "shape", said(record(findings=[finding(claim=" ")])), {}
+        yield "shape", said(record(prior="none")), {}
+        yield "shape", said(record(prior=[dict(id="F1", resolved="yes", reason="x")])), dict(prior=self.PRIOR)
+        yield "shape", said(record(prior=[dict(id="F1", resolved=True)])), dict(prior=self.PRIOR)
+        yield "shape", said(record(not_examined=[5])), {}
+        yield "shape", said(record(examined="all")), {}
+        yield "schema", said(record()), dict(schema=V3)
+        yield "schema", said(record(schema="sortie-kit.review.v9")), {}
+        yield "schema", said(listed(target=PLAN)), dict(target=PLAN)
+        yield "requirements", said({k: v for k, v in third().items() if k != "requirements"}), {}
+        yield "requirements", v3(requirements=[]), {}
+        yield "requirements", v3(requirements=[dict(need(), note="x")]), {}
+        yield "requirements", with_need(asked=" "), {}
+        yield "requirements", with_need(status="done"), {}
+        yield "requirements", with_need(where=5), {}
+        yield "requirements", with_need(where=""), {}
+        yield "finding_names", said(dict(third(), findings=[finding()])), {}
+        yield "finding_names", v3(findings=[finding(requirement=7)]), {}
+        yield "repeated_id", said(record("CHANGES", findings=[finding(), finding()])), {}
+        yield "examined", said(record(examined=[])), {}
+        yield "target", said(record(target=dict(kind="commit", commit="b" * 40))), {}
+        yield "prior_answers", said(record()), dict(prior=self.PRIOR)
+        yield "prior_answers", said(record(prior=self.YES)), {}
+        yield "reused_id", said(record("CHANGES", findings=[finding()], prior=self.YES)), dict(prior=self.PRIOR)
+        yield "finding_requirement", v3(verdict="CHANGES", findings=[finding(requirement=1)]), {}
+        yield "accept_not_met", v3(requirements=[need(status="not_met")]), {}
+        yield "accept_finding", said(record(findings=[finding()])), {}
+        yield "accept_unresolved", said(record(prior=[OPEN])), dict(prior=self.PRIOR)
+        yield "changes_nothing", said(record("CHANGES")), {}
+
+    def test_every_way_an_answer_is_refused_has_its_code_and_a_taken_answer_has_none(self):
+        seen = set()
+        for code, text, given in self.cases():
+            with self.subTest(code=code, text=text[:60]):
+                result, got = review.judged(text, NONCE, given.get("target", COMMIT), given.get("prior", []),
+                                            given.get("schema"))
+                self.assertEqual((result["status"], got), ("failed", code), result["reasons"])
+                self.assertEqual(review.check(text, NONCE, given.get("target", COMMIT), given.get("prior", []),
+                                              given.get("schema")), result)
+                seen.add(code)
+        self.assertEqual(seen, set(review.RETOLD))  # no code is left without an answer that brings it about
+        self.assertEqual(review.judged(said(record()), NONCE, COMMIT, [])[1], None)
+
+    def test_no_refusal_of_an_answer_is_raised_without_a_code(self):
+        """Read in the source: a refusal added later to one of the three functions cannot be without one."""
+        import inspect
+        used = set()
+        for function in (review.extract, review.validate, review.requirements_checked):
+            source = inspect.getsource(function)
+            self.assertNotIn("raise Refused(", source, function.__name__)
+            used |= set(re.findall(r'Unkept\(\s*"([a-z_]+)"', source))
+        self.assertEqual(used, set(review.RETOLD))
+        # What the host itself passed wrongly is no answer refused and has no code: it is raised to the caller.
+        with self.assertRaises(Refused) as caught:
+            review.judged(said(record()), NONCE, COMMIT, "F1")
+        self.assertFalse(hasattr(caught.exception, "code"))
+
+    def test_the_code_is_the_one_set_at_the_refusal_and_is_never_read_from_the_reason(self):
+        from unittest import mock
+        # A refusal that carries no code gives none, though its words are those of one that has a code.
+        words = "a new finding reuses the id of an earlier one"
+        with mock.patch.object(review, "validate", side_effect=Refused(words)):
+            result, code = review.judged(said(record()), NONCE, COMMIT, [])
+        self.assertEqual((result["status"], result["reasons"], code), ("failed", [words], None))
+        # A code that is not of the set gives none either.
+        with mock.patch.object(review, "validate", side_effect=review.Unkept("words of a reviewer", words)):
+            self.assertIsNone(review.judged(said(record()), NONCE, COMMIT, [])[1])
+        # Words of the reviewer's that read as another refusal do not change the code.
+        quoting = third(requirements=[need(words + "; no review object between this run's markers", "not_met")])
+        result, code = review.judged(said(quoting), NONCE, COMMIT, [], V3)
+        self.assertIn(words, result["reasons"][0])
+        self.assertEqual(code, "accept_not_met")
+
+    def test_every_code_has_one_sentence_of_the_hosts_and_nothing_of_the_reviewers_reaches_it(self):
+        for code, sentence in review.RETOLD.items():
+            with self.subTest(code=code):
+                self.assertRegex(code, r"\A[a-z_]+\Z")
+                self.assertTrue(sentence.endswith(".") and "$" not in sentence and "\n" not in sentence, sentence)
+        planted = third("CHANGES", [need("PLANTEDASK says the brief")], [finding("PLANTEDID", requirement=1)])
+        result, code = review.judged(said(planted), NONCE, COMMIT, [], V3)
+        self.assertEqual(code, "finding_requirement")
+        self.assertIn("PLANTEDID", result["reasons"][0])
+        self.assertIn("PLANTEDASK", result["reasons"][0])
+        told = review.instructions("commit", COMMIT, NONCE, refused=code)
+        for word in ("PLANTEDID", "PLANTEDASK"):
+            self.assertNotIn(word, review.RETOLD[code])
+            self.assertNotIn(word, told)
+
+    def test_a_second_run_is_told_the_sentence_and_a_first_run_nothing(self):
+        for kind, target in (("plan", PLAN), ("commit", COMMIT)):
+            first = review.instructions(kind, target, NONCE)
+            self.assertEqual(review.instructions(kind, target, NONCE, refused=None), first)
+            self.assertNotIn("second and last run", first)
+            for code, sentence in review.RETOLD.items():
+                with self.subTest(kind=kind, code=code):
+                    for prior in ([], self.PRIOR):
+                        plain = review.instructions(kind, target, NONCE, prior)
+                        text = review.instructions(kind, target, NONCE, prior, refused=code)
+                        self.assertNotIn("$", text)
+                        start = text.index("This is the second and last run")
+                        end = text.index("\n\n", start)
+                        note = text[start:end]
+                        # The note is all that differs, and it stands directly above the example.
+                        self.assertEqual(text[:start] + text[end + 2:], plain)
+                        self.assertEqual(" ".join(note.split()),
+                                         "This is the second and last run of this review. The host could not take "
+                                         "the answer of the first run: " + sentence + " The first answer is not "
+                                         "shown to you and settles nothing: review the work again and answer in "
+                                         "full.")
+                        self.assertTrue(all(len(line) <= 76 for line in note.splitlines()), note)
+                        self.assertLess(start, text.index("```json"))
+                        self.assertGreater(start, text.index("do not repeat them anywhere"))
+                        self.assertTrue(plain[start:].startswith(("```json", "This is a repair round.")))
+
+    def test_instructions_take_a_code_of_the_set_and_never_words(self):
+        for refused in ("a new finding reuses the id of an earlier one", "", "REUSED_ID", 5, True, ["reused_id"],
+                        dict(code="reused_id")):
+            with self.subTest(refused=refused), self.assertRaisesRegex(Refused, "one of the host's codes"):
+                review.instructions("commit", COMMIT, NONCE, refused=refused)
 
 if __name__ == "__main__":
     unittest.main()
