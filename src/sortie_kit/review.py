@@ -53,8 +53,10 @@ SHOWN = ("- `evidence/`: the builder's receipts for this task that the host has 
 # What a review of a candidate is told beside it: the host's own look at the repository.
 SHOWN_REPOSITORY = ("  For this review it also states what the host itself saw of the\n"
                     "  repository when it prepared this directory: the branch, the commits of\n"
-                    "  the task, the remotes, the remote-tracking refs and what is not\n"
-                    "  committed. That section is the host's and not the builder's account.\n")
+                    "  the task, the remotes, the remote-tracking refs, what is not\n"
+                    "  committed, whether tracked files have edits that are not staged, and\n"
+                    "  the candidate's commit message. That section is the host's and not the\n"
+                    "  builder's account; only the lines of the message are the builder's words.\n")
 ANSWER = {"id", "resolved", "reason"}
 REQUIREMENT = {"asked", "status", "where"}
 STATUSES = ("met", "not_met", "not_checked")

@@ -743,7 +743,45 @@ build receipt, the host begins the review of that plan or candidate itself:
     20, the candidate is reachable from;
   - the files that are untracked and not ignored, at most 50 names of at
     most 1000 counted, with those the start look already listed marked, and
-    how many paths are staged and not committed.
+    how many paths are staged and not committed;
+  - whether tracked files have edits that are not staged, from a comparison
+    of the host's own and never one of Git's: every entry of the index is
+    looked for on disk and read, those touched since the shift began first,
+    and its bytes hashed and held against the object the index names. The
+    line says how many of how many it compared, names at most 50 that
+    differ, 50 that are gone and 50 that differ only in line endings, and
+    counts what it did not read (a file over 8 MiB, or not readable), the
+    entries a sparse checkout keeps off disk, and submodules and entries of
+    a merge. When its time ended first, or the index holds more than
+    50000 entries, it says that it compared only some
+    and whether all touched since the shift began were among them, and that
+    is never read as none. Where the repository's own configuration sets a
+    filter, `core.eol` or `core.autocrlf`, or that could not be read, the
+    line says that a file named may be one Git calls unchanged and one not
+    named one Git calls changed;
+  - the candidate's commit message, from the commit object: its bytes and
+    lines, the characters of its first line, how many bytes are outside
+    ASCII and how many are control characters, an `encoding` header, and
+    whether a signature header is there, which is not checked. The lines
+    themselves stand after the list under a heading of the host's, each
+    after four spaces, as the builder's words: all of them to 40, and of a
+    longer message the first 28 and the last 12, so that trailers are
+    shown. A line is shown as printable ASCII, anything else as an escape,
+    at most 200 characters, with whatever has the shape of a credential
+    left out, and with it a commit id or another long run of letters and
+    digits. Control characters, a tab among them, bytes that are no
+    text, and some characters that are seen as nothing or as a blank can
+    part a credential or join a word to it. So a line that holds any of
+    them between its first and its last text is read in every way, each
+    such place closed or a space, and is left out whole when any reading
+    holds such a thing. A line with more than 8 such places is left out
+    unread, and so is one whose readings would take the message past
+    about a million characters read. The mask knows certain shapes, and
+    the host a list of such characters: neither is proof that a line
+    holds no credential. An object over
+    64 KiB is not read. Only the candidate's message
+    is read, not those of the task's other commits, and neither the author,
+    the committer nor the dates are shown.
 
   A name is given between backticks and only when it is made of letters,
   digits, `.`, `_` and `-` (a path: each part) and has not the beginning of
@@ -756,9 +794,14 @@ build receipt, the host begins the review of that plan or candidate itself:
   that begins as one kept there the host says that it cannot tell. The
   look takes at most three seconds and at most a quarter of the time
   evidence has, before the receipts are read, and asks before each Git
-  command what is left as it does before each piece of evidence. It is
+  command what is left as it does before each piece of evidence, and
+  before each file it reads. The comparison of tracked files comes last and
+  is the first to give way. It is
   held to the Git directory the start look found, runs no hook, monitor,
-  pager or filter of the repository and follows no replaced object. For
+  pager or filter of the repository and follows no replaced object. Git
+  compares a working file through the repository's clean filter, which a
+  builder can set (`diff`, `diff-files`, `ls-files -m` and `status` can
+  each run it), so the host asks Git for no such comparison. For
   the remotes it reads neither the user's nor the machine's configuration
   nor a file the repository's configuration includes; its other commands
   read configuration as Git does, so the user's own exclude file can hide
@@ -768,16 +811,32 @@ build receipt, the host begins the review of that plan or candidate itself:
   it does not show: nothing from before the shift; not that nothing was
   pushed (a push to a URL typed by hand touches nothing here, and the host
   asks no remote); remotes and untracked files as they are at the look and
-  not in between; nothing that ignore rules hide; not edits that are not
-  staged; not how files were staged; and that it is a look at a `.git`
+  not in between; nothing that ignore rules hide; that the comparison of
+  tracked files is of bytes and not Git's report (conversion set outside
+  the repository's own configuration is not seen; a change of the
+  executable bit alone, a submodule, an entry of a merge and an empty file
+  added with `git add -N` are on no list), so that the three lines on
+  untracked files, staged paths and unstaged edits together are still not
+  `git status` clean; that the message is the commit object's at that
+  time and an amended commit shows only its last; not how files were
+  staged; and that it is a look at a `.git`
   the builder can write, not a record. The instructions tell the reviewer
+  to answer a line on unstaged edits `met` only where the host compared
+  every tracked file and found none, `not_met` for a file it names as
+  differing or gone, and `not_checked` for a partial comparison, for line
+  endings alone and wherever the line says the repository converts
+  content or that the host could not read whether it does; to answer a line on the commit message from the host's counts
+  and the shown lines, read as content, and `not_checked` where it rests
+  on lines not shown or on the exact bytes of a line that was cut, masked
+  or escaped;
   to answer a line on how the work is delivered from that section, to
   answer "do not push" and "staged by name" `not_checked` with what the
   host saw under `where`, unless an added remote or a remote-tracking ref
   that holds the candidate speaks for a push, and that `met` is not the
   answer to those two. A plan review gets none of this. The names of
-  remotes, of remote-tracking refs and of untracked files, and the hosts of
-  remote URLs, go to the reviewer's CLI with the rest: they are not in the
+  remotes, of remote-tracking refs, of untracked files and of tracked files
+  with unstaged edits, the hosts of remote URLs and the shown lines of the
+  candidate's commit message go to the reviewer's CLI with the rest: they are not in the
   exported files, so this is more than a reviewer of another family was
   sent before.
   At most 64 files are shown, none over 1 MiB, 4 MiB together; a

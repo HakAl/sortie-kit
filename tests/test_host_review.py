@@ -1866,8 +1866,17 @@ class RequirementsReportTests(ReviewFixture):
                      "- Remote-tracking refs: the repository has no ref under `refs/remotes/`, so the candidate is "
                      "on none.",
                      "- Not committed: no file is untracked and not ignored; no path is staged and not committed.",
+                     # A driver made without the time the shift began: the signed start of the window stands in.
+                     "byte for byte: none differs and none is gone. The host did not hold the time the shift began: "
+                     "it compared first the files touched since the signed start of the shift's window.",
+                     "- Commit message of the candidate: ",
+                     "### The candidate's commit message The lines below are the builder's words, not the host's",
                      "- Not that nothing was pushed."):
             self.assertIn(part, said)
+        self.assertRegex(said, r"- Unstaged edits: the host compared all \d+ tracked files on disk with what the index "
+                               r"holds, byte for byte: none differs")
+        self.assertIn("Two more lines of that section. \"Unstaged edits\"",
+                      " ".join((where / "REVIEW.md").read_text().split()))
         self.assertNotIn("scratch", said.split("## The repository")[1])  # the shift's own files are no leftovers
         told = " ".join((where / "REVIEW.md").read_text().split())
         self.assertIn("That nothing was pushed: answer `not_checked` and say under `where` what the host saw", told)
@@ -1886,6 +1895,51 @@ class RequirementsReportTests(ReviewFixture):
                       "  - met: The commit holds only this task's changes (seen at change.patch)\n"
                       "  - **not_checked**: Do not push (place named: " + seen + ")\n", text)
         self.assertEqual(doc["issues"], [])
+
+    def test_the_time_the_shift_began_reaches_the_hosts_look_and_the_windows_start_stands_in_without_it(self):
+        """The look compares first the files touched since the shift began. `run_shift` gives the driver that
+        time as a field of its own, never in `driver.repo`, which the closeout writes whole. A driver made
+        without it gives the signed start of the window and says that it is that."""
+        from sortie_kit import channels, repo_state
+        given, look = [], repo_state.candidate_look
+
+        def noting(*args, **named):
+            given.append((named.get("since"), named.get("window")))
+            return look(*args, **named)
+        self.assertIsNone(self.driver.began)
+        self.driver.began = 1700000123.25
+        with mock.patch.object(repo_state, "candidate_look", noting):
+            self.reach_review()
+        self.assertEqual(given, [(1700000123.25, False)])
+        self.assertNotIn("began", self.driver.repo)
+        self.assertIn("none differs and none is gone.",
+                      " ".join((self.directory() / "evidence" / "HOST.md").read_text().split()))
+        self.assertNotIn("signed start of the shift's window", (self.directory() / "evidence" / "HOST.md").read_text())
+        self.assertEqual(self.end_review()["last_review"]["outcome"], "ACCEPT")
+
+    def test_a_driver_without_the_shifts_start_gives_the_look_the_signed_start_of_the_window(self):
+        from sortie_kit import channels, repo_state
+        given, look = [], repo_state.candidate_look
+
+        def noting(*args, **named):
+            given.append((named.get("since"), named.get("window")))
+            return look(*args, **named)
+        with mock.patch.object(repo_state, "candidate_look", noting):
+            self.reach_review()
+        self.assertEqual(given, [(channels.timestamp(self.driver.value["start"]).timestamp(), True)])
+
+    def test_run_shift_gives_the_driver_the_real_time_it_began(self):
+        import time
+        from sortie_kit import host
+        self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=10)
+        before = time.time()
+
+        def sleep(seconds):
+            self.clock.sleep(max(seconds, 990 - self.clock.now()))
+        with mock.patch.object(host, "Driver", lambda *args, **kwargs: self.driver):
+            host.run_shift(self.admission, self.spawn, seconds=1000, wind_down=10, poll=1, sleep=sleep)
+        self.assertTrue(before <= self.driver.began <= time.time(), self.driver.began)
+        self.assertNotIn("began", self.driver.repo)
 
     def test_a_plan_review_shown_no_evidence_is_told_so_without_the_answer_it_does_not_have(self):
         self.driver = Driver(self.admission, self.spawn, seconds=300, wind_down=10)

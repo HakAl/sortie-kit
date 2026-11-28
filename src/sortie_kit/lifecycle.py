@@ -264,6 +264,9 @@ class Driver:
             raise Refused("wind-down interval must be positive and finite")
         self.closing = closing(self.wind_down)
         self.repo = {}  # what the host saw of the target repository at its start and end, for the closeout
+        # When the shift began, in seconds since the epoch: set by `host.run_shift`. A driver made
+        # without it gives the look for a review the signed start of the window in its place.
+        self.began = None
         self.final_end = min(self.budget.end, admission.budget.end) + self.value["finalization_seconds"]
         if set(self.value["seats"]) != {"driver", "builder", "reviewer"}:
             raise Refused("driver requires the signed three-seat map")
@@ -728,13 +731,20 @@ class Driver:
             def spare():
                 return min(cutoff - self.clock(), self.work_seconds()) - START_RESERVE
             over = spare()
+            since, window = self.began, False
+            if since is None:
+                try:
+                    since, window = moment(self.value["start"]).timestamp(), True
+                except (LookupError, TypeError, ValueError, AttributeError, OverflowError, OSError):
+                    since = None  # no time to order by: the look compares in the index's order
             made, sha, shown = review_dir.make(
                 view, name, kind=REVIEW[review["stage"]], target=review["target"], base=task["base"],
                 brief=task["brief"], plan=plan, prior=review["prior"], findings=findings, answers=answers,
                 nonce=running["marker"], seconds=view.budget.remaining() - 3 * WRITE_RESERVE,
                 evidence=[item for item in task["receipts"] if isinstance(item, dict)
                           and item.get("status") == "satisfied" and item.get("stage") in PHASE] if over > 0 else None,
-                evidence_seconds=max(0, over), evidence_left=spare, start=self.repo.get("start"), refused=refused)
+                evidence_seconds=max(0, over), evidence_left=spare, start=self.repo.get("start"), refused=refused,
+                since=since, window=window)
             for path in (running["stdout"], running["stderr"]):
                 # The host creates both files and keeps these descriptors for the whole
                 # review; what it later reads back is read through them.

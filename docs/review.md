@@ -133,6 +133,18 @@ that holds the candidate speaks for a push. A driver that wants such a line
 checked writes it as what can be seen, for example "no remote added; the
 candidate on no remote-tracking ref"; `driver.md` says so.
 
+The host also states whether tracked files have edits that are not staged,
+by its own comparison of bytes, and the candidate's commit message with its
+own counts of it. A line such as "leave no unstaged edits" is `met` where
+the host compared every tracked file and none differs, `not_met` for a file
+it names, and `not_checked` where it compared only some, where only line
+endings differ or where the repository converts content or the host could
+not read whether it does. A line on the
+message (short, ASCII, a named trailer) is answered from the counts and the
+shown lines. These lines of a brief stay `not_checked` by design, whatever
+the host shows: what is in ignored files, that nothing was pushed, how files
+were staged, the order in which the work was done, and what was installed.
+
 `ACCEPT` beside a requirement answered `disclosed` is taken too. Some briefs
 allow a part to be closed by saying that it is not delivered; a reviewer
 that accepts such a task is right, and the part is neither `met` nor a

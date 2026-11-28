@@ -52,6 +52,9 @@ def run_shift(admission, spawn=None, *, seconds, wind_down=None, poll=0.1, sleep
         driver.wake = wake.record  # read whenever a closeout is written
     # Real time, whatever clock a test drives the shift with: file times are real.
     repo, began = getattr(getattr(admission, "trust", None), "repo", None), time.time()
+    # For the host's look at a candidate, which compares first the files touched since then. A field
+    # of its own and no key of `driver.repo`, which the closeout writes whole.
+    driver.began = began
     if repo is not None:
         # The driver already runs: this look comes out of the working time and never
         # reaches past the moment work stops.
